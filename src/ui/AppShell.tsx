@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { mountScene } from '@/globe/scene';
+import { bootstrapData, teardownData } from '@/data/bootstrap';
 import { HudCounter } from './HudCounter';
 import { SidePanel } from './SidePanel';
 import { WebGLFallback } from './WebGLFallback';
@@ -24,7 +25,11 @@ export default function AppShell() {
     if (!supported) return;
     if (!canvasRef.current || !leaderRef.current || !panelRef.current) return;
     const handle = mountScene(canvasRef.current, leaderRef.current, panelRef.current);
-    return () => handle.dispose();
+    void bootstrapData().catch((e: unknown) => console.error('bootstrap:', e));
+    return () => {
+      handle.dispose();
+      teardownData();
+    };
   }, [supported]);
 
   if (!supported) return <WebGLFallback />;
