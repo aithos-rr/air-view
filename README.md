@@ -8,11 +8,29 @@ currently in the sky as a luminous point.
 ```bash
 npm install
 node scripts/build-static-data.mjs   # one-time: downloads Natural Earth, OpenFlights, OurAirports
-cp .env.example .env                 # add your OpenSky credentials
+cp .env.example .env                 # add your OpenSky OAuth2 credentials (see below)
 npm run dev
 ```
 
 Open `http://localhost:5173`.
+
+### OpenSky OAuth2 credentials
+
+OpenSky deprecated basic auth in mid-March 2025; new accounts must use
+OAuth2 client_credentials. To get a clientId/clientSecret:
+
+1. Sign in at <https://opensky-network.org>
+2. Account → **API Clients** → *Create new client*
+3. Download `credentials.json` (or copy the values shown on screen)
+4. Paste `clientId` and `clientSecret` into `.env`:
+
+```
+OPENSKY_CLIENT_ID=<your-client-id>
+OPENSKY_CLIENT_SECRET=<your-client-secret>
+```
+
+The edge function (`api/states.ts`) handles the token exchange and refresh
+automatically — the credentials never touch the browser.
 
 ## Tech
 
@@ -31,8 +49,9 @@ npm run test:e2e  # Playwright + axe-core (requires: npx playwright install chro
 
 ## Deploy
 
-Push to a Vercel-connected repo. Set `OPENSKY_USER` and `OPENSKY_PASS` as
-Vercel project env vars.
+Push to a Vercel-connected repo. Set `OPENSKY_CLIENT_ID` and
+`OPENSKY_CLIENT_SECRET` as Vercel project env vars (same values you put in
+`.env` locally).
 
 ## Project layout
 

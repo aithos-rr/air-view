@@ -1,15 +1,17 @@
+import { fetchStatesAuthenticated } from '../src/data/openSkyAuth';
+
 export const config = { runtime: 'edge' };
 
 interface OpenSkyState extends Array<unknown> {
-  0: string;        // icao24
+  0: string; // icao24
   1: string | null; // callsign
-  4: number;        // last_contact (unix)
+  4: number; // last_contact (unix)
   5: number | null; // longitude
   6: number | null; // latitude
   7: number | null; // baro_altitude (m)
-  8: boolean;       // on_ground
+  8: boolean; // on_ground
   9: number | null; // velocity (m/s)
-  10: number | null;// true_track (deg)
+  10: number | null; // true_track (deg)
 }
 
 interface OpenSkyResponse {
@@ -17,7 +19,7 @@ interface OpenSkyResponse {
   states: OpenSkyState[] | null;
 }
 
-// In-memory cache shared across edge invocations on the same node.
+// In-memory edge-worker cache for the normalized response.
 // 15 s cache — protects against bursts and stays inside OpenSky free tier.
 let cache: { body: string; fetchedAt: number } | null = null;
 const CACHE_TTL_MS = 15_000;
@@ -32,16 +34,23 @@ export default async function handler(_request: Request): Promise<Response> {
     });
   }
 
-  const user = process.env.OPENSKY_USER;
-  const pass = process.env.OPENSKY_PASS;
-  const url = 'https://opensky-network.org/api/states/all';
-  const headers: HeadersInit = {};
-  if (user && pass) headers.Authorization = 'Basic ' + btoa(`${user}:${pass}`);
+  const clientId = process.env.OPENSKY_CLIENT_ID;
+  const clientSecret = process.env.OPENSKY_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    return new Response(
+      JSON.stringify({
+        error:
+          'OPENSKY_CLIENT_ID / OPENSKY_CLIENT_SECRET not configured. ' +
+          'Create an API client at https://opensky-network.org/my-opensky/account → API Clients.',
+      }),
+      { status: 500, headers: { 'content-type': 'application/json' } }
+    );
+  }
 
   try {
-    const upstream = await fetch(url, { headers });
+    const upstream = await fetchStatesAuthenticated({ clientId, clientSecret });
     if (!upstream.ok) throw new Error(`OpenSky ${upstream.status}`);
-    const data: OpenSkyResponse = await upstream.json();
+    const data = (await upstream.json()) as OpenSkyResponse;
     const normalised = {
       fetchedAt: new Date().toISOString(),
       aircraft: (data.states ?? []).map((s) => ({
@@ -66,11 +75,12 @@ export default async function handler(_request: Request): Promise<Response> {
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    if (cache)
+    if (cache) {
       return new Response(cache.body, {
         status: 200,
         headers: { 'content-type': 'application/json', 'x-error': msg },
       });
+    }
     return new Response(JSON.stringify({ error: msg }), {
       status: 502,
       headers: { 'content-type': 'application/json' },
