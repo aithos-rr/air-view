@@ -26,7 +26,25 @@ if (process.env.NODE_ENV !== 'production') {
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
+import { Agent, setGlobalDispatcher } from 'undici';
 import { fetchStatesAuthenticated, type BoundingBox } from '../src/data/openSkyAuth.js';
+
+// ----------------------------------------------------------------------------
+// Outbound HTTP dispatcher
+// ----------------------------------------------------------------------------
+// Node 20 default fetch (undici) tries IPv6 first when resolving hostnames.
+// On Railway containers, IPv6 routing to opensky-network.org times out
+// (UND_ERR_CONNECT_TIMEOUT after ~10 s of dead AAAA attempts). Force the
+// DNS lookup to IPv4 only and bump the connect timeout to 30 s for safety.
+setGlobalDispatcher(
+  new Agent({
+    connect: {
+      timeout: 30_000,
+      // family: 4 → IPv4 only; avoids the flaky AAAA path on Railway egress
+      family: 4,
+    },
+  })
+);
 
 // ----------------------------------------------------------------------------
 // Types — mirror the OpenSky /states/all response shape and our normalized form
