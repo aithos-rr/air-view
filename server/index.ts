@@ -172,13 +172,28 @@ app.get('/api/states', async (req, reply) => {
       .send(body);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    // Node's fetch wraps the real network error in `cause`. Surface it so
+    // we can see ENOTFOUND / ECONNREFUSED / certificate errors at a glance
+    // instead of the generic "fetch failed".
+    const cause =
+      e && typeof e === 'object' && 'cause' in e
+        ? ((e as { cause: unknown }).cause as { message?: string; code?: string })
+        : null;
+    req.log.error(
+      { err: msg, causeMessage: cause?.message, causeCode: cause?.code, bbox },
+      'OpenSky upstream failed'
+    );
     if (hit) {
       return reply
         .header('content-type', 'application/json')
         .header('x-error', msg)
         .send(hit.body);
     }
-    return reply.status(502).send({ error: msg });
+    return reply.status(502).send({
+      error: msg,
+      cause: cause?.message ?? null,
+      code: cause?.code ?? null,
+    });
   }
 });
 

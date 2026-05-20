@@ -65,10 +65,13 @@ export async function getAccessToken(
     client_id: creds.clientId,
     client_secret: creds.clientSecret,
   });
+  // Some Node fetch runtimes (notably under Railway's image) don't auto-set
+  // Content-Length when the body is a URLSearchParams instance; serialize
+  // explicitly so Content-Type + Content-Length are both unambiguous.
   const res = await fetchImpl(TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
+    body: body.toString(),
   });
   if (!res.ok) {
     throw new Error(`OpenSky token endpoint: HTTP ${res.status}`);

@@ -32,7 +32,10 @@ describe('getAccessToken', () => {
       'application/x-www-form-urlencoded'
     );
 
-    const body = init.body as URLSearchParams;
+    // The body is a serialized URLSearchParams string for runtime compat
+    // (some Node fetch impls drop Content-Length when passed a URLSearchParams
+    // instance). Re-parse the string to inspect the fields.
+    const body = new URLSearchParams(init.body as string);
     expect(body.get('grant_type')).toBe('client_credentials');
     expect(body.get('client_id')).toBe('cid');
     expect(body.get('client_secret')).toBe('csec');
