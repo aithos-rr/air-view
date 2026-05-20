@@ -1,0 +1,194 @@
+:root {
+  /* Palette */
+  --color-primary:     #0066cc;
+  --color-primary-on-dark: #2997ff;
+  --color-primary-focus: #0071e3;
+  --color-tile-1:      #272729;
+  --color-tile-3:      #252527;
+  --color-on-dark:     #ffffff;
+  --color-body-muted:  #cccccc;
+  --color-hairline:    #e0e0e0;
+  --color-aircraft-warm: #ffe6c4;
+
+  /* Spacing */
+  --space-xxs: 4px;
+  --space-xs:  8px;
+  --space-sm:  12px;
+  --space-md:  17px;
+  --space-lg:  24px;
+  --space-xl:  32px;
+  --space-xxl: 48px;
+
+  /* Radii */
+  --radius-sm: 8px;
+  --radius-md: 11px;
+  --radius-lg: 18px;
+  --radius-pill: 9999px;
+
+  /* Type */
+  --font-stack: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  background: radial-gradient(ellipse at center, #0a0a14 0%, #000000 70%);
+  color: var(--color-on-dark);
+  font-family: var(--font-stack);
+  overflow: hidden;
+  letter-spacing: -0.01em;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app-canvas { position: fixed; inset: 0; z-index: 1; display: block; }
+.app-leader {
+  position: fixed; inset: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 5;
+}
+
+.skip-link {
+  position: fixed;
+  top: -100px;
+  left: var(--space-xl);
+  padding: var(--space-xs) var(--space-md);
+  background: var(--color-tile-1);
+  color: var(--color-on-dark);
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  z-index: 100;
+  font-size: 14px;
+}
+.skip-link:focus { top: var(--space-xl); }
+
+:focus-visible {
+  outline: 2px solid var(--color-primary-focus);
+  outline-offset: 2px;
+}
+
+/* HUD aircraft counter */
+.hud {
+  position: fixed;
+  top: var(--space-xl);
+  left: var(--space-xl);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.224px;
+  color: rgba(255, 255, 255, 0.7);
+  z-index: 10;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+.hud__status {
+  font-size: 12px;
+  font-weight: 400;
+  opacity: 0.55;
+  letter-spacing: -0.12px;
+  margin-left: var(--space-xs);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0,0,0,0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Side panel */
+.panel {
+  position: fixed;
+  top: var(--space-xl);
+  right: var(--space-xl);
+  bottom: var(--space-xl);
+  width: 320px;
+  background: rgba(39, 39, 41, 0.78);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.panel[data-mode="closed"] {
+  bottom: auto;
+  height: auto;
+  padding: var(--space-sm) var(--space-md);
+}
+.panel__header { display: flex; justify-content: space-between; align-items: flex-start; }
+.panel__title-block { display: flex; flex-direction: column; gap: 2px; margin-bottom: var(--space-lg); }
+.panel__callsign { font-size: 21px; font-weight: 600; letter-spacing: 0.231px; }
+.panel__operator { font-size: 14px; opacity: 0.55; letter-spacing: -0.224px; }
+.panel__toggle {
+  background: transparent;
+  color: var(--color-on-dark);
+  border: none;
+  font-family: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  padding: var(--space-xs) var(--space-md);
+}
+.panel button[aria-label="Close panel"],
+.panel button[aria-label="Close"] {
+  width: 32px; height: 32px;
+  border-radius: var(--radius-pill);
+  background: rgba(255,255,255,0.08);
+  border: none;
+  color: rgba(255,255,255,0.8);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.route { font-size: 17px; letter-spacing: -0.374px; margin-bottom: 4px; }
+.times { font-size: 14px; letter-spacing: -0.224px; opacity: 0.7; font-variant-numeric: tabular-nums; }
+.divider { height: 1px; background: rgba(255,255,255,0.08); margin: var(--space-lg) 0; }
+.fields { display: flex; flex-direction: column; gap: var(--space-md); }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field__label { font-size: 10px; font-weight: 600; letter-spacing: 0.08em; opacity: 0.45; text-transform: uppercase; }
+.field__value { font-size: 17px; letter-spacing: -0.374px; font-variant-numeric: tabular-nums; }
+.panel__footer { margin-top: auto; padding-top: var(--space-lg); font-size: 12px; opacity: 0.35; }
+
+/* Aircraft list */
+.list-filter {
+  width: 100%;
+  padding: var(--space-xs) var(--space-md);
+  margin-bottom: var(--space-md);
+  background: rgba(255,255,255,0.06);
+  color: var(--color-on-dark);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: var(--radius-pill);
+  font-family: inherit;
+  font-size: 14px;
+}
+.list { list-style: none; overflow-y: auto; flex: 1; }
+.list-row {
+  display: flex;
+  justify-content: space-between;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  min-height: 44px;
+  align-items: center;
+}
+.list-row:hover, .list-row:focus-visible { background: rgba(255,255,255,0.08); }
+.list-row__callsign { font-weight: 600; }
+
+/* Mobile bottom sheet */
+@media (max-width: 640px) {
+  .panel { top: auto; left: var(--space-md); right: var(--space-md); bottom: var(--space-md); width: auto; max-height: 70vh; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.01s !important; transition-duration: 0.01s !important; }
+}
