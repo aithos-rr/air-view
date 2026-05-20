@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "target": "ES2022",
+    "outDir": "dist-server",
+    "rootDir": ".",
+    "noEmit": false,
+    "isolatedModules": false,
+    "allowImportingTsExtensions": false
+  },
+  "include": ["server/**/*.ts", "src/data/openSkyAuth.ts", "src/types.ts"],
+  "exclude": ["node_modules", "dist", "dist-server", "tests"]
+}

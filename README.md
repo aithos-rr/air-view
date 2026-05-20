@@ -9,10 +9,17 @@ currently in the sky as a luminous point.
 npm install
 node scripts/build-static-data.mjs   # one-time: downloads Natural Earth, OpenFlights, OurAirports
 cp .env.example .env                 # add your OpenSky OAuth2 credentials (see below)
-npm run dev
+npm run dev:full                     # starts both Fastify server (:3000) and Vite (:5173)
 ```
 
-Open `http://localhost:5173`.
+Open `http://localhost:5173`. Vite proxies `/api/*` to the Fastify server.
+
+If you want to run them in separate terminals:
+
+```bash
+npm run server   # Fastify on :3000 (Node + tsx watch)
+npm run dev      # Vite on :5173
+```
 
 ### OpenSky OAuth2 credentials
 
@@ -47,21 +54,39 @@ npm test          # Vitest unit + component
 npm run test:e2e  # Playwright + axe-core (requires: npx playwright install chromium)
 ```
 
-## Deploy
+## Deploy (Railway)
 
-Push to a Vercel-connected repo. Set `OPENSKY_CLIENT_ID` and
-`OPENSKY_CLIENT_SECRET` as Vercel project env vars (same values you put in
-`.env` locally).
+The backend is a Node.js Fastify server (`server/index.ts`), deployable as a
+single Railway service. The Vite frontend is built to static assets and
+served alongside the API (or as a separate Railway service if you prefer).
+
+```bash
+railway login
+railway link                                                # link to your project
+railway variables set OPENSKY_CLIENT_ID=<your-client-id>
+railway variables set OPENSKY_CLIENT_SECRET=<your-client-secret>
+railway up                                                  # build + deploy
+```
+
+Railway injects `PORT` automatically; the server binds to `0.0.0.0:$PORT`.
+Health check is exposed at `GET /health`. Configuration (build / start /
+healthcheck) lives in `railway.toml` at the project root.
+
+If you serve the frontend from a different origin, set `FRONTEND_ORIGIN`
+on the API service so CORS accepts it. Railway public domains
+(`*.railway.app`, `*.up.railway.app`) are allowed by default.
 
 ## Project layout
 
 ```
 src/
 ├── globe/    Three.js scene (frosted glass shader, aircraft SDF, leader line, raycaster)
-├── data/     IO + business (OpenSky client, route/airport lookups, adaptive refresh)
+├── data/     IO + business (OpenSky client, route/airport lookups, adaptive refresh, openSkyAuth)
 ├── state/    Zustand stores (aircraft, selection, panel, a11y) — framework-agnostic
 └── ui/       React shell (HUD, side panel, flight card, list view)
 
-api/states.ts  Vercel edge function proxying OpenSky with 15-second cache
+server/        Fastify Node.js server (deployed on Railway)
+  index.ts     /api/states proxy with OAuth2 + 15-second cache, /health
 public/data/   Bundled static data (Natural Earth, OpenFlights routes, OurAirports)
+railway.toml   Railway build + deploy config
 ```
