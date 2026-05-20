@@ -4,12 +4,18 @@ import type { AircraftRaw, BoundingBox } from '../types.js';
  * Community-driven ADS-B aggregator (no auth, no IP-based rate limit).
  * Replaces OpenSky, whose firewall blocks Railway's egress IP range.
  *
- * v1 always hits /v2/all (global feed, ~14k aircraft, ~2 MB JSON).
- * v2 may switch to /v2/lat/<lat>/lon/<lon>/dist/<nm> for camera-bounded
- * queries — adsb.lol doesn't accept a lat/lon bbox, only center+radius,
- * so we'd convert bbox → centroid + radius nautical miles at that point.
+ * adsb.lol only exposes a centre+radius endpoint, not a global one.
+ * We hit /v2/lat/0/lon/0/dist/10000 — a 10 000 NM radius from (0,0)
+ * covers ~99% of the planet (the maximum geodesic distance on Earth
+ * is ≈ 10 800 NM, so we miss only a narrow ring around the antipode
+ * which sits in the South Pacific ocean — negligible aircraft).
+ *
+ * Typical response: ~8 000-12 000 aircraft, ~4 MB JSON.
+ *
+ * v2 may switch to a tighter centre+radius derived from the camera
+ * viewpoint, which is what adsb.lol's API is actually designed for.
  */
-const STATES_URL = 'https://api.adsb.lol/v2/all';
+const STATES_URL = 'https://api.adsb.lol/v2/lat/0/lon/0/dist/10000';
 
 interface AdsbAircraft {
   hex: string; // ICAO24 (lowercase)
