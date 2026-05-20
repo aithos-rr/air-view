@@ -55,5 +55,10 @@ coverage/
 .cache/
 *.tsbuildinfo
                                                           
-#Superpowers brainstorm working files                     
-.superpowers/   
+#Superpowers brainstorm working files
+.superpowers/
+
+# tests
+test-results/
+playwright-report/
+playwright/.cache/
