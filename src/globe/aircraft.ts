@@ -1,17 +1,22 @@
 import {
   AdditiveBlending,
+  BufferAttribute,
   BufferGeometry,
-  Float32BufferAttribute,
+  DynamicDrawUsage,
   Group,
   Points,
   ShaderMaterial,
+  Sphere,
+  Vector3,
 } from 'three';
 import type { Aircraft } from '@/types';
-import { latLonAltToVec3 } from './geoHelpers';
+import { GLOBE_RADIUS } from './geoHelpers';
 
 const CRUISING_COLOR: [number, number, number] = [1.0, 0.902, 0.769]; // #ffe6c4
-const SELECTED_COLOR: [number, number, number] = [0.16, 0.59, 1.0];   // sky-leaning Action Blue
+const SELECTED_COLOR: [number, number, number] = [0.16, 0.59, 1.0]; // sky-leaning Action Blue
 const DEG = Math.PI / 180;
+const MAX_AIRCRAFT = 3000;
+const SCENE_BOUND_RADIUS = GLOBE_RADIUS + 0.5;
 
 interface PointParams {
   size: number;
@@ -79,6 +84,51 @@ function createPointMaterial(p: PointParams): ShaderMaterial {
   });
 }
 
+interface PointSet {
+  geom: BufferGeometry;
+  positions: Float32Array;
+  colors: Float32Array;
+  headings: Float32Array;
+  positionAttr: BufferAttribute;
+  colorAttr: BufferAttribute;
+  headingAttr: BufferAttribute;
+}
+
+function createPointSet(capacity: number): PointSet {
+  const positions = new Float32Array(capacity * 3);
+  const colors = new Float32Array(capacity * 3);
+  const headings = new Float32Array(capacity);
+  const geom = new BufferGeometry();
+  const positionAttr = new BufferAttribute(positions, 3);
+  positionAttr.setUsage(DynamicDrawUsage);
+  const colorAttr = new BufferAttribute(colors, 3);
+  colorAttr.setUsage(DynamicDrawUsage);
+  const headingAttr = new BufferAttribute(headings, 1);
+  headingAttr.setUsage(DynamicDrawUsage);
+  geom.setAttribute('position', positionAttr);
+  geom.setAttribute('aColor', colorAttr);
+  geom.setAttribute('aHeading', headingAttr);
+  geom.boundingSphere = new Sphere(new Vector3(0, 0, 0), SCENE_BOUND_RADIUS);
+  return { geom, positions, colors, headings, positionAttr, colorAttr, headingAttr };
+}
+
+// Inline lat/lon/alt → xyz. Zero allocations per call.
+function writeLatLonAlt(
+  buf: Float32Array,
+  offset: number,
+  lat: number,
+  lon: number,
+  altFt: number
+): void {
+  const radius = GLOBE_RADIUS + 0.025 + (Math.max(0, altFt) / 41000) * 0.05;
+  const phi = (90 - lat) * (Math.PI / 180);
+  const theta = lon * (Math.PI / 180);
+  const sinPhi = Math.sin(phi);
+  buf[offset] = radius * sinPhi * Math.sin(theta);
+  buf[offset + 1] = radius * Math.cos(phi);
+  buf[offset + 2] = radius * sinPhi * Math.cos(theta);
+}
+
 export interface AircraftLayer {
   group: Group;
   update: (aircraft: Iterable<Aircraft>, selectedIcao: string | null) => void;
@@ -87,60 +137,65 @@ export interface AircraftLayer {
 export function createAircraftLayer(): AircraftLayer {
   const group = new Group();
 
-  const cruisingGeom = new BufferGeometry();
-  cruisingGeom.setAttribute('position', new Float32BufferAttribute([], 3));
-  cruisingGeom.setAttribute('aColor', new Float32BufferAttribute([], 3));
-  cruisingGeom.setAttribute('aHeading', new Float32BufferAttribute([], 1));
+  const cruisingSet = createPointSet(MAX_AIRCRAFT);
   const cruisingMat = createPointMaterial({ size: 26, coreLum: 1.6, haloFalloff: 0.9, haloWidth: 11 });
-  const cruisingPts = new Points(cruisingGeom, cruisingMat);
+  const cruisingPts = new Points(cruisingSet.geom, cruisingMat);
   cruisingPts.renderOrder = 3;
+  cruisingPts.frustumCulled = false;
   group.add(cruisingPts);
 
-  const selectedGeom = new BufferGeometry();
-  selectedGeom.setAttribute('position', new Float32BufferAttribute([], 3));
-  selectedGeom.setAttribute('aColor', new Float32BufferAttribute([], 3));
-  selectedGeom.setAttribute('aHeading', new Float32BufferAttribute([], 1));
+  const selectedSet = createPointSet(8); // at most a handful selected (v1 = exactly 1)
   const selectedMat = createPointMaterial({
     size: 56,
     coreLum: 2.0,
     haloFalloff: 1.35,
     haloWidth: 6.5,
   });
-  const selectedPts = new Points(selectedGeom, selectedMat);
+  const selectedPts = new Points(selectedSet.geom, selectedMat);
   selectedPts.renderOrder = 4;
+  selectedPts.frustumCulled = false;
   group.add(selectedPts);
 
   function update(aircraft: Iterable<Aircraft>, selectedIcao: string | null): void {
-    const cruisingPos: number[] = [];
-    const cruisingCol: number[] = [];
-    const cruisingHdg: number[] = [];
-    const selPos: number[] = [];
-    const selCol: number[] = [];
-    const selHdg: number[] = [];
+    let cruisingCount = 0;
+    let selectedCount = 0;
 
     for (const ac of aircraft) {
       if (ac.latitude === null || ac.longitude === null) continue;
-      const pos = latLonAltToVec3(ac.latitude, ac.longitude, ac.baroAltitudeFt ?? 38000);
       const headingRad = (ac.headingDeg ?? 0) * DEG;
+      const altFt = ac.baroAltitudeFt ?? 38000;
       const isSel = ac.icao24 === selectedIcao;
+
       if (isSel) {
-        selPos.push(pos.x, pos.y, pos.z);
-        selCol.push(...SELECTED_COLOR);
-        selHdg.push(headingRad);
+        if (selectedCount >= MAX_AIRCRAFT) continue;
+        const i = selectedCount;
+        writeLatLonAlt(selectedSet.positions, i * 3, ac.latitude, ac.longitude, altFt);
+        selectedSet.colors[i * 3] = SELECTED_COLOR[0];
+        selectedSet.colors[i * 3 + 1] = SELECTED_COLOR[1];
+        selectedSet.colors[i * 3 + 2] = SELECTED_COLOR[2];
+        selectedSet.headings[i] = headingRad;
+        selectedCount++;
       } else {
-        cruisingPos.push(pos.x, pos.y, pos.z);
-        cruisingCol.push(...CRUISING_COLOR);
-        cruisingHdg.push(headingRad);
+        if (cruisingCount >= MAX_AIRCRAFT) continue;
+        const i = cruisingCount;
+        writeLatLonAlt(cruisingSet.positions, i * 3, ac.latitude, ac.longitude, altFt);
+        cruisingSet.colors[i * 3] = CRUISING_COLOR[0];
+        cruisingSet.colors[i * 3 + 1] = CRUISING_COLOR[1];
+        cruisingSet.colors[i * 3 + 2] = CRUISING_COLOR[2];
+        cruisingSet.headings[i] = headingRad;
+        cruisingCount++;
       }
     }
 
-    cruisingGeom.setAttribute('position', new Float32BufferAttribute(cruisingPos, 3));
-    cruisingGeom.setAttribute('aColor', new Float32BufferAttribute(cruisingCol, 3));
-    cruisingGeom.setAttribute('aHeading', new Float32BufferAttribute(cruisingHdg, 1));
+    cruisingSet.geom.setDrawRange(0, cruisingCount);
+    cruisingSet.positionAttr.needsUpdate = true;
+    cruisingSet.colorAttr.needsUpdate = true;
+    cruisingSet.headingAttr.needsUpdate = true;
 
-    selectedGeom.setAttribute('position', new Float32BufferAttribute(selPos, 3));
-    selectedGeom.setAttribute('aColor', new Float32BufferAttribute(selCol, 3));
-    selectedGeom.setAttribute('aHeading', new Float32BufferAttribute(selHdg, 1));
+    selectedSet.geom.setDrawRange(0, selectedCount);
+    selectedSet.positionAttr.needsUpdate = true;
+    selectedSet.colorAttr.needsUpdate = true;
+    selectedSet.headingAttr.needsUpdate = true;
   }
 
   return { group, update };

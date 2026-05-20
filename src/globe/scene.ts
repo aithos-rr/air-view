@@ -99,6 +99,20 @@ export function mountScene(
   };
   window.addEventListener('resize', onResize);
 
+  // --- Per-frame profiler -----------------------------------------------------
+  // Logs once per second: actual fps + average ms in each pipeline stage.
+  // Disable by setting window.__AIR_VIEW_PROFILE = false.
+  interface ProfileWindow extends Window {
+    __AIR_VIEW_PROFILE?: boolean;
+  }
+  const profileWindow = window as ProfileWindow;
+  let frames = 0;
+  let lastFpsLog = performance.now();
+  let acTotal = 0;
+  let trailsTotal = 0;
+  let leaderTotal = 0;
+  let renderTotal = 0;
+
   // Render loop
   let rafId = 0;
   function animate(time: number): void {
@@ -111,8 +125,11 @@ export function mountScene(
     const aircraftMap = useAircraftStore.getState().aircraft;
     const selectedIcao = useSelectionStore.getState().selectedIcao;
 
+    const tAC = performance.now();
     aircraftLayer.update(aircraftMap.values(), selectedIcao);
+    const tTr = performance.now();
     trailsLayer.update(aircraftMap.values(), selectedIcao);
+    const tLd = performance.now();
 
     // Leader line: only when an aircraft is selected and on the near hemisphere
     if (selectedIcao) {
@@ -128,7 +145,36 @@ export function mountScene(
       leader.clear();
     }
 
+    const tRn = performance.now();
     renderer.render(scene, camera);
+    const tEnd = performance.now();
+
+    acTotal += tTr - tAC;
+    trailsTotal += tLd - tTr;
+    leaderTotal += tRn - tLd;
+    renderTotal += tEnd - tRn;
+    frames++;
+
+    const now = performance.now();
+    if (now - lastFpsLog >= 1000) {
+      if (profileWindow.__AIR_VIEW_PROFILE !== false) {
+        const fps = frames;
+        // eslint-disable-next-line no-console
+        console.log(
+          `[air-view] ${fps} fps · ${aircraftMap.size} aircraft · ` +
+            `aircraft ${(acTotal / fps).toFixed(2)}ms · ` +
+            `trails ${(trailsTotal / fps).toFixed(2)}ms · ` +
+            `leader ${(leaderTotal / fps).toFixed(2)}ms · ` +
+            `render ${(renderTotal / fps).toFixed(2)}ms`
+        );
+      }
+      frames = 0;
+      acTotal = 0;
+      trailsTotal = 0;
+      leaderTotal = 0;
+      renderTotal = 0;
+      lastFpsLog = now;
+    }
   }
   rafId = requestAnimationFrame(animate);
 
