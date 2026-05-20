@@ -21,23 +21,18 @@ npm run server   # Fastify on :3000 (Node + tsx watch)
 npm run dev      # Vite on :5173
 ```
 
-### OpenSky OAuth2 credentials
+### ADS-B data source
 
-OpenSky deprecated basic auth in mid-March 2025; new accounts must use
-OAuth2 client_credentials. To get a clientId/clientSecret:
+Air View pulls live aircraft positions from **adsb.lol**, a community
+ADS-B aggregator. No API key, no OAuth, no IP-range blocks — the
+endpoint `https://api.adsb.lol/v2/all` is hit by the Fastify server,
+cached for 15 s, and proxied to the browser at `/api/states`.
 
-1. Sign in at <https://opensky-network.org>
-2. Account → **API Clients** → *Create new client*
-3. Download `credentials.json` (or copy the values shown on screen)
-4. Paste `clientId` and `clientSecret` into `.env`:
-
-```
-OPENSKY_CLIENT_ID=<your-client-id>
-OPENSKY_CLIENT_SECRET=<your-client-secret>
-```
-
-The edge function (`api/states.ts`) handles the token exchange and refresh
-automatically — the credentials never touch the browser.
+OpenSky was the original choice but their firewall blocks cloud-provider
+egress (Railway included), making it unusable from a hosted backend.
+The hooks for camera-driven filtering (`bbox` query params, server-side
+cache keyed per bbox) survive the switch and will plug into adsb.lol's
+`/v2/lat/<lat>/lon/<lon>/dist/<nm>` endpoint in v2.
 
 ## Geographic filter
 
@@ -73,21 +68,22 @@ npm run test:e2e  # Playwright + axe-core (requires: npx playwright install chro
 
 ## Deploy (Railway)
 
-The backend is a Node.js Fastify server (`server/index.ts`), deployable as a
-single Railway service. The Vite frontend is built to static assets and
-served alongside the API (or as a separate Railway service if you prefer).
+The backend is a Node.js Fastify server (`server/index.ts`) that serves
+both `/api/states` (proxying adsb.lol) and the Vite build from `dist/`
+as static files. Single Railway service handles everything.
 
 ```bash
 railway login
-railway link                                                # link to your project
-railway variables set OPENSKY_CLIENT_ID=<your-client-id>
-railway variables set OPENSKY_CLIENT_SECRET=<your-client-secret>
-railway up                                                  # build + deploy
+railway link                                # link to your project
+railway up                                  # build + deploy
 ```
 
+No API credentials needed — adsb.lol is public.
+
 Railway injects `PORT` automatically; the server binds to `0.0.0.0:$PORT`.
-Health check is exposed at `GET /health`. Configuration (build / start /
-healthcheck) lives in `railway.toml` at the project root.
+Health check is exposed at `GET /health`. Build/start/healthcheck config
+lives in `railway.toml` at the project root. Node 20+ is pinned via
+`package.json#engines` and `.nvmrc`.
 
 If you serve the frontend from a different origin, set `FRONTEND_ORIGIN`
 on the API service so CORS accepts it. Railway public domains

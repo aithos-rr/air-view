@@ -47,3 +47,16 @@ export interface Route {
 export type PanelMode = 'closed' | 'flight' | 'list';
 export type RefreshState = 'active' | 'idle' | 'background';
 export type FetchStatus = 'idle' | 'fetching' | 'error';
+
+/**
+ * Geographic bounding box (degrees). lamin/lamax = latitudes (-90..+90),
+ * lomin/lomax = longitudes (-180..+180). v1 doesn't use this client-side
+ * (the server returns the global feed by default); kept here for v2
+ * camera-driven filtering.
+ */
+export interface BoundingBox {
+  lamin: number;
+  lomin: number;
+  lamax: number;
+  lomax: number;
+}

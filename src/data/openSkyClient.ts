@@ -1,5 +1,4 @@
-import type { AircraftRaw } from '@/types';
-import type { BoundingBox } from './openSkyAuth';
+import type { AircraftRaw, BoundingBox } from '@/types';
 
 export interface FetchResult {
   fetchedAt: Date;

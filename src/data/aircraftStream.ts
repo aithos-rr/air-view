@@ -1,5 +1,4 @@
-import type { AircraftRaw, RefreshState } from '@/types';
-import type { BoundingBox } from './openSkyAuth';
+import type { AircraftRaw, BoundingBox, RefreshState } from '@/types';
 import { fetchStates } from './openSkyClient';
 
 // v1 final: global feed (no bbox) returns ~2 MB per fetch. Doubled the
