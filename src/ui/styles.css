@@ -70,6 +70,22 @@ html, body, #root {
   outline-offset: 2px;
 }
 
+/* Aithos brand watermark — bottom-left */
+.brand-watermark {
+  position: fixed;
+  bottom: var(--space-lg);
+  left: var(--space-lg);
+  width: 150px;
+  height: auto;
+  z-index: 10;
+  pointer-events: none;
+  user-select: none;
+  opacity: 0.85;
+  mix-blend-mode: screen;
+  filter: drop-shadow(0 0 8px rgba(255, 215, 100, 0.3));
+  transition: opacity 0.3s ease;
+}
+
 /* HUD aircraft counter */
 .hud {
   position: fixed;

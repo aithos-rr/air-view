@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { mountScene } from '@/globe/scene';
 import { bootstrapData, teardownData } from '@/data/bootstrap';
+import { BrandWatermark } from './BrandWatermark';
 import { HudCounter } from './HudCounter';
 import { SidePanel } from './SidePanel';
 import { WebGLFallback } from './WebGLFallback';
@@ -41,6 +42,7 @@ export default function AppShell() {
       </a>
       <canvas ref={canvasRef} className="app-canvas" />
       <svg ref={leaderRef} className="app-leader" />
+      <BrandWatermark />
       <HudCounter />
       <SidePanel ref={panelRef} />
     </>
