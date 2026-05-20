@@ -119,3 +119,5 @@ public/data/      Bundled static data (Natural Earth, OpenFlights, OurAirports +
 railway.toml      Railway build + deploy config
 docs/superpowers/ Original spec + implementation plan
 ```
+
+<- [] ( docs/NOTEBOOK_SPEC.md ) — specifica strutturale del last sync: 2026-05-20T23:00:25Z -->
