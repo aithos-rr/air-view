@@ -1,105 +1,121 @@
 # Air View
 
-Single-page web experience rendering Earth as frosted glass and every aircraft
-currently in the sky as a luminous point.
+A single-page web experience that renders Earth as frosted glass and every
+aircraft currently in the sky as a luminous point. Live ADS-B, no UI chrome,
+zero-allocation render loop.
 
-## Setup
+🚀 **Live:** <https://air-view-production.up.railway.app/>
+
+License: TBD
+
+---
+
+## Tech stack
+
+| Layer | Choice |
+|---|---|
+| Frontend | React 18, TypeScript strict, Vite 5 |
+| 3D | Three.js 0.160 (raw, no R3F) + custom GLSL shaders |
+| Backend | Fastify 5 on Node 20 + @fastify/static + @fastify/cors |
+| Data | [adsb.lol](https://adsb.lol) live ADS-B aggregator (no auth, no key) |
+| State | Zustand stores (framework-agnostic) |
+| Testing | Vitest (50 unit + component) + Playwright e2e + axe-core a11y |
+| Deploy | Railway, single service, NIXPACKS build |
+
+---
+
+## Architecture
+
+A single Fastify process serves both `/api/states` (proxies adsb.lol with a
+15 s bbox-keyed cache) and the Vite production build statically from `dist/`.
+The frontend runs a zero-allocation render loop: one `LineSegments` for all
+trails and one `Points` cloud for all aircraft, both backed by 18 000-slot
+pre-allocated `Float32Array` buffers and updated with `setDrawRange` +
+`needsUpdate`. Adaptive refresh — 30 s active / 60 s idle / 120 s
+background — keeps OpenSky-equivalent server load light. Bbox-driven
+filtering plumbing is in place but currently bypassed (global fetch); it
+becomes camera-driven in v2.
+
+---
+
+## Known limitations
+
+- **Antipodal ring uncovered.** adsb.lol's largest radius is 10 000 NM around
+  any centre; Earth's max geodesic is ~10 800 NM, so a thin ring on the far
+  side of (0, 0) — mostly empty South Pacific — is missing.
+- **Route & destination accuracy is imperfect.** Route lookup falls back to
+  OpenFlights' static `routes.dat` because adsb.lol doesn't ship scheduled
+  flight data. Charter, ferry, and military callsigns often resolve to
+  "Route unknown".
+- **Static global fetch.** v1 always pulls the full feed (~9 000 aircraft).
+  Aircraft outside the camera frustum still travel down the wire.
+
+---
+
+## Roadmap
+
+- **v2 — camera-driven bbox.** Derive a centre+radius from the camera
+  viewpoint with a buffer ring, fetching only the visible region.
+- **Better airport / route resolution.** Either a paid scheduled-flight API
+  or a curated dataset for the top N busy callsigns.
+- **Secondary data source.** Fail over to adsb.fi or similar when adsb.lol
+  rate-limits a region.
+- **Mobile polish.** Side panel becomes a bottom sheet, touch controls
+  retuned for one-finger pan + pinch zoom.
+
+---
+
+## Local development
 
 ```bash
+git clone <repo>
+cd air-view
 npm install
-node scripts/build-static-data.mjs   # one-time: downloads Natural Earth, OpenFlights, OurAirports
-cp .env.example .env                 # add your OpenSky OAuth2 credentials (see below)
-npm run dev:full                     # starts both Fastify server (:3000) and Vite (:5173)
+node scripts/build-static-data.mjs   # one-time: pulls Natural Earth, OpenFlights, OurAirports
+cp .env.example .env                 # PORT, optional FRONTEND_ORIGIN
+npm run dev:full                     # vite on :5173 + fastify on :3000
 ```
 
-Open `http://localhost:5173`. Vite proxies `/api/*` to the Fastify server.
-
-If you want to run them in separate terminals:
+Open <http://localhost:5173>. Vite proxies `/api/*` to the Fastify server.
 
 ```bash
-npm run server   # Fastify on :3000 (Node + tsx watch)
-npm run dev      # Vite on :5173
+npm test          # Vitest unit + component (50 tests)
+npm run test:e2e  # Playwright + axe-core (needs: npx playwright install chromium)
+npm run build:all # vite build + tsc -p tsconfig.server.json
 ```
 
-### ADS-B data source
+---
 
-Air View pulls live aircraft positions from **adsb.lol**, a community
-ADS-B aggregator. No API key, no OAuth, no IP-range blocks — the
-endpoint `https://api.adsb.lol/v2/all` is hit by the Fastify server,
-cached for 15 s, and proxied to the browser at `/api/states`.
+## Deploy
 
-OpenSky was the original choice but their firewall blocks cloud-provider
-egress (Railway included), making it unusable from a hosted backend.
-The hooks for camera-driven filtering (`bbox` query params, server-side
-cache keyed per bbox) survive the switch and will plug into adsb.lol's
-`/v2/lat/<lat>/lon/<lon>/dist/<nm>` endpoint in v2.
-
-## Geographic filter
-
-**v1: global fetch, ~14 000 aircraft.** The renderer uses pre-allocated
-buffer pools (single `LineSegments` for trails, single `Points` for
-aircraft, all sized for 18 000 slots) so the full global feed runs at
-40–55 fps. Adaptive refresh is intentionally slow — 30 s active / 60 s
-idle / 120 s background — so a 2 MB JSON payload doesn't hammer the
-browser parser nor exhaust OpenSky's daily credit budget.
-
-**v2: camera-driven bbox.** The plan is to derive a bounding box from
-the camera viewpoint with a buffer ring around it, fetching only the
-visible region for sub-second freshness. The plumbing is already in
-place: pass `getBoundingBox: () => { lamin, lomin, lamax, lomax }` to
-`startAircraftStream`, or hit the API directly with
-`GET /api/states?lamin=…&lomin=…&lamax=…&lomax=…`. The server caches
-per bbox key, so concurrent regions don't trample each other.
-
-## Tech
-
-Vite + React + TypeScript + Three.js (raw, no R3F) + Zustand + Luxon + Vercel edge.
-
-See `docs/superpowers/specs/2026-05-20-air-view-design.md` for the full design
-spec and `docs/superpowers/plans/2026-05-20-air-view-v1.md` for the
-implementation plan.
-
-## Test
-
-```bash
-npm test          # Vitest unit + component
-npm run test:e2e  # Playwright + axe-core (requires: npx playwright install chromium)
-```
-
-## Deploy (Railway)
-
-The backend is a Node.js Fastify server (`server/index.ts`) that serves
-both `/api/states` (proxying adsb.lol) and the Vite build from `dist/`
-as static files. Single Railway service handles everything.
+Railway auto-deploys on every push to `main`. Manual:
 
 ```bash
 railway login
-railway link                                # link to your project
-railway up                                  # build + deploy
+railway link
+railway up
 ```
 
-No API credentials needed — adsb.lol is public.
+`railway.toml` runs `npm run build:all` (vite → `dist/`, tsc → `dist-server/`)
+then `npm run start`. `PORT` is injected by Railway; `/health` is the
+healthcheck. Node 20+ is pinned via `package.json#engines` and `.nvmrc`.
 
-Railway injects `PORT` automatically; the server binds to `0.0.0.0:$PORT`.
-Health check is exposed at `GET /health`. Build/start/healthcheck config
-lives in `railway.toml` at the project root. Node 20+ is pinned via
-`package.json#engines` and `.nvmrc`.
-
-If you serve the frontend from a different origin, set `FRONTEND_ORIGIN`
-on the API service so CORS accepts it. Railway public domains
-(`*.railway.app`, `*.up.railway.app`) are allowed by default.
+---
 
 ## Project layout
 
 ```
 src/
-├── globe/    Three.js scene (frosted glass shader, aircraft SDF, leader line, raycaster)
-├── data/     IO + business (OpenSky client, route/airport lookups, adaptive refresh, openSkyAuth)
-├── state/    Zustand stores (aircraft, selection, panel, a11y) — framework-agnostic
-└── ui/       React shell (HUD, side panel, flight card, list view)
+├── globe/    Three.js scene — frosted glass shader, aircraft SDF + trails buffer pool,
+│             leader line projection, raycaster (a11y hit zones)
+├── data/     adsb.lol source, route + airport + airline lookups, adaptive refresh stream
+├── state/    Zustand stores: aircraft, selection, panel, a11y (subscribable from both
+│             React UI and the Three.js render loop)
+└── ui/       React shell — AppShell, HudCounter, SidePanel, FlightCard, AircraftList,
+              BrandWatermark
 
-server/        Fastify Node.js server (deployed on Railway)
-  index.ts     /api/states proxy with OAuth2 + 15-second cache, /health
-public/data/   Bundled static data (Natural Earth, OpenFlights routes, OurAirports)
-railway.toml   Railway build + deploy config
+server/index.ts   Fastify: /api/states + /health + static dist/
+public/data/      Bundled static data (Natural Earth, OpenFlights, OurAirports + tz)
+railway.toml      Railway build + deploy config
+docs/superpowers/ Original spec + implementation plan
 ```
