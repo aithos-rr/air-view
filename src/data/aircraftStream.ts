@@ -1,4 +1,5 @@
 import type { AircraftRaw, RefreshState } from '@/types';
+import type { BoundingBox } from './openSkyAuth';
 import { fetchStates } from './openSkyClient';
 
 const REFRESH_INTERVALS: Record<RefreshState, number> = {
@@ -11,6 +12,12 @@ export interface StreamOptions {
   onBatch: (aircraft: AircraftRaw[]) => void;
   onError?: (error: Error) => void;
   getRefreshState: () => RefreshState;
+  /**
+   * Returns the geographic bounding box to filter aircraft by. Returning
+   * null means "no filter" (the whole world — ~14k aircraft). v1 uses a
+   * static Europe bbox; v2 will compute it from camera position.
+   */
+  getBoundingBox?: () => BoundingBox | null;
 }
 
 export function startAircraftStream(opts: StreamOptions): () => void {
@@ -20,7 +27,8 @@ export function startAircraftStream(opts: StreamOptions): () => void {
   async function tick(): Promise<void> {
     if (stopped) return;
     try {
-      const result = await fetchStates();
+      const bbox = opts.getBoundingBox?.() ?? null;
+      const result = await fetchStates(bbox);
       if (stopped) return;
       opts.onBatch(result.aircraft);
     } catch (e) {

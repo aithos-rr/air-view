@@ -39,6 +39,22 @@ OPENSKY_CLIENT_SECRET=<your-client-secret>
 The edge function (`api/states.ts`) handles the token exchange and refresh
 automatically — the credentials never touch the browser.
 
+## Geographic filter (v1)
+
+The OpenSky feed serves the entire planet (~14 000 aircraft simultaneously)
+which crushes the renderer to 2-5 fps. v1 ships a **static Europe bounding
+box** by default — `lamin=35, lomin=-15, lamax=72, lomax=45` — narrowing the
+feed to ~2 000 aircraft and restoring 60 fps.
+
+v2 will compute the bbox dynamically from the camera viewpoint with a
+buffer ring, so the visible region always has full detail and offscreen
+aircraft are not downloaded.
+
+The bbox can be overridden per request with query params:
+`GET /api/states?lamin=…&lomin=…&lamax=…&lomax=…`. The server caches per
+bbox key, so multiple regions can be polled concurrently without
+trampling each other's cache.
+
 ## Tech
 
 Vite + React + TypeScript + Three.js (raw, no R3F) + Zustand + Luxon + Vercel edge.

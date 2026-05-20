@@ -25,7 +25,7 @@ if (process.env.NODE_ENV !== 'production') {
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
-import { fetchStatesAuthenticated } from '../src/data/openSkyAuth.js';
+import { fetchStatesAuthenticated, type BoundingBox } from '../src/data/openSkyAuth.js';
 
 // ----------------------------------------------------------------------------
 // Types — mirror the OpenSky /states/all response shape and our normalized form
@@ -49,11 +49,36 @@ interface OpenSkyResponse {
 }
 
 // ----------------------------------------------------------------------------
-// 15-second in-memory response cache (worker-local; protects OpenSky quota)
+// 15-second in-memory response cache, keyed by bbox.
+// Worker-local; protects OpenSky quota. Different bboxes get separate cache
+// entries so the Europe default doesn't poison a request for a custom region.
 // ----------------------------------------------------------------------------
 
-let cache: { body: string; fetchedAt: number } | null = null;
+const cache = new Map<string, { body: string; fetchedAt: number }>();
 const CACHE_TTL_MS = 15_000;
+
+function bboxKey(b: BoundingBox): string {
+  return `${b.lamin}|${b.lomin}|${b.lamax}|${b.lomax}`;
+}
+
+// v1 default: Europe + North Africa + western Middle East.
+// ~2 000 aircraft typical (vs ~14 000 globally).
+// v2: derived from camera position.
+const DEFAULT_BBOX: BoundingBox = { lamin: 35, lomin: -15, lamax: 72, lomax: 45 };
+
+function parseBbox(q: Record<string, string | undefined>): BoundingBox {
+  const n = (s: string | undefined, fallback: number): number => {
+    if (s === undefined) return fallback;
+    const parsed = Number(s);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+  return {
+    lamin: n(q.lamin, DEFAULT_BBOX.lamin),
+    lomin: n(q.lomin, DEFAULT_BBOX.lomin),
+    lamax: n(q.lamax, DEFAULT_BBOX.lamax),
+    lomax: n(q.lomax, DEFAULT_BBOX.lomax),
+  };
+}
 
 // ----------------------------------------------------------------------------
 // Server bootstrap
@@ -91,12 +116,16 @@ app.get('/health', async () => {
 // GET /api/states — proxies OpenSky with OAuth2 + cache
 // ----------------------------------------------------------------------------
 
-app.get('/api/states', async (_req, reply) => {
-  if (cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
+app.get('/api/states', async (req, reply) => {
+  const bbox = parseBbox(req.query as Record<string, string | undefined>);
+  const key = bboxKey(bbox);
+
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.fetchedAt < CACHE_TTL_MS) {
     return reply
       .header('content-type', 'application/json')
       .header('cache-control', 'public, s-maxage=10, stale-while-revalidate=20')
-      .send(cache.body);
+      .send(hit.body);
   }
 
   const clientId = process.env.OPENSKY_CLIENT_ID;
@@ -110,11 +139,12 @@ app.get('/api/states', async (_req, reply) => {
   }
 
   try {
-    const upstream = await fetchStatesAuthenticated({ clientId, clientSecret });
+    const upstream = await fetchStatesAuthenticated({ clientId, clientSecret }, bbox);
     if (!upstream.ok) throw new Error(`OpenSky ${upstream.status}`);
     const data = (await upstream.json()) as OpenSkyResponse;
     const normalised = {
       fetchedAt: new Date().toISOString(),
+      bbox,
       aircraft: (data.states ?? []).map((s) => ({
         icao24: s[0],
         callsign: s[1]?.trim() || null,
@@ -128,18 +158,18 @@ app.get('/api/states', async (_req, reply) => {
       })),
     };
     const body = JSON.stringify(normalised);
-    cache = { body, fetchedAt: Date.now() };
+    cache.set(key, { body, fetchedAt: Date.now() });
     return reply
       .header('content-type', 'application/json')
       .header('cache-control', 'public, s-maxage=10, stale-while-revalidate=20')
       .send(body);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    if (cache) {
+    if (hit) {
       return reply
         .header('content-type', 'application/json')
         .header('x-error', msg)
-        .send(cache.body);
+        .send(hit.body);
     }
     return reply.status(502).send({ error: msg });
   }

@@ -21,6 +21,19 @@ export interface TokenCredentials {
   clientSecret: string;
 }
 
+/**
+ * Geographic bounding box for OpenSky's geographic filter. All four values
+ * are degrees. lamin/lamax are latitudes (-90..+90), lomin/lomax longitudes
+ * (-180..+180). Passing a bbox reduces ~14k global aircraft to a few
+ * thousand visible in the requested window.
+ */
+export interface BoundingBox {
+  lamin: number;
+  lomin: number;
+  lamax: number;
+  lomax: number;
+}
+
 interface TokenResponse {
   access_token: string;
   expires_in: number; // seconds
@@ -69,12 +82,25 @@ export async function getAccessToken(
   return data.access_token;
 }
 
+function buildStatesUrl(bbox: BoundingBox | null): string {
+  if (!bbox) return STATES_URL;
+  const params = new URLSearchParams({
+    lamin: String(bbox.lamin),
+    lomin: String(bbox.lomin),
+    lamax: String(bbox.lamax),
+    lomax: String(bbox.lomax),
+  });
+  return `${STATES_URL}?${params.toString()}`;
+}
+
 export async function fetchStatesAuthenticated(
   creds: TokenCredentials,
+  bbox: BoundingBox | null = null,
   fetchImpl: typeof fetch = fetch
 ): Promise<Response> {
+  const url = buildStatesUrl(bbox);
   let token = await getAccessToken(creds, fetchImpl);
-  let response = await fetchImpl(STATES_URL, {
+  let response = await fetchImpl(url, {
     headers: { Authorization: `Bearer ${token}` },
   });
 
@@ -83,7 +109,7 @@ export async function fetchStatesAuthenticated(
     // Invalidate cache, mint a new one, retry exactly once.
     clearTokenCache();
     token = await getAccessToken(creds, fetchImpl);
-    response = await fetchImpl(STATES_URL, {
+    response = await fetchImpl(url, {
       headers: { Authorization: `Bearer ${token}` },
     });
   }

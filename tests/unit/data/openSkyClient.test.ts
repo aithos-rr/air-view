@@ -43,4 +43,19 @@ describe('fetchStates', () => {
     );
     await expect(fetchStates()).rejects.toThrow(/502/);
   });
+
+  it('appends bbox as query params when provided', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ fetchedAt: '2026-05-20T00:00:00Z', aircraft: [] }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+    await fetchStates({ lamin: 35, lomin: -15, lamax: 72, lomax: 45 });
+    const [url] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/api/states?');
+    expect(url).toContain('lamin=35');
+    expect(url).toContain('lomin=-15');
+    expect(url).toContain('lamax=72');
+    expect(url).toContain('lomax=45');
+  });
 });

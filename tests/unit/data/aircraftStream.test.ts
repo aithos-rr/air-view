@@ -68,6 +68,27 @@ describe('startAircraftStream', () => {
     stop();
   });
 
+  it('passes the bounding box from getBoundingBox to fetchStates', async () => {
+    const onBatch = vi.fn();
+    const bbox = { lamin: 35, lomin: -15, lamax: 72, lomax: 45 };
+    const stop = startAircraftStream({
+      onBatch,
+      getRefreshState: () => 'active',
+      getBoundingBox: () => bbox,
+    });
+    await flushMicrotasks();
+    expect(client.fetchStates).toHaveBeenCalledWith(bbox);
+    stop();
+  });
+
+  it('passes null bbox when getBoundingBox is omitted', async () => {
+    const onBatch = vi.fn();
+    const stop = startAircraftStream({ onBatch, getRefreshState: () => 'active' });
+    await flushMicrotasks();
+    expect(client.fetchStates).toHaveBeenCalledWith(null);
+    stop();
+  });
+
   it('stop() cancels future fetches', async () => {
     const onBatch = vi.fn();
     const stop = startAircraftStream({ onBatch, getRefreshState: () => 'active' });

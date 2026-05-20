@@ -81,6 +81,7 @@ describe('fetchStatesAuthenticated', () => {
 
     const response = await fetchStatesAuthenticated(
       { clientId: 'a', clientSecret: 'b' },
+      null,
       mockFetch as unknown as typeof fetch
     );
 
@@ -112,6 +113,7 @@ describe('fetchStatesAuthenticated', () => {
 
     const response = await fetchStatesAuthenticated(
       { clientId: 'a', clientSecret: 'b' },
+      null,
       mockFetch as unknown as typeof fetch
     );
 
@@ -122,6 +124,29 @@ describe('fetchStatesAuthenticated', () => {
     const [finalUrl, finalInit] = mockFetch.mock.calls[3] as [string, RequestInit];
     expect(finalUrl).toBe(STATES_URL);
     expect((finalInit.headers as Record<string, string>).Authorization).toBe('Bearer tok-new');
+  });
+
+  it('appends lamin/lomin/lamax/lomax query params when bbox is provided', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ access_token: 'tok-bbox', expires_in: 1800, token_type: 'Bearer' }),
+      })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) });
+
+    await fetchStatesAuthenticated(
+      { clientId: 'a', clientSecret: 'b' },
+      { lamin: 35, lomin: -15, lamax: 72, lomax: 45 },
+      mockFetch as unknown as typeof fetch
+    );
+
+    const [url] = mockFetch.mock.calls[1] as [string, RequestInit];
+    expect(url).toContain('lamin=35');
+    expect(url).toContain('lomin=-15');
+    expect(url).toContain('lamax=72');
+    expect(url).toContain('lomax=45');
+    expect(url.startsWith(STATES_URL)).toBe(true);
   });
 
   it('does not retry beyond once on persistent 401', async () => {
@@ -140,6 +165,7 @@ describe('fetchStatesAuthenticated', () => {
 
     const response = await fetchStatesAuthenticated(
       { clientId: 'a', clientSecret: 'b' },
+      null,
       mockFetch as unknown as typeof fetch
     );
 
