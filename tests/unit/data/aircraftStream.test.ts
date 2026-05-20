@@ -43,23 +43,23 @@ describe('startAircraftStream', () => {
     stop();
   });
 
-  it('schedules next fetch at 15s when state is active', async () => {
+  it('schedules next fetch at 30s when state is active', async () => {
     const onBatch = vi.fn();
     const stop = startAircraftStream({ onBatch, getRefreshState: () => 'active' });
     await flushMicrotasks();
     expect(client.fetchStates).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(15_000);
+    vi.advanceTimersByTime(30_000);
     await flushMicrotasks();
     expect(client.fetchStates).toHaveBeenCalledTimes(2);
     stop();
   });
 
-  it('schedules next fetch at 60s when state is background', async () => {
+  it('schedules next fetch at 120s when state is background', async () => {
     const onBatch = vi.fn();
     const stop = startAircraftStream({ onBatch, getRefreshState: () => 'background' });
     await flushMicrotasks();
     expect(client.fetchStates).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(59_999);
+    vi.advanceTimersByTime(119_999);
     await flushMicrotasks();
     expect(client.fetchStates).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(1);

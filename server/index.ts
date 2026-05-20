@@ -57,26 +57,32 @@ interface OpenSkyResponse {
 const cache = new Map<string, { body: string; fetchedAt: number }>();
 const CACHE_TTL_MS = 15_000;
 
-function bboxKey(b: BoundingBox): string {
+const GLOBAL_KEY = 'global';
+
+function bboxKey(b: BoundingBox | null): string {
+  if (b === null) return GLOBAL_KEY;
   return `${b.lamin}|${b.lomin}|${b.lamax}|${b.lomax}`;
 }
 
-// v1 default: Europe + North Africa + western Middle East.
-// ~2 000 aircraft typical (vs ~14 000 globally).
-// v2: derived from camera position.
-const DEFAULT_BBOX: BoundingBox = { lamin: 35, lomin: -15, lamax: 72, lomax: 45 };
-
-function parseBbox(q: Record<string, string | undefined>): BoundingBox {
-  const n = (s: string | undefined, fallback: number): number => {
+// v1 final: default is the GLOBAL feed (no bbox).
+// Clients can still request a bbox via query params — this will be the
+// hook for v2's camera-driven filter.
+function parseBbox(q: Record<string, string | undefined>): BoundingBox | null {
+  // If no bbox query params are present at all → return null (global feed)
+  if (q.lamin === undefined && q.lomin === undefined && q.lamax === undefined && q.lomax === undefined) {
+    return null;
+  }
+  // If partial params are present, fill in sensible defaults (-90/+90 lat, -180/+180 lon)
+  const parse = (s: string | undefined, fallback: number): number => {
     if (s === undefined) return fallback;
     const parsed = Number(s);
     return Number.isFinite(parsed) ? parsed : fallback;
   };
   return {
-    lamin: n(q.lamin, DEFAULT_BBOX.lamin),
-    lomin: n(q.lomin, DEFAULT_BBOX.lomin),
-    lamax: n(q.lamax, DEFAULT_BBOX.lamax),
-    lomax: n(q.lomax, DEFAULT_BBOX.lomax),
+    lamin: parse(q.lamin, -90),
+    lomin: parse(q.lomin, -180),
+    lamax: parse(q.lamax, 90),
+    lomax: parse(q.lomax, 180),
   };
 }
 

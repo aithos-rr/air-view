@@ -15,13 +15,16 @@ import { GLOBE_RADIUS } from './geoHelpers';
 const CRUISING_BASE: [number, number, number] = [1.0, 0.902, 0.769];
 const SELECTED_BASE: [number, number, number] = [0.16, 0.59, 1.0];
 
-// Buffer pool sized for the worst case: bbox can hold ~3 000 aircraft, each
-// with up to MAX_TRAIL_POINTS positions (oldest + ... + current). Each trail
-// becomes (TRAIL_POINTS - 1) segments × 2 vertices each.
-const MAX_AIRCRAFT = 3000;
+// Buffer pool sized for the global feed worst case (~14 000 aircraft + headroom).
+// Each trail becomes (TRAIL_POINTS - 1) segments × 2 vertices each. Memory cost:
+//   positions: 18 000 × 5 × 2 × 3 × 4 B  ≈ 2.16 MB
+//   colors:    18 000 × 5 × 2 × 3 × 4 B  ≈ 2.16 MB
+// Trascurabile per un browser moderno; evita riallocazioni quando l'utente
+// torna sull'app dopo molte ore di trail history accumulata.
+const MAX_AIRCRAFT = 18000;
 const MAX_TRAIL_POINTS = 6;
 const MAX_SEGMENTS_PER_AC = MAX_TRAIL_POINTS - 1;
-const MAX_VERTICES = MAX_AIRCRAFT * MAX_SEGMENTS_PER_AC * 2; // 30 000
+const MAX_VERTICES = MAX_AIRCRAFT * MAX_SEGMENTS_PER_AC * 2; // 180 000
 
 const POSITION_FLOATS = MAX_VERTICES * 3;
 const COLOR_FLOATS = MAX_VERTICES * 3;

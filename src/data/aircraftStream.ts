@@ -2,10 +2,17 @@ import type { AircraftRaw, RefreshState } from '@/types';
 import type { BoundingBox } from './openSkyAuth';
 import { fetchStates } from './openSkyClient';
 
+// v1 final: global feed (no bbox) returns ~2 MB per fetch. Doubled the
+// adaptive intervals so we stay well inside OpenSky's daily credit budget
+// (~4 000 fetches/day with the registered tier) and avoid hammering the
+// browser with a 2 MB JSON parse every few seconds.
+//   active:     30 s — user is interacting, prioritise freshness
+//   idle:       60 s — no recent interaction, slow down (dev default)
+//   background: 120 s — tab hidden, minimal pulse (prod with hidden tabs)
 const REFRESH_INTERVALS: Record<RefreshState, number> = {
-  active: 15_000,
-  idle: 30_000,
-  background: 60_000,
+  active: 30_000,
+  idle: 60_000,
+  background: 120_000,
 };
 
 export interface StreamOptions {

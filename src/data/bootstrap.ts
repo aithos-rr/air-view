@@ -3,14 +3,12 @@ import { loadRoutesFromBundle } from './routeLookup';
 import { loadAirportsFromBundle } from './airportLookup';
 import { startAircraftStream } from './aircraftStream';
 import { resolveFlight } from './resolveFlight';
-import type { BoundingBox } from './openSkyAuth';
 import { useAircraftStore } from '@/state/aircraftStore';
 import type { Aircraft, RefreshState } from '@/types';
 
-// v1 default: Europe + North Africa + western Middle East.
-// ~2 000 aircraft typical (vs ~14 000 globally) — keeps the renderer at 60 fps.
-// v2: this will be derived from the camera viewpoint + a buffer ring.
-const EUROPE_BBOX: BoundingBox = { lamin: 35, lomin: -15, lamax: 72, lomax: 45 };
+// v1 final: fetch the global feed (~14 000 aircraft, 2 MB per fetch).
+// The renderer is now buffer-pool optimized and can handle the full count.
+// v2 will introduce camera-driven bbox so only the visible region is fetched.
 
 let stopStream: (() => void) | null = null;
 let lastInteraction = 0;
@@ -43,7 +41,8 @@ export async function bootstrapData(): Promise<void> {
 
   stopStream = startAircraftStream({
     getRefreshState,
-    getBoundingBox: () => EUROPE_BBOX,
+    // No getBoundingBox in v1 → server returns the global feed.
+    // v2: pass a function that returns the camera-derived bbox.
     onBatch: (raws) => {
       const enriched: Aircraft[] = raws.map((r) => {
         const resolved = resolveFlight(r.callsign);

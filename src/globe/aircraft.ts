@@ -15,7 +15,9 @@ import { GLOBE_RADIUS } from './geoHelpers';
 const CRUISING_COLOR: [number, number, number] = [1.0, 0.902, 0.769]; // #ffe6c4
 const SELECTED_COLOR: [number, number, number] = [0.16, 0.59, 1.0]; // sky-leaning Action Blue
 const DEG = Math.PI / 180;
-const MAX_AIRCRAFT = 3000;
+// Sized for the global feed (~14 000 aircraft) + headroom.
+// Memory cost: 18 000 × (3 + 3 + 1) × 4 B ≈ 500 KB. Trascurabile.
+const MAX_AIRCRAFT = 18000;
 const SCENE_BOUND_RADIUS = GLOBE_RADIUS + 0.5;
 
 interface PointParams {

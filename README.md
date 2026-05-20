@@ -39,21 +39,22 @@ OPENSKY_CLIENT_SECRET=<your-client-secret>
 The edge function (`api/states.ts`) handles the token exchange and refresh
 automatically — the credentials never touch the browser.
 
-## Geographic filter (v1)
+## Geographic filter
 
-The OpenSky feed serves the entire planet (~14 000 aircraft simultaneously)
-which crushes the renderer to 2-5 fps. v1 ships a **static Europe bounding
-box** by default — `lamin=35, lomin=-15, lamax=72, lomax=45` — narrowing the
-feed to ~2 000 aircraft and restoring 60 fps.
+**v1: global fetch, ~14 000 aircraft.** The renderer uses pre-allocated
+buffer pools (single `LineSegments` for trails, single `Points` for
+aircraft, all sized for 18 000 slots) so the full global feed runs at
+40–55 fps. Adaptive refresh is intentionally slow — 30 s active / 60 s
+idle / 120 s background — so a 2 MB JSON payload doesn't hammer the
+browser parser nor exhaust OpenSky's daily credit budget.
 
-v2 will compute the bbox dynamically from the camera viewpoint with a
-buffer ring, so the visible region always has full detail and offscreen
-aircraft are not downloaded.
-
-The bbox can be overridden per request with query params:
-`GET /api/states?lamin=…&lomin=…&lamax=…&lomax=…`. The server caches per
-bbox key, so multiple regions can be polled concurrently without
-trampling each other's cache.
+**v2: camera-driven bbox.** The plan is to derive a bounding box from
+the camera viewpoint with a buffer ring around it, fetching only the
+visible region for sub-second freshness. The plumbing is already in
+place: pass `getBoundingBox: () => { lamin, lomin, lamax, lomax }` to
+`startAircraftStream`, or hit the API directly with
+`GET /api/states?lamin=…&lomin=…&lamax=…&lomax=…`. The server caches
+per bbox key, so concurrent regions don't trample each other.
 
 ## Tech
 
