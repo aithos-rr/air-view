@@ -1,0 +1,59 @@
+# Claude Code local settings (contains personal permission overrides)
+.claude/settings.local.json
+
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+.yarn/
+
+# Build outputs
+dist/
+build/
+out/
+.next/
+.nuxt/
+.svelte-kit/
+.vite/
+.turbo/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python (in caso di backend Python)
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Coverage
+coverage/
+.nyc_output/
+
+# Misc
+.cache/
+*.tsbuildinfo
+                                                          
+#Superpowers brainstorm working files                     
+.superpowers/   
