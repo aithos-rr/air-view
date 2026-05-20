@@ -25,6 +25,7 @@ if (process.env.NODE_ENV !== 'production') {
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import fastifyStatic from '@fastify/static';
 import { fetchStatesAuthenticated, type BoundingBox } from '../src/data/openSkyAuth.js';
 
 // ----------------------------------------------------------------------------
@@ -180,6 +181,38 @@ app.get('/api/states', async (req, reply) => {
     return reply.status(502).send({ error: msg });
   }
 });
+
+// ----------------------------------------------------------------------------
+// Static frontend (production only) — serves the Vite build from dist/.
+// In dev (npm run dev:full) Vite handles this on :5173 and proxies /api to us.
+// We register this AFTER the API routes so /api/* and /health still resolve
+// to their handlers, then add a setNotFoundHandler that returns index.html
+// for any other path (SPA-friendly).
+// ----------------------------------------------------------------------------
+
+if (NODE_ENV === 'production') {
+  const distDir = resolve(process.cwd(), 'dist');
+  if (existsSync(distDir)) {
+    await app.register(fastifyStatic, {
+      root: distDir,
+      prefix: '/',
+      wildcard: false, // we serve the SPA fallback ourselves below
+      decorateReply: true,
+    });
+
+    app.setNotFoundHandler((req, reply) => {
+      // Genuine 404 for API + health: don't masquerade as the SPA
+      if (req.url.startsWith('/api') || req.url.startsWith('/health')) {
+        return reply.status(404).send({ error: 'not found' });
+      }
+      return reply.sendFile('index.html');
+    });
+
+    app.log.info(`Serving static frontend from ${distDir}`);
+  } else {
+    app.log.warn(`NODE_ENV=production but ${distDir} does not exist — no static files served`);
+  }
+}
 
 // ----------------------------------------------------------------------------
 // Listen

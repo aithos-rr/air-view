@@ -9,6 +9,7 @@
     "dev:full": "concurrently --names \"vite,server\" --prefix-colors \"cyan,magenta\" \"npm:dev\" \"npm:server\"",
     "build": "tsc --noEmit && vite build",
     "build:server": "tsc -p tsconfig.server.json",
+    "build:all": "npm run build && npm run build:server",
     "start": "node dist-server/server/index.js",
     "preview": "vite preview",
     "test": "vitest",
@@ -17,6 +18,7 @@
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",
+    "@fastify/static": "^9.1.3",
     "fastify": "^5.8.5",
     "luxon": "^3.5.0",
     "react": "^18.3.1",

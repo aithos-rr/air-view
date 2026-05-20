@@ -1,6 +1,8 @@
 [build]
 builder = "NIXPACKS"
-buildCommand = "npm install && npm run build:server"
+# build:all = vite build (→ dist/) + tsc -p tsconfig.server.json (→ dist-server/)
+# The server serves dist/ statically in production, so both outputs must exist.
+buildCommand = "npm install && npm run build:all"
 
 [deploy]
 startCommand = "npm run start"
