@@ -138,6 +138,43 @@ app.get('/health', async () => {
 });
 
 // ----------------------------------------------------------------------------
+// /api/diagnose — outbound connectivity probe.
+// Temporary diagnostic for the Railway egress timeout. Tests four targets in
+// parallel and returns success / cause / time-ms for each. Remove once the
+// root cause is identified.
+// ----------------------------------------------------------------------------
+async function probe(url: string): Promise<{ url: string; ok: boolean; status?: number; ms: number; cause?: string; code?: string }> {
+  const t0 = Date.now();
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(10_000), method: 'HEAD' });
+    return { url, ok: true, status: res.status, ms: Date.now() - t0 };
+  } catch (e) {
+    const cause =
+      e && typeof e === 'object' && 'cause' in e
+        ? ((e as { cause: unknown }).cause as { message?: string; code?: string })
+        : null;
+    return {
+      url,
+      ok: false,
+      ms: Date.now() - t0,
+      cause: cause?.message ?? (e instanceof Error ? e.message : String(e)),
+      code: cause?.code,
+    };
+  }
+}
+
+app.get('/api/diagnose', async () => {
+  const targets = [
+    'https://www.google.com',
+    'https://api.github.com',
+    'https://auth.opensky-network.org/',
+    'https://opensky-network.org/api/states/all',
+  ];
+  const results = await Promise.all(targets.map(probe));
+  return { node: process.version, results };
+});
+
+// ----------------------------------------------------------------------------
 // GET /api/states — proxies OpenSky with OAuth2 + cache
 // ----------------------------------------------------------------------------
 
