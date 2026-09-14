@@ -79,6 +79,7 @@ export interface AircraftRaw {
   modelCode: string | null;           // ICAO type code, e.g. "A320"
   modelDesc: string | null;           // long name; only adsb.fi ships it
   route: FlightRouteLite | null;      // filled by the server; null until Task 6
+  complete: boolean;                  // computed server-side by isComplete(); false from adapters
 }
 ```
 
@@ -108,32 +109,52 @@ export function makeAircraftRaw(overrides: Partial<AircraftRaw> = {}): AircraftR
     modelCode: 'B789',
     modelDesc: null,
     route: null,
+    complete: false,
     ...overrides,
   };
 }
 ```
 
-- [ ] **Step 3: Riparare i test esistenti che costruiscono `AircraftRaw`**
+- [ ] **Step 3: Riparare TUTTI i literal `AircraftRaw`, non solo quelli nei test**
 
-I nuovi campi obbligatori rompono i literal già presenti. Trovarli:
+I nuovi campi obbligatori rompono ogni literal esistente. Cercare in `src/` **e** in `tests/`, non solo nei test:
 
 ```bash
-grep -rn "icao24:" tests/
+grep -rn "icao24:" src/ tests/
 ```
 
-In `tests/unit/state/stores.test.ts` e `tests/unit/data/aircraftStream.test.ts`, sostituire ogni literal `AircraftRaw` con una chiamata a `makeAircraftRaw({ ... })` passando solo i campi che quel test controlla davvero, e aggiungere in cima:
+Sono sei, non cinque: cinque nei test e **uno in `src/data/adsbSource.ts:75`**, il modulo che questo task sostituisce. Quest'ultimo non va riparato ma rimosso subito, prima di qualunque verifica — altrimenti `tsc --noEmit` fallisce per un file destinato a sparire:
+
+```bash
+git rm src/data/adsbSource.ts tests/unit/data/adsbSource.test.ts
+```
+
+In `server/index.ts`, sostituire contestualmente l'import
+`import { fetchAdsbStates } from '../src/data/adsbSource.js';`
+con
+`import { adsbLolSource } from '../src/data/sources/adsbLol.js';`
+e la chiamata
+`const result = await fetchAdsbStates(bbox);`
+con
+`const result = await adsbLolSource.fetchRegion({ lat: 0, lon: 0 }, 10_000);`
+
+(il modulo `adsbLol.ts` viene creato allo Step 9; fino ad allora `build:all` segnalerà l'import non risolto, il che è atteso e si risolve da sé).
+
+In `tests/unit/state/stores.test.ts` e `tests/unit/data/aircraftStream.test.ts`, sostituire ogni literal `AircraftRaw` con una chiamata a `makeAircraftRaw({ ... })` passando solo i campi che quel test controlla davvero, e aggiungere in cima a **ciascuno dei due file**:
 
 ```ts
 import { makeAircraftRaw } from '../../helpers/aircraft';
 ```
 
-(adeguare la profondità del percorso relativo al file). Verificare con:
+(adeguare la profondità del percorso relativo al file). Il Task 8 tornerà su `stores.test.ts` ma **non** ri-aggiungerà questo import: è già qui.
+
+Verificare con:
 
 ```bash
 npx tsc --noEmit
 ```
 
-Expected: nessun errore `TS2739`.
+Expected: nessun errore `TS2739`. Se ne resta uno in `src/data/adsbSource.ts`, il `git rm` di questo step non è stato eseguito.
 
 - [ ] **Step 4: Dichiarare i nuovi moduli al programma del server**
 
@@ -344,6 +365,7 @@ function normalise(ac: AdsbLolAircraft, nowMs: number): AircraftRaw {
     modelCode: ac.t?.trim() || null,
     modelDesc: null, // adsb.lol does not ship a long model name
     route: null, // filled server-side from adsbdb
+    complete: false, // computed server-side once the route is attached
   };
 }
 
@@ -373,27 +395,9 @@ export const adsbLolSource: AircraftSource = {
 Run: `npx vitest run tests/unit/data/sources/adsbLol.test.ts`
 Expected: PASS, 10 test
 
-- [ ] **Step 11: Sostituire il vecchio modulo nel server**
+- [ ] **Step 11: Verificare ENTRAMBI i programmi TypeScript**
 
-In `server/index.ts`, sostituire l'import
-`import { fetchAdsbStates } from '../src/data/adsbSource.js';`
-con
-`import { adsbLolSource } from '../src/data/sources/adsbLol.js';`
-
-e nel gestore `/api/states` sostituire
-`const result = await fetchAdsbStates(bbox);`
-con
-`const result = await adsbLolSource.fetchRegion({ lat: 0, lon: 0 }, 10_000);`
-
-Il parametro `bbox` resta ignorato: il fetch camera-driven arriva nel Piano 2.
-
-- [ ] **Step 12: Rimuovere il modulo obsoleto e il suo test**
-
-```bash
-git rm src/data/adsbSource.ts tests/unit/data/adsbSource.test.ts
-```
-
-- [ ] **Step 13: Verificare ENTRAMBI i programmi TypeScript**
+Il vecchio modulo e la sua sostituzione nel server sono già stati gestiti allo Step 3. Il parametro `bbox` del gestore resta ignorato: il fetch camera-driven arriva nel Piano 2.
 
 ```bash
 npm run build:all && npm test -- --run
@@ -403,7 +407,7 @@ Expected: `tsc --noEmit` pulito, `vite build` pulito, **`tsc -p tsconfig.server.
 
 `npm run build:all` e non `npm run build`: il secondo non type-checka il server, e nella prima stesura di questo piano ha nascosto un errore di import fino a quattro task più avanti. Se `build:server` fallisce con `TS2307` (`Cannot find module '@/types'`) o `TS2835` (estensione mancante), l'errore è negli import dei nuovi moduli: rileggere le Global Constraints.
 
-- [ ] **Step 14: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
 git add -A
@@ -551,6 +555,7 @@ function normalise(ac: AdsbFiAircraft, nowMs: number): AircraftRaw {
     modelCode: ac.t?.trim() || null,
     modelDesc: ac.desc?.trim() || null,
     route: null,
+    complete: false,
   };
 }
 
@@ -945,11 +950,24 @@ describe('createFeedState — health', () => {
     expect(s.health().status).toBe('degraded');
   });
 
-  it('stays starting even after failures, if nothing ever succeeded', () => {
-    const s = createFeedState({ now: () => 1_000_000 });
+  it('stays starting during the grace window even after failures', () => {
+    let clock = 1_000_000;
+    const s = createFeedState({ startupGraceMs: 180_000, now: () => clock });
     s.recordFailure('adsb-lol: HTTP 403');
+    clock += 60_000;
     expect(s.health().status).toBe('starting');
     expect(s.health().lastError).toMatch(/403/);
+  });
+
+  it('gives up on starting once the grace window expires — otherwise a boot-time outage hides forever', () => {
+    // Without this, the exact 2026-08-20 scenario (adsb.lol 403 from the
+    // first second) would leave /health answering 200 indefinitely: the
+    // very blindness this plan exists to remove.
+    let clock = 1_000_000;
+    const s = createFeedState({ startupGraceMs: 180_000, now: () => clock });
+    s.recordFailure('adsb-lol: HTTP 403');
+    clock += 181_000;
+    expect(s.health().status).toBe('degraded');
   });
 
   it('surfaces the last error without prematurely declaring degraded', () => {
@@ -996,12 +1014,17 @@ export interface FeedStateOptions {
   maxStaleMs?: number;
   /** Age since the last success beyond which health reports degraded. */
   degradedAfterMs?: number;
+  /** How long 'starting' is tolerated before a feed that never came up is called degraded. */
+  startupGraceMs?: number;
   now?: () => number;
 }
 
 const DEFAULT_MAX_FRESH_MS = 90_000;
 const DEFAULT_MAX_STALE_MS = 600_000;
 const DEFAULT_DEGRADED_AFTER_MS = 300_000;
+// Well beyond railway.toml's healthcheckTimeout of 100s, so the deploy has
+// room to come up, but finite: a feed that never starts must not hide.
+const DEFAULT_STARTUP_GRACE_MS = 180_000;
 
 /**
  * Cache and health state for the upstream feed.
@@ -1021,7 +1044,9 @@ export function createFeedState(opts: FeedStateOptions = {}): FeedState {
   const maxFreshMs = opts.maxFreshMs ?? DEFAULT_MAX_FRESH_MS;
   const maxStaleMs = opts.maxStaleMs ?? DEFAULT_MAX_STALE_MS;
   const degradedAfterMs = opts.degradedAfterMs ?? DEFAULT_DEGRADED_AFTER_MS;
+  const startupGraceMs = opts.startupGraceMs ?? DEFAULT_STARTUP_GRACE_MS;
   const now = opts.now ?? Date.now;
+  const startedAt = now();
 
   const entries = new Map<string, { body: string; storedAt: number }>();
   let lastSuccessAt: number | null = null;
@@ -1049,7 +1074,11 @@ export function createFeedState(opts: FeedStateOptions = {}): FeedState {
 
     health() {
       if (lastSuccessAt === null) {
-        return { status: 'starting', lastSuccessAt: null, feedAgeSeconds: null, lastError };
+        // 'starting' is a grace period, not a permanent excuse: a feed that
+        // never comes up must eventually report failure, or a boot-time
+        // outage stays invisible exactly as it did for 25 days in v1.
+        const status: FeedStatus = now() - startedAt > startupGraceMs ? 'degraded' : 'starting';
+        return { status, lastSuccessAt: null, feedAgeSeconds: null, lastError };
       }
       const ageMs = now() - lastSuccessAt;
       return {
@@ -1077,12 +1106,9 @@ import { createFeedState } from './feedState.js';
 
 const feed = createFeedState();
 const GLOBAL_KEY = 'global';
-
-function cacheKey(b: BoundingBox | null): string {
-  if (b === null) return GLOBAL_KEY;
-  return `${b.lamin}|${b.lomin}|${b.lamax}|${b.lomax}`;
-}
 ```
+
+**Non** derivare la chiave dal bbox. Il Piano 1 serve un solo sweep globale e l'unico scrittore della cache è il poller, che scrive sotto `GLOBAL_KEY`: una chiave di lettura derivata dal bbox mancherebbe sempre, scatenerebbe uno sweep da ~7 MB a ogni richiesta e risponderebbe comunque 503. `parseBbox` resta, ma solo per l'eco nel corpo della risposta. Il bbox diventa una chiave vera nel Piano 2, insieme alla cache a tile.
 
 - [ ] **Step 6: Estrarre il ciclo di aggiornamento e farlo girare da solo**
 
@@ -1121,28 +1147,51 @@ const FEED_REFRESH_MS = 60_000;
 
 - [ ] **Step 7: Sostituire il gestore `/api/states`**
 
-```ts
-app.get('/api/states', async (req, reply) => {
-  const bbox = parseBbox(req.query as Record<string, string | undefined>);
-  const key = cacheKey(bbox);
+Tre dettagli non ovvi, tutti imposti da difetti trovati in revisione. La chiave è sempre `GLOBAL_KEY`. Il refresh sincrono è deduplicato da una promessa condivisa, altrimenti N richieste concorrenti su cache fredda diventano N sweep da 7 MB verso un fornitore gratuito — lo stesso tipo di traffico che ci è valso il 403. E il flag `stale` va **nel corpo**, non solo nell'header: `statesClient.ts` legge solo `res.json()` e un header non lo vedrebbe mai.
 
-  const cached = feed.get(key);
+```ts
+let inFlightRefresh: Promise<void> | null = null;
+
+/** Collapses concurrent cold-cache requests into a single upstream sweep. */
+function refreshOnce(): Promise<void> {
+  if (inFlightRefresh === null) {
+    inFlightRefresh = refreshGlobalFeed().finally(() => {
+      inFlightRefresh = null;
+    });
+  }
+  return inFlightRefresh;
+}
+
+/** Injects the freshness flag into an already-serialised payload. */
+function withStaleFlag(body: string, stale: boolean): string {
+  return `{"stale":${stale},${body.slice(1)}`;
+}
+
+app.get('/api/states', async (req, reply) => {
+  // parseBbox is kept only to echo the request back. Plan 1 serves one
+  // global sweep, so the cache key is constant; the bbox becomes a real
+  // key in Plan 2, together with the tile cache.
+  const bbox = parseBbox(req.query as Record<string, string | undefined>);
+  void bbox;
+
+  const cached = feed.get(GLOBAL_KEY);
   if (cached !== null) {
     return reply
       .header('content-type', 'application/json')
       .header('cache-control', 'public, s-maxage=10, stale-while-revalidate=20')
       .header('x-feed-stale', String(cached.stale))
-      .send(cached.body);
+      .send(withStaleFlag(cached.body, cached.stale));
   }
 
   // Cache empty or past the stale ceiling: fetch synchronously this once.
-  await refreshGlobalFeed();
-  const afterFetch = feed.get(key);
+  await refreshOnce();
+  const afterFetch = feed.get(GLOBAL_KEY);
   if (afterFetch !== null) {
     return reply
       .header('content-type', 'application/json')
+      .header('cache-control', 'public, s-maxage=10, stale-while-revalidate=20')
       .header('x-feed-stale', String(afterFetch.stale))
-      .send(afterFetch.body);
+      .send(withStaleFlag(afterFetch.body, afterFetch.stale));
   }
 
   // No stale fallback of unbounded age: that is what hid the v1 outage for
@@ -1215,6 +1264,15 @@ curl -s -D- -o /dev/null localhost:3000/api/states | grep -i "x-feed-stale\|HTTP
 ```
 
 Expected: `"status":"ok"` con `feedAgeSeconds` basso; `/api/states` risponde 200 con `x-feed-stale: false`. Nei log del server deve comparire `feed refreshed` **senza che nessuno abbia chiamato `/api/states`**: è la prova che il server si alimenta da solo.
+
+Poi il ramo che una revisione ha trovato rotto — una richiesta con parametri bbox:
+
+```bash
+curl -s -o /dev/null -w "con bbox: HTTP %{http_code}\n" 'localhost:3000/api/states?lamin=35&lomin=-15&lamax=72&lomax=45'
+curl -s localhost:3000/api/states | head -c 60
+```
+
+Expected: **HTTP 200**, non 503, e nessun `feed refreshed` aggiuntivo nei log per quella richiesta. Il corpo deve iniziare con `{"stale":false,` — il flag sta nel corpo e non solo nell'header, perché il client legge solo il JSON.
 
 - [ ] **Step 12: Commit**
 
@@ -1546,17 +1604,22 @@ Expected: PASS, 9 test
 
 - [ ] **Step 5: Verificare contro adsbdb reale, senza mock**
 
+`npx tsx -e` compila verso CJS, dove il top-level await non esiste: lo script va in un file `.mts`, che forza l'output ESM.
+
 ```bash
-npx tsx -e "
-import { createRouteResolver } from './server/routeResolver.ts';
+cat > /tmp/check-routes.mts <<'EOF'
+import { createRouteResolver } from './server/routeResolver.js';
 const r = createRouteResolver({ maxPerPump: 5 });
 r.enqueue(['BAW274', 'RYR1234', 'UAE2', 'NJE004M', 'MORPH16']);
 await r.pump();
 console.log('stats:', r.stats());
 console.log('BAW274:', r.get('BAW274'));
 console.log('NJE004M (atteso null, unknown):', r.get('NJE004M'));
-"
+EOF
+npx tsx /tmp/check-routes.mts
 ```
+
+È l'unico passo che prova contro adsbdb reale il ramo più delicato della feature — il 404 trattato come verdetto — cioè esattamente il difetto che nella prima stesura del piano un mock sbagliato avrebbe nascosto. Non saltarlo.
 
 Expected: `resolved: 3, unknown: 2, queued: 0`; `BAW274` con origine e destinazione reali; `NJE004M` null e contato fra gli unknown — non ri-accodato. Se `unknown` è 0 e `queued` è 2, il ramo 404 non funziona: rileggi lo Step 3.
 
@@ -1728,6 +1791,32 @@ In `refreshGlobalFeed`, fra l'ottenimento di `result` e la scrittura in cache, a
     routes.enqueue(callsigns);
 ```
 
+Subito dopo il ciclo, marcare la completezza. Senza questo passo `isComplete` resterebbe codice morto: il titolo del task promette di arricchire il payload con la completezza, e `noUnusedLocals` non segnala una funzione esportata mai importata.
+
+```ts
+    for (const ac of result.aircraft) {
+      ac.complete = isComplete(ac);
+    }
+    const completeCount = result.aircraft.filter((ac) => ac.complete).length;
+```
+
+Aggiungere agli import di `server/index.ts`:
+
+```ts
+import { isComplete } from '../src/data/completeness.js';
+```
+
+e a `tsconfig.server.json`, nell'`include`, il percorso `"src/data/completeness.ts"` — senza, il modulo non entra nel programma del server e `build:server` fallisce.
+
+Conservare il conteggio in una variabile di modulo, per esporlo su `/health`:
+
+```ts
+let lastCompleteCount = 0;
+let lastTotalCount = 0;
+```
+
+assegnandole dentro `refreshGlobalFeed` (`lastCompleteCount = completeCount; lastTotalCount = result.aircraft.length;`).
+
 - [ ] **Step 6: Avviare il pump su un timer proprio**
 
 Accanto al timer del feed, dopo `app.listen`:
@@ -1745,7 +1834,10 @@ Nel corpo della risposta di `/health` aggiungere:
 
 ```ts
     routes: routes.stats(),
+    aircraft: { total: lastTotalCount, complete: lastCompleteCount },
 ```
+
+Il rapporto `complete/total` è la misura osservabile della feature: deve assestarsi attorno al 55-58% man mano che la cache delle rotte si riempie. Se resta a zero, `isComplete` non è collegato o le rotte non arrivano.
 
 - [ ] **Step 8: Verificare entrambi i programmi**
 
@@ -1765,7 +1857,20 @@ Attendere qualche minuto senza chiamare nulla, poi:
 curl -s localhost:3000/health | python3 -m json.tool
 ```
 
-Expected: `routes.resolved` cresce di circa 300 al minuto senza alcun traffico; `routes.unknown` cresce anch'esso (i callsign privati e militari); `routes.queued` sale al primo ciclo di feed e poi scende. Verificare che almeno un aereo della risposta abbia `route` non nullo, con origine e destinazione plausibili per il suo callsign.
+Expected: `routes.resolved` cresce di circa 300 al minuto senza alcun traffico; `routes.unknown` cresce anch'esso (i callsign privati e militari); `routes.queued` sale al primo ciclo di feed e poi scende. Il blocco `aircraft` deve mostrare `complete` che cresce verso il 55-58% di `total`: se resta a 0 mentre `routes.resolved` sale, `isComplete` non è collegato al payload.
+
+Verificare anche sul corpo della risposta:
+
+```bash
+curl -s localhost:3000/api/states | python3 -c "
+import json,sys
+d=json.load(sys.stdin); ac=d['aircraft']
+comp=[a for a in ac if a.get('complete')]
+print(f'stale flag nel corpo: {d.get(\"stale\")}')
+print(f'complete: {len(comp)}/{len(ac)}')
+print('esempio:', {k:comp[0][k] for k in ('callsign','registration','modelCode','route')} if comp else 'nessuno ancora')
+"
+```
 
 - [ ] **Step 10: Commit**
 
@@ -1918,7 +2023,7 @@ In `scripts/build-static-data.mjs`, rimuovere il blocco che genera `openflights-
 - [ ] **Step 6: Verificare che non restino riferimenti**
 
 ```bash
-grep -rn "routeLookup\|openflights-routes\|initRoutes\|Route\b" src/ server/ tests/ scripts/ | grep -v "FlightRoute\|flightroute" || echo "nessun riferimento residuo"
+grep -rn "routeLookup\|openflights-routes\|initRoutes" src/ server/ tests/ scripts/ || echo "nessun riferimento residuo"
 npm run build:all && npm test -- --run
 ```
 
@@ -2254,6 +2359,22 @@ const withRoute = ac.filter((a) => a.route).length;
 console.log(`route: ${withRoute} of ${ac.length} (${(100 * withRoute / ac.length).toFixed(1)}%) — grows as the resolver cache fills`);
 if (health.routes) console.log(`resolver: ${JSON.stringify(health.routes)}`);
 
+// The completeness flag must actually reach the payload: isComplete() being
+// written and tested but never wired up is a defect a green suite cannot see.
+if (!('stale' in data)) fail('payload has no "stale" field — the freshness flag is header-only, and the client reads only JSON');
+else pass(`stale flag in body: ${data.stale}`);
+
+const complete = ac.filter((a) => a.complete === true).length;
+if (ac.some((a) => a.complete === undefined)) fail('payload has no "complete" field — isComplete() is not wired into the response');
+else pass(`complete: ${complete} of ${ac.length} (${(100 * complete / ac.length).toFixed(1)}%)`);
+if (withRoute > 0 && complete === 0) fail('routes are attached but no aircraft is marked complete — check isComplete()');
+
+// A request carrying bbox params must not 503 nor trigger its own upstream
+// sweep: the writer and the reader of the cache must agree on the key.
+const bboxRes = await fetch(`${BASE}/api/states?lamin=35&lomin=-15&lamax=72&lomax=45`);
+if (bboxRes.status !== 200) fail(`/api/states with bbox returned HTTP ${bboxRes.status} — cache key mismatch between poller and handler`);
+else pass('bbox request: HTTP 200');
+
 // The v1 bug, asserted directly: no cluster of flights may share one route.
 const counts = new Map();
 for (const a of ac) {
@@ -2330,6 +2451,19 @@ La prima stesura di questo piano è stata respinta da un preflight a quattro len
 | 6 | La cache rotte "converge in pochi minuti": falso di due ordini di grandezza | 8 466 callsign distinti per snapshot; pump legato al cache miss = 0,22 lookup/s = **10,7 ore** | Pump su timer proprio a 5 lookup/s ≈ 28 minuti, poi incrementale; numeri dichiarati nel piano (Task 5, 6) |
 | 7 | Il Task 8 rinominava `openSkyClient` aggiornando due file su tre, e cambiava la firma di `onBatch` senza adeguare l'asserzione del test esistente | `tests/unit/data/aircraftStream.test.ts:3` importa il modulo per lo `spyOn` | Tutti e tre i file elencati, più lo step che adegua `toHaveBeenCalledWith` al secondo argomento (Task 8) |
 | 8 | Il Task 9 ordinava merge su `main` e `push`: un esecutore fedele avrebbe pubblicato in produzione senza autorizzazione, per giunta con un build che non compilava | Regola operativa del progetto; Task 9 Step 5 della prima stesura | Lo step di deploy è sostituito da una consegna esplicita all'utente (Task 9) |
+
+### Seconda tornata di correzioni
+
+La seconda stesura è stata a sua volta sottoposta al preflight: **1 finding critico, 10 major, 17 minori** — contro i 16 critici della prima. Due revisori hanno implementato l'intero piano in una sandbox ed eseguito il server risultante, il che ha prodotto evidenza sperimentale invece che congetture.
+
+| # | Difetto | Evidenza | Correzione |
+|---|---|---|---|
+| 9 | **Critico.** Il poller scrive la cache sotto `GLOBAL_KEY`, il gestore la legge con una chiave derivata dal bbox: ogni richiesta con bbox mancava la cache, scatenava uno sweep da ~7 MB e rispondeva **503 comunque**. Regressione rispetto alla v1, che con bbox risponde 200 | Server del piano eseguito in sandbox: `/api/states` → 200; `/api/states?lamin=35&...` → 503 dopo 1752 ms e un `feed refreshed` da 12 665 aerei | Chiave unica `GLOBAL_KEY` in tutto il Piano 1; `parseBbox` resta solo per l'eco; più una promessa condivisa che fonde i refresh concorrenti in un solo sweep (Task 4) |
+| 10 | Lo stato `starting` non scadeva mai: con adsb.lol in 403 dal primo secondo — cioè lo scenario esatto del guasto — `/health` avrebbe risposto 200 all'infinito, ricreando la cecità che il piano esiste per rimuovere | Lettura del codice: `health()` ritorna `starting` ogni volta che `lastSuccessAt === null` | Finestra di grazia di 180 s, oltre la quale `starting` diventa `degraded` (Task 4) |
+| 11 | Il flag `stale` viveva solo nell'header, ma `statesClient.ts` legge unicamente `res.json()`: il client non l'avrebbe mai visto | Lettura di `src/data/statesClient.ts` | Il flag entra nel corpo della risposta, header incluso per i proxy (Task 4) |
+| 12 | `isComplete()` veniva creato e testato ma **mai importato da nessuno**: codice morto che `noUnusedLocals` non segnala, mentre il titolo del task e il messaggio di commit dichiaravano il contrario | `grep isComplete` sull'intero piano: nessuna occorrenza fuori dal modulo e dal suo test | Il server marca ogni aereo con `complete`, `/health` espone `complete/total`, e lo script del Task 9 fallisce se il campo manca (Task 1, 6, 9) |
+| 13 | Il Task 1 verificava `tsc --noEmit` mentre `src/data/adsbSource.ts:75` conteneva ancora un sesto literal `AircraftRaw`, rimosso solo nove step dopo: la verifica non poteva passare | Sandbox col solo Step 1 applicato: 6 errori `TS2739`, non i 5 dichiarati | La rimozione del modulo e la sostituzione dell'import nel server sono anticipate allo Step 3 (Task 1) |
+| 14 | Il comando di verifica contro adsbdb reale non era eseguibile: `npx tsx -e` compila verso CJS, dove il top-level await non esiste | Natura di `tsx -e`; lo script del piano usa `await` a livello superiore | Script in un file `.mts`, che forza l'output ESM (Task 5) |
 
 ## Cosa resta fuori da questo piano
 
