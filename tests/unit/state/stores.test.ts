@@ -3,6 +3,7 @@ import { useAircraftStore } from '@/state/aircraftStore';
 import { useSelectionStore } from '@/state/selectionStore';
 import { usePanelStore } from '@/state/panelStore';
 import { useA11yStore } from '@/state/a11yStore';
+import { makeAircraftRaw } from '../../helpers/aircraft';
 
 describe('aircraftStore', () => {
   beforeEach(() =>
@@ -12,17 +13,7 @@ describe('aircraftStore', () => {
   it('updateBatch replaces aircraft by icao24', () => {
     const store = useAircraftStore.getState();
     store.updateBatch([
-      {
-        icao24: 'a1',
-        callsign: 'BAW274',
-        longitude: 0,
-        latitude: 0,
-        baroAltitudeFt: 38000,
-        velocityKt: 473,
-        headingDeg: 90,
-        onGround: false,
-        lastContact: 1,
-      },
+      makeAircraftRaw({ icao24: 'a1', callsign: 'BAW274' }),
     ]);
     expect(useAircraftStore.getState().aircraft.size).toBe(1);
     expect(useAircraftStore.getState().aircraft.get('a1')?.callsign).toBe('BAW274');
@@ -31,30 +22,10 @@ describe('aircraftStore', () => {
   it('updateBatch preserves trail history when updating existing aircraft', () => {
     const store = useAircraftStore.getState();
     store.updateBatch([
-      {
-        icao24: 'a1',
-        callsign: 'X',
-        longitude: 0,
-        latitude: 0,
-        baroAltitudeFt: 38000,
-        velocityKt: 473,
-        headingDeg: 90,
-        onGround: false,
-        lastContact: 1,
-      },
+      makeAircraftRaw({ icao24: 'a1', callsign: 'X', longitude: 0, latitude: 0, lastContact: 1 }),
     ]);
     store.updateBatch([
-      {
-        icao24: 'a1',
-        callsign: 'X',
-        longitude: 1,
-        latitude: 1,
-        baroAltitudeFt: 38000,
-        velocityKt: 473,
-        headingDeg: 90,
-        onGround: false,
-        lastContact: 2,
-      },
+      makeAircraftRaw({ icao24: 'a1', callsign: 'X', longitude: 1, latitude: 1, lastContact: 2 }),
     ]);
     const ac = useAircraftStore.getState().aircraft.get('a1');
     expect(ac?.trail.length).toBeGreaterThanOrEqual(1);
@@ -63,17 +34,7 @@ describe('aircraftStore', () => {
   it('removeStale drops aircraft not seen in N seconds', () => {
     const store = useAircraftStore.getState();
     store.updateBatch([
-      {
-        icao24: 'a1',
-        callsign: 'X',
-        longitude: 0,
-        latitude: 0,
-        baroAltitudeFt: 0,
-        velocityKt: 0,
-        headingDeg: 0,
-        onGround: false,
-        lastContact: 100,
-      },
+      makeAircraftRaw({ icao24: 'a1', callsign: 'X', lastContact: 100 }),
     ]);
     store.removeStale(150);
     expect(useAircraftStore.getState().aircraft.has('a1')).toBe(true);

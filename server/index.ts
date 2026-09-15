@@ -26,7 +26,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import { Agent, setGlobalDispatcher } from 'undici';
-import { fetchAdsbStates } from '../src/data/adsbSource.js';
+import { adsbLolSource } from '../src/data/sources/adsbLol.js';
 import type { BoundingBox } from '../src/types.js';
 
 // ----------------------------------------------------------------------------
@@ -117,7 +117,7 @@ app.get('/api/states', async (req, reply) => {
   }
 
   try {
-    const result = await fetchAdsbStates(bbox);
+    const result = await adsbLolSource.fetchRegion({ lat: 0, lon: 0 }, 10_000);
     const body = JSON.stringify({
       fetchedAt: result.fetchedAt.toISOString(),
       bbox,

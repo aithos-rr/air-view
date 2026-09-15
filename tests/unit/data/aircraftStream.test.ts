@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { startAircraftStream } from '@/data/aircraftStream';
 import * as client from '@/data/openSkyClient';
+import { makeAircraftRaw } from '../../helpers/aircraft';
 
 // Helper: drain microtasks without firing scheduled timers
 async function flushMicrotasks(): Promise<void> {
@@ -12,19 +13,7 @@ describe('startAircraftStream', () => {
     vi.useFakeTimers();
     vi.spyOn(client, 'fetchStates').mockResolvedValue({
       fetchedAt: new Date(),
-      aircraft: [
-        {
-          icao24: 'a1',
-          callsign: 'BAW274',
-          longitude: -10,
-          latitude: 50,
-          baroAltitudeFt: 38000,
-          velocityKt: 473,
-          headingDeg: 265,
-          onGround: false,
-          lastContact: 0,
-        },
-      ],
+      aircraft: [makeAircraftRaw({ icao24: 'a1', callsign: 'BAW274', lastContact: 0 })],
     });
   });
   afterEach(() => {

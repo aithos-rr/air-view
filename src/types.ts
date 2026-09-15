@@ -1,14 +1,28 @@
-// Raw aircraft state from OpenSky /states/all, normalized
+/** Route as sent to the client. Populated server-side from adsbdb. */
+export interface FlightRouteLite {
+  originIata: string;
+  originName: string;
+  destinationIata: string;
+  destinationName: string;
+  airlineName: string | null;
+}
+
+// Raw aircraft state from an ADS-B source, normalized across providers.
 export interface AircraftRaw {
   icao24: string;
   callsign: string | null;
   longitude: number | null;
   latitude: number | null;
-  baroAltitudeFt: number | null;     // converted from meters at fetch time
-  velocityKt: number | null;          // converted from m/s
+  baroAltitudeFt: number | null;
+  velocityKt: number | null;
   headingDeg: number | null;
   onGround: boolean;
-  lastContact: number;                // unix seconds from OpenSky
+  lastContact: number;                // unix seconds
+  registration: string | null;        // tail number, e.g. "I-ABCD"
+  modelCode: string | null;           // ICAO type code, e.g. "A320"
+  modelDesc: string | null;           // long name; only adsb.fi ships it
+  route: FlightRouteLite | null;      // filled by the server; null until Task 6
+  complete: boolean;                  // computed server-side by isComplete(); false from adapters
 }
 
 // Aircraft enriched with trail + resolved flight info
