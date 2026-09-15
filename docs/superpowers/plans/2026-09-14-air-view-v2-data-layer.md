@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rimettere in produzione un feed vivo, con origini e destinazioni vere e con i guasti visibili entro minuti anziché mesi.
+**Goal:** Rimettere in produzione un feed vivo, con origini e destinazioni vere, e rendere un guasto futuro **diagnosticabile in un colpo d'occhio** invece che invisibile per mesi.
 
-**Architecture:** Gli adattatori per fornitore normalizzano verso un tipo comune e un selettore con circuit breaker li mette in cascata, saltando le sorgenti che non reggono il raggio richiesto. Il server si alimenta da solo con un poller di background invece di dipendere dalle richieste utente, impone un'età massima alla cache, distingue "non ho ancora iniziato" da "ero vivo e sono morto", e arricchisce i callsign con rotte vere da adsbdb a rate costante. Il client smette di cancellare la flotta quando il feed è fermo.
+Una precisazione che una revisione ha imposto: l'healthcheck di `railway.toml` è un cancello di *deploy*, non un monitor continuo. Nulla in questo piano interroga `/health` mentre il servizio gira, quindi il Piano 1 non promette un allarme automatico: elimina il fallimento silenzioso — niente più dati vecchi spacciati per freschi — e mette lo stato a disposizione di chiunque guardi. Un vero watcher (cron esterno o servizio Railway che interroga `/health` e avvisa sul 503) resta da aggiungere, e vale la pena farlo dopo il primo deploy riuscito.
+
+**Architecture:** Gli adattatori per fornitore normalizzano verso un tipo comune e un selettore con circuit breaker li mette in cascata, saltando le sorgenti che non reggono il raggio richiesto. Il server si alimenta da solo con un poller di background invece di dipendere dalle richieste utente, impone un'età massima alla cache, e distingue "non ho ancora iniziato" da "ero vivo e sono morto". Le rotte vere vengono da adsbdb attraverso una cache costruita offline e caricata all'avvio, perché il servizio rate-limita duramente; a runtime il resolver assorbe solo i callsign nuovi, lentamente, e sospende tutto su 429. Il client smette di cancellare la flotta quando il feed è fermo.
 
 **Tech Stack:** TypeScript strict, Fastify 5, Vitest, undici. Nessuna dipendenza nuova.
 
@@ -722,6 +724,18 @@ describe('createSourceSelector', () => {
     await expect(selector.fetchRegion({ lat: 0, lon: 0 }, 10)).rejects.toThrow(/403.*500/s);
   });
 
+  it('keeps reporting the real cause while the breaker is open', async () => {
+    // On the tick after a failure the source is skipped by its own breaker.
+    // Without carrying the reason forward the caller would be told
+    // "all sources are in cooldown" instead of the actual 403.
+    const a = fakeSource('a', 10_000, async () => { throw new Error('adsb-lol: HTTP 403'); });
+    let clock = 1000;
+    const selector = createSourceSelector([a], { breakerCooldownMs: 60_000, now: () => clock });
+    await expect(selector.fetchRegion({ lat: 0, lon: 0 }, 10)).rejects.toThrow(/403/);
+    clock += 1000; // breaker still open
+    await expect(selector.fetchRegion({ lat: 0, lon: 0 }, 10)).rejects.toThrow(/403/);
+  });
+
   it('reports clearly when every source was skipped for radius', async () => {
     const small = fakeSource('adsb-fi', 250, async () => emptyResult());
     const selector = createSourceSelector([small]);
@@ -774,6 +788,7 @@ export function createSourceSelector(
   const cooldownMs = opts.breakerCooldownMs ?? DEFAULT_COOLDOWN_MS;
   const now = opts.now ?? Date.now;
   const openUntil = new Map<string, number>();
+  const lastError = new Map<string, string>();
 
   return {
     async fetchRegion(centre, radiusNm, fetchImpl) {
@@ -786,15 +801,26 @@ export function createSourceSelector(
           skippedForRadius.push(`${source.id} (max ${source.maxRadiusNm} NM)`);
           continue;
         }
-        if ((openUntil.get(source.id) ?? 0) > t) continue; // breaker open
+        const until = openUntil.get(source.id) ?? 0;
+        if (until > t) {
+          // Carry the reason forward: otherwise, on the tick after a failure,
+          // every source is skipped by its breaker, `errors` is empty, and the
+          // caller is told "all sources are in cooldown" instead of the actual
+          // upstream error — the one thing an operator needs to see.
+          errors.push(`${source.id}: in cooldown after ${lastError.get(source.id) ?? 'unknown error'}`);
+          continue;
+        }
 
         try {
           const result = await source.fetchRegion(centre, radiusNm, fetchImpl);
           openUntil.delete(source.id); // success closes the breaker
+          lastError.delete(source.id);
           return { ...result, sourceId: source.id };
         } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
           openUntil.set(source.id, now() + cooldownMs);
-          errors.push(e instanceof Error ? e.message : String(e));
+          lastError.set(source.id, msg);
+          errors.push(msg);
         }
       }
 
@@ -1296,7 +1322,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 5: Risoluzione rotte da adsbdb
+### Task 5: Resolver rotte con rate limit rispettato
 
 **Files:**
 - Create: `server/routeResolver.ts`
@@ -1304,13 +1330,15 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `USER_AGENT` dal Task 1, importato come `'../src/data/sources/userAgent.js'`
-- Produces: `createRouteResolver(opts?: RouteResolverOptions): RouteResolver`. `RouteResolver` espone `get(callsign: string): FlightRoute | null` (sincrono, solo cache), `enqueue(callsigns: string[]): void`, `pump(fetchImpl?: typeof fetch): Promise<number>`, `stats(): { resolved: number; unknown: number; queued: number }`. `FlightRoute = { callsignIcao, callsignIata, airlineName, originIata, originName, destinationIata, destinationName }`, tutti `string` tranne i nullable dichiarati nel codice. `RouteResolverOptions = { maxPerPump?: number }`.
+- Produces: `createRouteResolver(opts?: RouteResolverOptions): RouteResolver`. `RouteResolver` espone `seed(records: SeedRecord[]): void`, `get(callsign: string): FlightRoute | null`, `enqueue(callsigns: string[]): void`, `pump(fetchImpl?: typeof fetch): Promise<number>`, `stats(): ResolverStats`. `FlightRoute = { callsignIcao: string; callsignIata: string | null; airlineName: string | null; originIata: string; originName: string; destinationIata: string; destinationName: string }`. `SeedRecord = { callsign: string; route: FlightRoute | null }` — `null` significa "già interrogato, sconosciuto". `ResolverStats = { resolved: number; unknown: number; queued: number; suspendedUntil: string | null; consecutiveRateLimits: number; lastError: string | null }`. `RouteResolverOptions = { maxPerPump?: number; rateLimitCooldownMs?: number; maxAttempts?: number; now?: () => number }`.
 
-**Due vincoli di realtà, entrambi verificati dal vivo.**
+**Tre vincoli di realtà, tutti misurati dal vivo.**
 
-Il primo: adsbdb risponde **HTTP 404** per un callsign che non conosce, con corpo `{"response":"unknown callsign"}`. Un `if (!res.ok) throw` prima di leggere il corpo renderebbe irraggiungibile il ramo "sconosciuto": ogni callsign privato o militare — il 27% del feed — verrebbe trattato come errore di trasporto e ri-accodato per sempre.
+Il primo: adsbdb risponde **404** per un callsign che non conosce, con corpo `{"response":"unknown callsign"}`. Un `if (!res.ok) throw` prima di leggere lo status renderebbe irraggiungibile il ramo "sconosciuto" e quei callsign — privati, business, militari — verrebbero ri-accodati per sempre.
 
-Il secondo: uno snapshot globale contiene **8 466 callsign distinti parsabili**. Con `pump()` legato al ciclo di richiesta (20 lookup ogni 90 s = 0,22/s) il primo riempimento richiederebbe **10,7 ore**. Il pump gira quindi su un timer proprio, a cadenza costante. A 5 lookup/s il primo riempimento richiede circa **28 minuti**, e da lì in poi è incrementale: solo i callsign nuovi entrano in coda.
+Il secondo, scoperto eseguendo il server contro l'API reale: **adsbdb rate-limita duramente**. Circa 1.190 lookup a 4,8 richieste/s hanno prodotto `HTTP 429 {"response":"rate limited for 300 seconds"}`. Peggio: le richieste emesse *durante* la penalità la rinnovano. Un resolver che rimette in coda su ogni errore continuerebbe a sparare contro il muro e non guarirebbe mai da solo. Il 429 è quindi uno **stato di prima classe**: sospende il pump, con backoff esponenziale, e durante la sospensione non parte alcuna richiesta.
+
+Il terzo: un singolo snapshot contiene fra **5.900 e 12.500 callsign distinti** a seconda dell'ora, e l'insieme cumulativo nell'arco di una giornata è molto maggiore. A una cadenza rispettosa il primo riempimento richiede **ore**, non minuti. Per questo la cache non si costruisce a runtime ma viene **pre-costruita offline** dal Task 6 e caricata con `seed()`; a runtime il pump serve solo per i callsign nuovi, molto lentamente.
 
 - [ ] **Step 1: Scrivere il test che fallisce**
 
@@ -1319,6 +1347,16 @@ Creare `tests/unit/server/routeResolver.test.ts`:
 ```ts
 import { describe, it, expect, vi } from 'vitest';
 import { createRouteResolver } from '../../../server/routeResolver';
+
+const ROUTE = {
+  callsignIcao: 'BAW274',
+  callsignIata: 'BA274',
+  airlineName: 'British Airways',
+  originIata: 'LAS',
+  originName: 'McCarran International Airport',
+  destinationIata: 'LHR',
+  destinationName: 'London Heathrow Airport',
+};
 
 function adsbdbOk(origin: string, dest: string) {
   return {
@@ -1338,18 +1376,37 @@ function adsbdbOk(origin: string, dest: string) {
   };
 }
 
-// Verified live: api.adsbdb.com answers 404 — NOT 200 — for an unknown
-// callsign. The first draft of this plan mocked {ok:true,status:200} and
-// would have gone green while production did the opposite.
-const adsbdbUnknown = {
+// Verified live: adsbdb answers 404 — NOT 200 — for an unknown callsign.
+const adsbdbUnknown = { ok: false, status: 404, json: async () => ({ response: 'unknown callsign' }) };
+// Verified live: ~1190 lookups at 4.8 req/s produced this.
+const adsbdbRateLimited = {
   ok: false,
-  status: 404,
-  json: async () => ({ response: 'unknown callsign' }),
+  status: 429,
+  json: async () => ({ response: 'rate limited for 300 seconds' }),
 };
 
-describe('createRouteResolver', () => {
+describe('createRouteResolver — cache and lookups', () => {
   it('returns null before anything has been resolved', () => {
     expect(createRouteResolver().get('BAW274')).toBeNull();
+  });
+
+  it('serves a seeded route without any network call', () => {
+    const fetchImpl = vi.fn();
+    const r = createRouteResolver();
+    r.seed([{ callsign: 'BAW274', route: ROUTE }]);
+    expect(r.get('BAW274')?.originIata).toBe('LAS');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(r.stats().resolved).toBe(1);
+  });
+
+  it('does not re-enqueue a callsign the seed already judged unknown', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(adsbdbOk('LAS', 'LHR'));
+    const r = createRouteResolver({ maxPerPump: 10 });
+    r.seed([{ callsign: 'NJE004M', route: null }]);
+    r.enqueue(['NJE004M']);
+    expect(r.stats().queued).toBe(0);
+    await r.pump(fetchImpl as unknown as typeof fetch);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('resolves a queued callsign and serves it from cache afterwards', async () => {
@@ -1357,12 +1414,9 @@ describe('createRouteResolver', () => {
     const r = createRouteResolver({ maxPerPump: 10 });
     r.enqueue(['BAW274']);
     await r.pump(fetchImpl as unknown as typeof fetch);
-
-    const route = r.get('BAW274');
-    expect(route?.originIata).toBe('LAS');
-    expect(route?.destinationIata).toBe('LHR');
-    expect(route?.airlineName).toBe('British Airways');
-    expect(route?.callsignIata).toBe('BA274');
+    expect(r.get('BAW274')?.originIata).toBe('LAS');
+    expect(r.get('BAW274')?.destinationIata).toBe('LHR');
+    expect(r.get('BAW274')?.callsignIata).toBe('BA274');
   });
 
   it('sends the project User-Agent to adsbdb', async () => {
@@ -1381,10 +1435,9 @@ describe('createRouteResolver', () => {
     await r.pump(fetchImpl as unknown as typeof fetch);
     expect(r.get('NJE004M')).toBeNull();
     expect(r.stats().unknown).toBe(1);
-
-    r.enqueue(['NJE004M']); // already judged unknown
+    r.enqueue(['NJE004M']);
     await r.pump(fetchImpl as unknown as typeof fetch);
-    expect(fetchImpl).toHaveBeenCalledTimes(1); // never asked twice
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('caps the number of lookups per pump', async () => {
@@ -1394,34 +1447,6 @@ describe('createRouteResolver', () => {
     await r.pump(fetchImpl as unknown as typeof fetch);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(r.stats().queued).toBe(2);
-  });
-
-  it('does not enqueue a callsign it already resolved', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(adsbdbOk('LAS', 'LHR'));
-    const r = createRouteResolver({ maxPerPump: 10 });
-    r.enqueue(['BAW274']);
-    await r.pump(fetchImpl as unknown as typeof fetch);
-    r.enqueue(['BAW274']);
-    expect(r.stats().queued).toBe(0);
-  });
-
-  it('re-queues after a real transport error — 500 is not a verdict', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
-    const r = createRouteResolver({ maxPerPump: 10 });
-    r.enqueue(['BAW274']);
-    await expect(r.pump(fetchImpl as unknown as typeof fetch)).resolves.toBe(0);
-    expect(r.get('BAW274')).toBeNull();
-    expect(r.stats().unknown).toBe(0);
-    expect(r.stats().queued).toBe(1); // back in line, will be retried
-  });
-
-  it('normalises the callsign to uppercase and trims it', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(adsbdbOk('LAS', 'LHR'));
-    const r = createRouteResolver({ maxPerPump: 10 });
-    r.enqueue([' baw274 ']);
-    await r.pump(fetchImpl as unknown as typeof fetch);
-    expect(fetchImpl.mock.calls[0]![0]).toBe('https://api.adsbdb.com/v0/callsign/BAW274');
-    expect(r.get('baw274')).not.toBeNull();
   });
 
   it('ignores a resolved route missing an airport code', async () => {
@@ -1435,6 +1460,100 @@ describe('createRouteResolver', () => {
     await r.pump(fetchImpl as unknown as typeof fetch);
     expect(r.get('XXX1')).toBeNull();
     expect(r.stats().unknown).toBe(1);
+  });
+
+  it('normalises the callsign to uppercase and trims it', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(adsbdbOk('LAS', 'LHR'));
+    const r = createRouteResolver({ maxPerPump: 10 });
+    r.enqueue([' baw274 ']);
+    await r.pump(fetchImpl as unknown as typeof fetch);
+    expect(fetchImpl.mock.calls[0]![0]).toBe('https://api.adsbdb.com/v0/callsign/BAW274');
+    expect(r.get('baw274')).not.toBeNull();
+  });
+});
+
+describe('createRouteResolver — rate limiting', () => {
+  it('SUSPENDS on 429 and stops the batch immediately', async () => {
+    // Verified live: requests sent during the penalty renew it. A resolver
+    // that keeps firing never recovers on its own.
+    const fetchImpl = vi.fn().mockResolvedValue(adsbdbRateLimited);
+    let clock = 1_000_000;
+    const r = createRouteResolver({ maxPerPump: 10, rateLimitCooldownMs: 300_000, now: () => clock });
+    r.enqueue(['A111', 'B222', 'C333', 'D444']);
+    await r.pump(fetchImpl as unknown as typeof fetch);
+    expect(fetchImpl).toHaveBeenCalledTimes(1); // stopped at the first 429
+    expect(r.stats().suspendedUntil).not.toBeNull();
+    expect(r.stats().queued).toBe(4); // nothing lost
+  });
+
+  it('emits NO request at all while suspended', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(adsbdbRateLimited);
+    let clock = 1_000_000;
+    const r = createRouteResolver({ maxPerPump: 10, rateLimitCooldownMs: 300_000, now: () => clock });
+    r.enqueue(['A111']);
+    await r.pump(fetchImpl as unknown as typeof fetch);
+    fetchImpl.mockClear();
+
+    clock += 299_000;
+    await r.pump(fetchImpl as unknown as typeof fetch);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('resumes once the cooldown has elapsed', async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(adsbdbRateLimited).mockResolvedValue(adsbdbOk('LAS', 'LHR'));
+    let clock = 1_000_000;
+    const r = createRouteResolver({ maxPerPump: 10, rateLimitCooldownMs: 300_000, now: () => clock });
+    r.enqueue(['BAW274']);
+    await r.pump(fetchImpl as unknown as typeof fetch);
+    clock += 301_000;
+    await r.pump(fetchImpl as unknown as typeof fetch);
+    expect(r.get('BAW274')).not.toBeNull();
+    expect(r.stats().suspendedUntil).toBeNull();
+  });
+
+  it('backs off exponentially on repeated rate limits', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(adsbdbRateLimited);
+    let clock = 1_000_000;
+    const r = createRouteResolver({ maxPerPump: 10, rateLimitCooldownMs: 300_000, now: () => clock });
+    r.enqueue(['A111', 'B222']);
+
+    await r.pump(fetchImpl as unknown as typeof fetch);
+    const first = new Date(r.stats().suspendedUntil!).getTime() - clock;
+    clock += first + 1;
+    await r.pump(fetchImpl as unknown as typeof fetch);
+    const second = new Date(r.stats().suspendedUntil!).getTime() - clock;
+
+    expect(second).toBeGreaterThan(first);
+    expect(r.stats().consecutiveRateLimits).toBe(2);
+  });
+
+  it('clears the backoff counter after a success', async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(adsbdbRateLimited).mockResolvedValue(adsbdbOk('LAS', 'LHR'));
+    let clock = 1_000_000;
+    const r = createRouteResolver({ maxPerPump: 10, rateLimitCooldownMs: 1000, now: () => clock });
+    r.enqueue(['BAW274']);
+    await r.pump(fetchImpl as unknown as typeof fetch);
+    clock += 2000;
+    await r.pump(fetchImpl as unknown as typeof fetch);
+    expect(r.stats().consecutiveRateLimits).toBe(0);
+  });
+
+  it('exposes the rate limit in stats so /health can report it', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(adsbdbRateLimited);
+    const r = createRouteResolver({ maxPerPump: 10 });
+    r.enqueue(['A111']);
+    await r.pump(fetchImpl as unknown as typeof fetch);
+    expect(r.stats().lastError).toMatch(/429|rate/i);
+  });
+
+  it('gives up on a callsign after repeated transport failures', async () => {
+    // Without a cap, a permanently failing callsign recirculates forever.
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+    const r = createRouteResolver({ maxPerPump: 1, maxAttempts: 3 });
+    r.enqueue(['BAW274']);
+    for (let i = 0; i < 4; i++) await r.pump(fetchImpl as unknown as typeof fetch);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(r.stats().queued).toBe(0);
   });
 });
 ```
@@ -1459,16 +1578,36 @@ export interface FlightRoute {
   destinationName: string;
 }
 
+/** One entry of the pre-built cache. A null route means "asked, unknown". */
+export interface SeedRecord {
+  callsign: string;
+  route: FlightRoute | null;
+}
+
+export interface ResolverStats {
+  resolved: number;
+  unknown: number;
+  queued: number;
+  suspendedUntil: string | null;
+  consecutiveRateLimits: number;
+  lastError: string | null;
+}
+
 export interface RouteResolverOptions {
-  /** Maximum adsbdb lookups performed per pump() call. */
   maxPerPump?: number;
+  /** Base cooldown after a 429, doubled on each consecutive one. */
+  rateLimitCooldownMs?: number;
+  /** Transport failures tolerated per callsign before giving up on it. */
+  maxAttempts?: number;
+  now?: () => number;
 }
 
 export interface RouteResolver {
+  seed(records: SeedRecord[]): void;
   get(callsign: string): FlightRoute | null;
   enqueue(callsigns: string[]): void;
   pump(fetchImpl?: typeof fetch): Promise<number>;
-  stats(): { resolved: number; unknown: number; queued: number };
+  stats(): ResolverStats;
 }
 
 interface AdsbdbAirport {
@@ -1490,18 +1629,28 @@ interface AdsbdbResponse {
       };
 }
 
-const DEFAULT_MAX_PER_PUMP = 10;
+const DEFAULT_MAX_PER_PUMP = 1;
+const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 300_000;
+const DEFAULT_MAX_ATTEMPTS = 3;
+const MAX_COOLDOWN_MS = 3_600_000;
+
+/** Raised by lookup() on 429 so pump() can stop the whole batch. */
+class RateLimited extends Error {}
 
 /**
  * Resolves callsigns to real origin/destination pairs via adsbdb.
  *
- * Deliberately asynchronous with respect to the API response: a global
- * snapshot holds ~8 500 distinct parseable callsigns, and resolving them
- * inside a request would mean thousands of calls to a free service. get()
- * answers from cache only; unknown callsigns are queued and pumped at a
- * steady rate by a timer the server owns. Callsigns repeat heavily between
- * cycles — aircraft stay airborne for hours — so after the first fill only
- * new ones enter the queue.
+ * The bulk of the cache is built offline (see scripts/build-route-cache.mjs)
+ * and loaded with seed(): a snapshot holds 5 900-12 500 distinct callsigns
+ * depending on the hour, and adsbdb cannot be asked that many times quickly.
+ * At runtime the pump only picks up callsigns the seed does not cover, and
+ * it does so slowly.
+ *
+ * Measured live: ~1 190 lookups at 4.8 req/s produced
+ * HTTP 429 {"response":"rate limited for 300 seconds"}, and requests sent
+ * during the penalty RENEW it — after 330 s of total silence the block was
+ * gone, while polling every 20 s it never lifted. So 429 suspends the pump
+ * entirely, with exponential backoff, and no request leaves while suspended.
  *
  * Replaces v1's routeLookup, which ignored the flight number and returned
  * the airline's alphabetically first route: every BA flight showed
@@ -1509,25 +1658,33 @@ const DEFAULT_MAX_PER_PUMP = 10;
  */
 export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResolver {
   const maxPerPump = opts.maxPerPump ?? DEFAULT_MAX_PER_PUMP;
+  const baseCooldownMs = opts.rateLimitCooldownMs ?? DEFAULT_RATE_LIMIT_COOLDOWN_MS;
+  const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+  const now = opts.now ?? Date.now;
 
   const resolved = new Map<string, FlightRoute>();
   const unknown = new Set<string>();
   const queue: string[] = [];
   const queued = new Set<string>();
+  const attempts = new Map<string, number>();
+
+  let suspendedUntil = 0;
+  let consecutiveRateLimits = 0;
+  let lastError: string | null = null;
 
   function key(callsign: string): string {
     return callsign.trim().toUpperCase();
   }
 
-  /** @returns true if a route was stored. Throws only on transport failure. */
   async function lookup(cs: string, fetchImpl: typeof fetch): Promise<boolean> {
     const res = await fetchImpl(`https://api.adsbdb.com/v0/callsign/${cs}`, {
       headers: { Accept: 'application/json', 'User-Agent': USER_AGENT },
     });
 
-    // Verified live: adsbdb answers 404 with {"response":"unknown callsign"}
-    // for private, business and military callsigns — roughly 27% of the feed.
-    // That is a verdict about the callsign, not a failure of the request.
+    if (res.status === 429) throw new RateLimited('adsbdb: HTTP 429 rate limited');
+
+    // 404 is a verdict about the callsign — private, business and military
+    // flights — not a failure of the request.
     if (res.status === 404) {
       unknown.add(cs);
       return false;
@@ -1542,7 +1699,7 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
     const destinationName = fr?.destination?.name;
 
     if (!fr || !originIata || !originName || !destinationIata || !destinationName) {
-      unknown.add(cs); // answered, but not with a usable route
+      unknown.add(cs);
       return false;
     }
 
@@ -1559,6 +1716,15 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
   }
 
   return {
+    seed(records) {
+      for (const rec of records) {
+        const cs = key(rec.callsign);
+        if (!cs) continue;
+        if (rec.route === null) unknown.add(cs);
+        else resolved.set(cs, rec.route);
+      }
+    },
+
     get(callsign) {
       return resolved.get(key(callsign)) ?? null;
     },
@@ -1574,24 +1740,54 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
     },
 
     async pump(fetchImpl: typeof fetch = fetch) {
+      if (now() < suspendedUntil) return 0; // not one request while suspended
+
       let count = 0;
       const batch = queue.splice(0, maxPerPump);
-      for (const cs of batch) {
+
+      for (let i = 0; i < batch.length; i++) {
+        const cs = batch[i]!;
         queued.delete(cs);
         try {
           if (await lookup(cs, fetchImpl)) count += 1;
-        } catch {
-          // Transport failure is not a verdict on the callsign: put it back
-          // so a later cycle retries it.
-          queue.push(cs);
-          queued.add(cs);
+          consecutiveRateLimits = 0;
+          attempts.delete(cs);
+        } catch (e) {
+          if (e instanceof RateLimited) {
+            consecutiveRateLimits += 1;
+            const cooldown = Math.min(baseCooldownMs * 2 ** (consecutiveRateLimits - 1), MAX_COOLDOWN_MS);
+            suspendedUntil = now() + cooldown;
+            lastError = `${e.message}; suspended for ${Math.round(cooldown / 1000)}s`;
+            // Put back this callsign AND everything we had not reached, then
+            // stop: further requests would renew the penalty.
+            queue.unshift(cs, ...batch.slice(i + 1));
+            queued.add(cs);
+            for (const rest of batch.slice(i + 1)) queued.add(rest);
+            return count;
+          }
+          lastError = e instanceof Error ? e.message : String(e);
+          const tried = (attempts.get(cs) ?? 0) + 1;
+          if (tried >= maxAttempts) {
+            attempts.delete(cs); // give up: it would recirculate forever
+          } else {
+            attempts.set(cs, tried);
+            queue.push(cs);
+            queued.add(cs);
+          }
         }
       }
       return count;
     },
 
     stats() {
-      return { resolved: resolved.size, unknown: unknown.size, queued: queue.length };
+      return {
+        resolved: resolved.size,
+        unknown: unknown.size,
+        queued: queue.length,
+        suspendedUntil: now() < suspendedUntil ? new Date(suspendedUntil).toISOString() : null,
+        consecutiveRateLimits,
+        lastError,
+      };
     },
   };
 }
@@ -1600,14 +1796,14 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
 - [ ] **Step 4: Eseguire il test e verificare che passi**
 
 Run: `npx vitest run tests/unit/server/routeResolver.test.ts`
-Expected: PASS, 9 test
+Expected: PASS, 16 test
 
-- [ ] **Step 5: Verificare contro adsbdb reale, senza mock**
+- [ ] **Step 5: Verificare contro adsbdb reale, con parsimonia**
 
-`npx tsx -e` compila verso CJS, dove il top-level await non esiste: lo script va in un file `.mts`, che forza l'output ESM.
+Lo script va **dentro il repo**: in ESM un import relativo si risolve rispetto al file che importa, quindi uno script in `/tmp` cercherebbe `/tmp/server/routeResolver.js` e fallirebbe prima di qualunque chiamata.
 
 ```bash
-cat > /tmp/check-routes.mts <<'EOF'
+cat > check-routes.mts <<'EOF'
 import { createRouteResolver } from './server/routeResolver.js';
 const r = createRouteResolver({ maxPerPump: 5 });
 r.enqueue(['BAW274', 'RYR1234', 'UAE2', 'NJE004M', 'MORPH16']);
@@ -1616,48 +1812,236 @@ console.log('stats:', r.stats());
 console.log('BAW274:', r.get('BAW274'));
 console.log('NJE004M (atteso null, unknown):', r.get('NJE004M'));
 EOF
-npx tsx /tmp/check-routes.mts
+npx tsx check-routes.mts && rm check-routes.mts
 ```
 
-È l'unico passo che prova contro adsbdb reale il ramo più delicato della feature — il 404 trattato come verdetto — cioè esattamente il difetto che nella prima stesura del piano un mock sbagliato avrebbe nascosto. Non saltarlo.
+Expected: `resolved: 3, unknown: 2, queued: 0`, `suspendedUntil: null`; `BAW274` con origine e destinazione reali; `NJE004M` null e contato fra gli unknown. Se `unknown` è 0 e `queued` è 2, il ramo 404 non funziona. Se `suspendedUntil` non è null, siamo già sotto rate limit: **attendere almeno 6 minuti in totale silenzio** prima di riprovare — le richieste durante la penalità la rinnovano.
 
-Expected: `resolved: 3, unknown: 2, queued: 0`; `BAW274` con origine e destinazione reali; `NJE004M` null e contato fra gli unknown — non ri-accodato. Se `unknown` è 0 e `queued` è 2, il ramo 404 non funziona: rileggi lo Step 3.
+Cinque richieste soltanto: è l'unico passo che prova il ramo 404 contro l'API vera, e va eseguito, ma senza volume.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add -A
-git commit -m "feat(server): resolve real routes from adsbdb
+git commit -m "feat(server): route resolver with seeding and 429 backoff
 
 v1's routeLookup ignored the flight number and returned the airline's
 first route alphabetically: every BA flight claimed Aalborg -> Aarhus,
 and 49% of aircraft showed a fabricated origin and destination.
 
-Answers from cache only and fills that cache at a steady rate, so ~8 500
-distinct callsigns never become thousands of in-request calls to a free
-service. HTTP 404 is treated as a verdict ('unknown callsign', ~27% of
-the feed: private, business and military) rather than a transport error,
-so those are recorded once instead of being retried forever.
+Measured against the live API: ~1190 lookups at 4.8 req/s trigger
+HTTP 429 'rate limited for 300 seconds', and requests sent during the
+penalty renew it rather than waiting it out. So 429 is a first-class
+state that suspends the pump with exponential backoff and emits nothing
+while suspended, it is visible in stats() for /health, and a callsign
+that keeps failing transport is dropped after three attempts instead of
+recirculating forever.
+
+The bulk of the cache is loaded via seed() from a file built offline;
+the runtime pump only picks up callsigns the seed does not cover.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 6: Arricchire `/api/states` con rotta e completezza
+### Task 6: Cache rotte pre-costruita, collegamento al server e completezza
 
 **Files:**
+- Create: `scripts/build-route-cache.mjs`
+- Create: `server/data/.gitkeep` (la cache vera viene generata ed è committata)
 - Create: `src/data/completeness.ts`
-- Modify: `server/index.ts`
+- Modify: `server/index.ts`, `tsconfig.server.json`, `package.json`
 - Test: `tests/unit/data/completeness.test.ts`
 
 **Interfaces:**
-- Consumes: `RouteResolver` dal Task 5, `FlightRouteLite` e `makeAircraftRaw` dal Task 1
-- Produces: `isComplete(ac: AircraftRaw): boolean`
+- Consumes: `RouteResolver`, `SeedRecord`, `FlightRoute` dal Task 5; `FlightRouteLite` e `makeAircraftRaw` dal Task 1
+- Produces: `isComplete(ac: AircraftRaw): boolean`; `npm run build:routes`; il file `server/data/route-cache.json` con forma `SeedRecord[]`
 
-`AircraftRaw` non cambia in questo task: `route` esiste già dal Task 1. Qui viene soltanto popolato.
+**Perché una cache pre-costruita e perché NON è un ritorno a `openflights-routes.json`.** Il file che il Task 7 elimina era sbagliato *per costruzione*: `list[0]` restituiva una rotta che non aveva alcun rapporto col volo richiesto. Questo file è verificato per costruzione: ogni voce è la risposta di adsbdb *per quello specifico callsign*. Al più invecchia — e i numeri di volo di linea sono stabili nel tempo, `BAW274` vola ogni giorno — mentre quello era falso il giorno stesso in cui è stato generato.
 
-- [ ] **Step 1: Scrivere il test che fallisce**
+Lo script campiona il feed a intervalli nell'arco di ore, perché un singolo snapshot contiene fra 5.900 e 12.500 callsign a seconda dell'ora e l'insieme di una giornata è molto maggiore. È **ripartibile**: rilegge la cache esistente e riprende, così un'interruzione non butta via il lavoro fatto.
+
+- [ ] **Step 1: Creare `scripts/build-route-cache.mjs`**
+
+```js
+#!/usr/bin/env node
+// Builds server/data/route-cache.json by asking adsbdb about the callsigns
+// seen in the live feed. Runs for hours on purpose: adsbdb rate-limits hard
+// (~1190 lookups at 4.8 req/s earned a 300 s ban, and requests sent during
+// the penalty renew it). Resumable: re-reading the existing cache and
+// picking up where it stopped is the normal way to use it.
+//
+//   node scripts/build-route-cache.mjs            # default: 4 hours
+//   node scripts/build-route-cache.mjs --hours 8
+
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { dirname } from 'node:path';
+
+const UA = 'air-view/2.0 (+https://air-view-production.up.railway.app)';
+const OUT = 'server/data/route-cache.json';
+const FEED = 'https://api.adsb.lol/v2/lat/0/lon/0/dist/10000';
+const CALLSIGN_RX = /^[A-Z]{3}[A-Z0-9]+$/;
+
+const hoursArg = process.argv.indexOf('--hours');
+const RUN_HOURS = hoursArg > -1 ? Number(process.argv[hoursArg + 1]) : 4;
+
+// Conservative and self-correcting: start slow, back off hard on 429.
+let delayMs = 1500;
+const MIN_DELAY_MS = 1200;
+const MAX_DELAY_MS = 30_000;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const cache = new Map();
+if (existsSync(OUT)) {
+  for (const rec of JSON.parse(readFileSync(OUT, 'utf8'))) cache.set(rec.callsign, rec.route);
+  console.log(`resuming from ${cache.size} cached callsigns`);
+}
+
+function save() {
+  mkdirSync(dirname(OUT), { recursive: true });
+  const records = [...cache.entries()]
+    .map(([callsign, route]) => ({ callsign, route }))
+    .sort((a, b) => a.callsign.localeCompare(b.callsign));
+  writeFileSync(OUT, JSON.stringify(records, null, 0));
+}
+
+async function sampleFeed() {
+  const res = await fetch(FEED, { headers: { Accept: 'application/json', 'User-Agent': UA } });
+  if (!res.ok) throw new Error(`feed: HTTP ${res.status}`);
+  const data = await res.json();
+  const out = new Set();
+  for (const ac of data.ac ?? []) {
+    const cs = (ac.flight ?? '').trim().toUpperCase();
+    if (CALLSIGN_RX.test(cs)) out.add(cs);
+  }
+  return out;
+}
+
+/** @returns 'ok' | 'unknown' | 'ratelimited' | 'error' */
+async function lookup(cs) {
+  const res = await fetch(`https://api.adsbdb.com/v0/callsign/${cs}`, {
+    headers: { Accept: 'application/json', 'User-Agent': UA },
+  });
+  if (res.status === 429) return 'ratelimited';
+  if (res.status === 404) {
+    cache.set(cs, null);
+    return 'unknown';
+  }
+  if (!res.ok) return 'error';
+  const data = await res.json();
+  const fr = typeof data.response === 'object' ? data.response?.flightroute : undefined;
+  const o = fr?.origin, d = fr?.destination;
+  if (!fr || !o?.iata_code || !o?.name || !d?.iata_code || !d?.name) {
+    cache.set(cs, null);
+    return 'unknown';
+  }
+  cache.set(cs, {
+    callsignIcao: fr.callsign ?? cs,
+    callsignIata: fr.callsign_iata ?? null,
+    airlineName: fr.airline?.name ?? null,
+    originIata: o.iata_code,
+    originName: o.name,
+    destinationIata: d.iata_code,
+    destinationName: d.name,
+  });
+  return 'ok';
+}
+
+const deadline = Date.now() + RUN_HOURS * 3600_000;
+const pending = [];
+let resolvedCount = 0, unknownCount = 0, lastSample = 0;
+
+console.log(`building for ${RUN_HOURS}h, starting at ${(1000 / delayMs).toFixed(2)} req/s`);
+
+while (Date.now() < deadline) {
+  // Re-sample the feed every 20 minutes: traffic turns over through the day.
+  if (Date.now() - lastSample > 20 * 60_000) {
+    try {
+      const seen = await sampleFeed();
+      let added = 0;
+      for (const cs of seen) {
+        if (!cache.has(cs) && !pending.includes(cs)) { pending.push(cs); added++; }
+      }
+      lastSample = Date.now();
+      console.log(`[sample] ${seen.size} callsigns in feed, ${added} new, ${pending.length} pending, ${cache.size} cached`);
+    } catch (e) {
+      console.warn(`[sample] failed: ${e.message}`);
+    }
+  }
+
+  if (pending.length === 0) { await sleep(5000); continue; }
+
+  const cs = pending.shift();
+  let outcome;
+  try {
+    outcome = await lookup(cs);
+  } catch (e) {
+    console.warn(`[lookup] ${cs}: ${e.message}`);
+    outcome = 'error';
+  }
+
+  if (outcome === 'ratelimited') {
+    pending.unshift(cs);
+    delayMs = Math.min(delayMs * 2, MAX_DELAY_MS);
+    save();
+    console.warn(`[429] rate limited — sleeping 360s in total silence, new delay ${delayMs}ms`);
+    await sleep(360_000); // longer than the advertised 300s: requests during it renew the ban
+    continue;
+  }
+
+  if (outcome === 'ok') resolvedCount++;
+  else if (outcome === 'unknown') unknownCount++;
+  else pending.push(cs); // transport hiccup: back of the line
+
+  if ((resolvedCount + unknownCount) % 100 === 0) {
+    save();
+    const left = pending.length;
+    const eta = (left * delayMs) / 3600_000;
+    console.log(`resolved ${resolvedCount}, unknown ${unknownCount}, pending ${left}, eta ${eta.toFixed(1)}h`);
+    // Creep back toward the floor after a clean run.
+    if (delayMs > MIN_DELAY_MS) delayMs = Math.max(MIN_DELAY_MS, delayMs * 0.9);
+  }
+}
+
+save();
+console.log(`\ndone: ${cache.size} callsigns cached (${resolvedCount} resolved, ${unknownCount} unknown this run), ${pending.length} still pending`);
+console.log(`written to ${OUT} — commit it`);
+```
+
+- [ ] **Step 2: Aggiungere lo script a `package.json`**
+
+Nel blocco `"scripts"`:
+
+```json
+    "build:routes": "node scripts/build-route-cache.mjs",
+```
+
+- [ ] **Step 3: Lanciare una corsa breve per verificare che funzioni**
+
+```bash
+mkdir -p server/data
+node scripts/build-route-cache.mjs --hours 0.05
+```
+
+Expected: circa tre minuti di esecuzione, un `[sample]` iniziale con migliaia di callsign, poi righe di avanzamento, e `server/data/route-cache.json` scritto. Se compare `[429]`, lo script deve **dormire 360 s in silenzio** e non emettere altre richieste: è il comportamento voluto.
+
+Verificare la forma del file:
+
+```bash
+python3 -c "
+import json
+r=json.load(open('server/data/route-cache.json'))
+print('voci:', len(r))
+print('con rotta:', sum(1 for x in r if x['route']))
+print('esempio:', next((x for x in r if x['route']), None))
+"
+```
+
+La corsa lunga vera (`npm run build:routes -- --hours 8`) la lancia l'utente quando vuole, ed è ripartibile. Il piano non la richiede per proseguire: il server funziona anche con una cache parziale, semplicemente con meno aerei blu.
+
+- [ ] **Step 4: Scrivere il test che fallisce per `isComplete`**
 
 Creare `tests/unit/data/completeness.test.ts`:
 
@@ -1680,53 +2064,44 @@ describe('isComplete', () => {
   it('accepts an aircraft with a real route and every technical field', () => {
     expect(isComplete(complete())).toBe(true);
   });
-
   it('rejects an aircraft without a route — this is the grey population', () => {
     expect(isComplete(complete({ route: null }))).toBe(false);
   });
-
   it('rejects a missing callsign', () => {
     expect(isComplete(complete({ callsign: null }))).toBe(false);
   });
-
   it('rejects a missing registration', () => {
     expect(isComplete(complete({ registration: null }))).toBe(false);
   });
-
   it('rejects a missing model code', () => {
     expect(isComplete(complete({ modelCode: null }))).toBe(false);
   });
-
   it('rejects a missing ground speed', () => {
     expect(isComplete(complete({ velocityKt: null }))).toBe(false);
   });
-
   it('rejects a missing track', () => {
     expect(isComplete(complete({ headingDeg: null }))).toBe(false);
   });
-
   it('rejects a missing position', () => {
     expect(isComplete(complete({ latitude: null }))).toBe(false);
   });
-
   it('rejects a missing altitude while airborne', () => {
     expect(isComplete(complete({ baroAltitudeFt: null }))).toBe(false);
   });
-
   it('accepts a null altitude when the aircraft is on the ground', () => {
     expect(isComplete(complete({ onGround: true, baroAltitudeFt: null }))).toBe(true);
   });
 });
 ```
 
-- [ ] **Step 2: Eseguire il test e verificare che fallisca**
+- [ ] **Step 5: Eseguire il test e verificare che fallisca**
 
 Run: `npx vitest run tests/unit/data/completeness.test.ts`
 Expected: FAIL — modulo inesistente
 
-- [ ] **Step 3: Creare `src/data/completeness.ts`**
+- [ ] **Step 6: Creare `src/data/completeness.ts`**
 
-Import relativo con `.js`: questo modulo verrà usato anche dal server.
+Import relativo con `.js`: questo modulo è compilato anche dal programma del server.
 
 ```ts
 import type { AircraftRaw } from '../types.js';
@@ -1752,24 +2127,51 @@ export function isComplete(ac: AircraftRaw): boolean {
 }
 ```
 
-- [ ] **Step 4: Eseguire il test e verificare che passi**
+- [ ] **Step 7: Eseguire il test e verificare che passi**
 
 Run: `npx vitest run tests/unit/data/completeness.test.ts`
 Expected: PASS, 10 test
 
-- [ ] **Step 5: Collegare il resolver nel ciclo di aggiornamento**
+- [ ] **Step 8: Collegare resolver, seed e completezza in `server/index.ts`**
 
-In `server/index.ts` aggiungere agli import:
+Agli import:
 
 ```ts
 import { createRouteResolver } from './routeResolver.js';
+import { isComplete } from '../src/data/completeness.js';
 import type { FlightRouteLite } from '../src/types.js';
 
 const routes = createRouteResolver();
-const ROUTE_PUMP_MS = 2_000; // 5 lookups/s with the default maxPerPump of 10
+// Deliberately slow: the bulk of the cache comes from the seed file, and
+// adsbdb bans at a few requests per second. One lookup every 10 s is
+// ~360/hour, enough to absorb newly appearing callsigns.
+const ROUTE_PUMP_MS = 10_000;
+
+let lastCompleteCount = 0;
+let lastTotalCount = 0;
 ```
 
-In `refreshGlobalFeed`, fra l'ottenimento di `result` e la scrittura in cache, arricchire e accodare:
+Caricare il seed all'avvio, prima di `app.listen`:
+
+```ts
+const seedPath = resolve(process.cwd(), 'server/data/route-cache.json');
+if (existsSync(seedPath)) {
+  try {
+    routes.seed(JSON.parse(readFileSync(seedPath, 'utf8')));
+    app.log.info({ callsigns: routes.stats().resolved + routes.stats().unknown }, 'route cache seeded');
+  } catch (e) {
+    app.log.warn({ err: e instanceof Error ? e.message : String(e) }, 'route cache unreadable — starting cold');
+  }
+} else {
+  app.log.warn('no route cache file — starting cold, most aircraft will be incomplete');
+}
+```
+
+In `tsconfig.server.json`, aggiungere all'`include` il percorso `"src/data/completeness.ts"`: senza, il modulo non entra nel programma del server e `build:server` fallisce.
+
+- [ ] **Step 9: Arricchire e marcare dentro `refreshGlobalFeed`**
+
+Fra l'ottenimento di `result` e la scrittura in cache:
 
 ```ts
     const callsigns: string[] = [];
@@ -1789,35 +2191,17 @@ In `refreshGlobalFeed`, fra l'ottenimento di `result` e la scrittura in cache, a
       }
     }
     routes.enqueue(callsigns);
-```
 
-Subito dopo il ciclo, marcare la completezza. Senza questo passo `isComplete` resterebbe codice morto: il titolo del task promette di arricchire il payload con la completezza, e `noUnusedLocals` non segnala una funzione esportata mai importata.
-
-```ts
     for (const ac of result.aircraft) {
       ac.complete = isComplete(ac);
     }
-    const completeCount = result.aircraft.filter((ac) => ac.complete).length;
+    lastCompleteCount = result.aircraft.filter((ac) => ac.complete).length;
+    lastTotalCount = result.aircraft.length;
 ```
 
-Aggiungere agli import di `server/index.ts`:
+Senza il secondo ciclo `isComplete` resterebbe codice morto: `noUnusedLocals` non segnala una funzione esportata mai importata, e nulla avviserebbe che metà del deliverable non è stata consegnata.
 
-```ts
-import { isComplete } from '../src/data/completeness.js';
-```
-
-e a `tsconfig.server.json`, nell'`include`, il percorso `"src/data/completeness.ts"` — senza, il modulo non entra nel programma del server e `build:server` fallisce.
-
-Conservare il conteggio in una variabile di modulo, per esporlo su `/health`:
-
-```ts
-let lastCompleteCount = 0;
-let lastTotalCount = 0;
-```
-
-assegnandole dentro `refreshGlobalFeed` (`lastCompleteCount = completeCount; lastTotalCount = result.aircraft.length;`).
-
-- [ ] **Step 6: Avviare il pump su un timer proprio**
+- [ ] **Step 10: Avviare il pump e pubblicare lo stato su `/health`**
 
 Accanto al timer del feed, dopo `app.listen`:
 
@@ -1826,65 +2210,68 @@ Accanto al timer del feed, dopo `app.listen`:
   routeTimer.unref();
 ```
 
-Il pump **non** va agganciato al ciclo di richiesta: legato al cache miss darebbe 0,22 lookup/s e 10,7 ore di primo riempimento. Su timer proprio dà 5/s e circa 28 minuti, poi solo incrementi.
-
-- [ ] **Step 7: Esporre le statistiche del resolver su `/health`**
-
-Nel corpo della risposta di `/health` aggiungere:
+Nel corpo di `/health`:
 
 ```ts
     routes: routes.stats(),
     aircraft: { total: lastTotalCount, complete: lastCompleteCount },
 ```
 
-Il rapporto `complete/total` è la misura osservabile della feature: deve assestarsi attorno al 55-58% man mano che la cache delle rotte si riempie. Se resta a zero, `isComplete` non è collegato o le rotte non arrivano.
+`routes.stats()` include `suspendedUntil`, `consecutiveRateLimits` e `lastError`: senza questi campi un blocco di adsbdb resterebbe invisibile mentre `/health` continua a dire `ok`, che è la cecità che questo piano esiste per rimuovere.
 
-- [ ] **Step 8: Verificare entrambi i programmi**
+- [ ] **Step 11: Verificare entrambi i programmi**
 
 ```bash
 npm run build:all && npm test -- --run
 ```
 
-- [ ] **Step 9: Osservare la convergenza reale**
+- [ ] **Step 12: Osservare il comportamento reale**
 
 ```bash
 npm run server
 ```
 
-Attendere qualche minuto senza chiamare nulla, poi:
+Attendere un paio di minuti, poi:
 
 ```bash
 curl -s localhost:3000/health | python3 -m json.tool
 ```
 
-Expected: `routes.resolved` cresce di circa 300 al minuto senza alcun traffico; `routes.unknown` cresce anch'esso (i callsign privati e militari); `routes.queued` sale al primo ciclo di feed e poi scende. Il blocco `aircraft` deve mostrare `complete` che cresce verso il 55-58% di `total`: se resta a 0 mentre `routes.resolved` sale, `isComplete` non è collegato al payload.
+Expected: nei log di avvio compare `route cache seeded` con il numero di callsign del file. Il blocco `aircraft` mostra `complete` maggiore di zero — quanto, dipende da quanto è piena la cache: con la corsa breve dello Step 3 sarà una frazione piccola, ed è corretto così. `routes.suspendedUntil` deve essere `null`; se non lo è, la cadenza è ancora troppo alta.
 
-Verificare anche sul corpo della risposta:
+Verificare anche il corpo:
 
 ```bash
 curl -s localhost:3000/api/states | python3 -c "
 import json,sys
 d=json.load(sys.stdin); ac=d['aircraft']
 comp=[a for a in ac if a.get('complete')]
-print(f'stale flag nel corpo: {d.get(\"stale\")}')
+print('stale flag nel corpo:', d.get('stale'))
 print(f'complete: {len(comp)}/{len(ac)}')
 print('esempio:', {k:comp[0][k] for k in ('callsign','registration','modelCode','route')} if comp else 'nessuno ancora')
 "
 ```
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 13: Commit**
 
 ```bash
 git add -A
-git commit -m "feat(server): attach real routes and a completeness rule
+git commit -m "feat(server): pre-built route cache, wiring and completeness
 
-/api/states now carries a route object populated from adsbdb, and
-isComplete() defines the blue/grey split the v2 filter is built on:
-a real origin and destination plus every technical field.
+/api/states now carries a real route and a 'complete' flag, and /health
+reports the resolver state including any active rate-limit suspension.
 
-The route pump runs on its own timer rather than on cache misses. Tied to
-the request cycle it would have managed 0.22 lookups/s — 10.7 hours to
-fill a cache of ~8 500 distinct callsigns. On its own timer it does 5/s.
+The cache is built offline by scripts/build-route-cache.mjs rather than
+at runtime: a snapshot holds 5900-12500 distinct callsigns depending on
+the hour, and adsbdb bans at a few requests per second, so filling it
+takes hours. The script samples the feed over time, backs off hard on
+429, and is resumable. The runtime pump only absorbs callsigns the seed
+does not cover, at one lookup every 10 s.
+
+This static file is NOT a return to openflights-routes.json. That one was
+wrong by construction — list[0] returned a route unrelated to the flight.
+This one is verified by construction: every entry is adsbdb's answer for
+that specific callsign. At worst it ages.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
@@ -2065,11 +2452,7 @@ L'ultimo anello della catena che ha prodotto il globo vuoto.
 
 - [ ] **Step 1: Sostituire il blocco `describe('aircraftStore')` in `tests/unit/state/stores.test.ts`**
 
-Sostituire l'intero blocco `describe('aircraftStore', ...)` esistente con il seguente, lasciando invariati gli altri `describe` del file e gli import già presenti in cima, ai quali va aggiunto soltanto:
-
-```ts
-import { makeAircraftRaw } from '../../helpers/aircraft';
-```
+Sostituire l'intero blocco `describe('aircraftStore', ...)` esistente con il seguente, lasciando invariati gli altri `describe` del file **e tutti gli import già in cima**. In particolare `makeAircraftRaw` è già importato: l'ha aggiunto il Task 1 Step 3. **Non ri-aggiungerlo**, sarebbe un identificatore duplicato.
 
 ```ts
 describe('aircraftStore', () => {
@@ -2369,6 +2752,19 @@ if (ac.some((a) => a.complete === undefined)) fail('payload has no "complete" fi
 else pass(`complete: ${complete} of ${ac.length} (${(100 * complete / ac.length).toFixed(1)}%)`);
 if (withRoute > 0 && complete === 0) fail('routes are attached but no aircraft is marked complete — check isComplete()');
 
+// The route subsystem dying silently is the failure mode this script exists
+// to catch. A conditional check that only fires when routes already exist
+// would print PASSED on a server whose resolver has been rate-limited into
+// oblivion — which is exactly what happened during review.
+if (health.routes?.suspendedUntil) fail(`resolver suspended until ${health.routes.suspendedUntil} — adsbdb rate limit hit`);
+else pass('resolver not rate-limited');
+
+const seeded = (health.routes?.resolved ?? 0) + (health.routes?.unknown ?? 0);
+if (seeded === 0) fail('resolver knows no callsign at all — is server/data/route-cache.json present and readable?');
+else pass(`resolver knows ${seeded} callsigns`);
+
+if (health.routes?.lastError) console.log(`resolver lastError: ${health.routes.lastError}`);
+
 // A request carrying bbox params must not 503 nor trigger its own upstream
 // sweep: the writer and the reader of the cache must agree on the key.
 const bboxRes = await fetch(`${BASE}/api/states?lamin=35&lomin=-15&lamax=72&lomax=45`);
@@ -2448,7 +2844,7 @@ La prima stesura di questo piano è stata respinta da un preflight a quattro len
 | 3 | adsb.fi veniva chiamato a 10 000 NM, che rifiuta: il fallback era **codice morto** e l'intera tesi di resilienza non esisteva | `dist=250` → 200; `dist=1000` → 400; `dist=5000/10000` → 429 | `maxRadiusNm` nell'interfaccia e selettore che salta la sorgente; la resilienza del Piano 1 viene dalla cache stantia **limitata e dichiarata** (Task 2, 3, 4) |
 | 4 | Campi obbligatori aggiunti a `AircraftRaw` in due task diversi senza aggiornare i literal nei test: `tsc --noEmit` falliva subito, e lo step dichiarava "build senza errori" | `npx tsc --noEmit` → 5 × `TS2739` | Tutti i campi nuovi introdotti **una volta sola** nel Task 1, più l'helper condiviso `tests/helpers/aircraft.ts` |
 | 5 | adsbdb risponde **404** per callsign sconosciuto, non 200: il ramo `unknown` era irraggiungibile e il mock del test asseriva una risposta che l'API non produce — la suite sarebbe passata verde mentre la produzione faceva l'opposto | `NJE004M` → HTTP 404 `{"response":"unknown callsign"}`; `BAW274` → 200 | 404 trattato come verdetto; mock corretto a `{ok:false,status:404}`; test aggiuntivo che distingue 404 da 500 (Task 5) |
-| 6 | La cache rotte "converge in pochi minuti": falso di due ordini di grandezza | 8 466 callsign distinti per snapshot; pump legato al cache miss = 0,22 lookup/s = **10,7 ore** | Pump su timer proprio a 5 lookup/s ≈ 28 minuti, poi incrementale; numeri dichiarati nel piano (Task 5, 6) |
+| 6 | La cache rotte "converge in pochi minuti": falso di due ordini di grandezza | 8 466 callsign distinti per snapshot; pump legato al cache miss = 0,22 lookup/s = **10,7 ore** | Pump su timer proprio a 5 lookup/s — **correzione poi superata dal difetto #15**, che ha mostrato che 5 lookup/s fanno scattare il rate limit di adsbdb. Vedi la terza tornata |
 | 7 | Il Task 8 rinominava `openSkyClient` aggiornando due file su tre, e cambiava la firma di `onBatch` senza adeguare l'asserzione del test esistente | `tests/unit/data/aircraftStream.test.ts:3` importa il modulo per lo `spyOn` | Tutti e tre i file elencati, più lo step che adegua `toHaveBeenCalledWith` al secondo argomento (Task 8) |
 | 8 | Il Task 9 ordinava merge su `main` e `push`: un esecutore fedele avrebbe pubblicato in produzione senza autorizzazione, per giunta con un build che non compilava | Regola operativa del progetto; Task 9 Step 5 della prima stesura | Lo step di deploy è sostituito da una consegna esplicita all'utente (Task 9) |
 
@@ -2465,9 +2861,24 @@ La seconda stesura è stata a sua volta sottoposta al preflight: **1 finding cri
 | 13 | Il Task 1 verificava `tsc --noEmit` mentre `src/data/adsbSource.ts:75` conteneva ancora un sesto literal `AircraftRaw`, rimosso solo nove step dopo: la verifica non poteva passare | Sandbox col solo Step 1 applicato: 6 errori `TS2739`, non i 5 dichiarati | La rimozione del modulo e la sostituzione dell'import nel server sono anticipate allo Step 3 (Task 1) |
 | 14 | Il comando di verifica contro adsbdb reale non era eseguibile: `npx tsx -e` compila verso CJS, dove il top-level await non esiste | Natura di `tsx -e`; lo script del piano usa `await` a livello superiore | Script in un file `.mts`, che forza l'output ESM (Task 5) |
 
+### Terza tornata di correzioni
+
+Il terzo preflight ha prodotto **3 critici, 9 major, 16 minori**. Due revisori hanno eseguito il server contro le API reali, e nel farlo hanno scoperto — costandoci un ban temporaneo — un vincolo che nessuna lettura del codice avrebbe rivelato.
+
+| # | Difetto | Evidenza | Correzione |
+|---|---|---|---|
+| 15 | **Critico.** La cadenza prescritta (5 lookup/s) supera il rate limit di adsbdb. Il resolver rimetteva in coda su ogni errore, quindi durante il ban continuava a sparare — e le richieste emesse durante la penalità **la rinnovano**: non sarebbe mai guarito da solo | Server eseguito dal vivo: `resolved` fermo a 690 con 13.472 in coda; probe diretta `HTTP 429 {"response":"rate limited for 300 seconds"}`. Dopo 330 s di silenzio totale il ban era sciolto; interrogando ogni 20 s non si scioglieva mai | 429 diventa uno stato di prima classe: sospende il pump con backoff esponenziale, nessuna richiesta parte durante la sospensione, ed è visibile in `stats()`. La cadenza scende a 1 lookup ogni 10 s (Task 5, 6) |
+| 16 | **Critico.** Il grosso della cache non può essere costruito a runtime: 5.900-12.500 callsign distinti per snapshot, e molti di più nell'arco di una giornata. I "28 minuti" del piano erano una fantasia | Conteggi su snapshot reali a ore diverse: 5.898 e ~12.500 | Cache **pre-costruita offline** da uno script ripartibile che campiona il feed per ore e fa backoff sul 429; il server la carica con `seed()` (Task 6) |
+| 17 | **Critico.** Lo script di verifica del Task 5 non era eseguibile: creato in `/tmp` ma con import relativo, che ESM risolve rispetto al file importante, non alla cwd | `npx tsx /tmp/check-routes.mts` → `ERR_MODULE_NOT_FOUND: /tmp/server/routeResolver.js` | Lo script si crea nella radice del repo e si rimuove dopo l'uso (Task 5) |
+| 18 | `verify-feed.mjs` stampava **`VERIFICATION PASSED` con `route: 0.0%`**: l'unico controllo sulle rotte era condizionato a `withRoute > 0`, quindi non poteva fallire proprio nel caso che conta | Output reale sullo stesso server bloccato dal 429 | Controlli incondizionati su `suspendedUntil`, sul numero di callsign noti al resolver, e sul `lastError` (Task 9) |
+| 19 | A tick alterni il selettore riportava "tutte le sorgenti in cooldown" invece della causa vera: col breaker aperto `errors` restava vuoto | Lettura del ramo `continue` senza `errors.push` | Il selettore ricorda la causa di ciascun breaker e la riporta anche quando salta la sorgente (Task 3) |
+| 20 | Task 1 e Task 8 si contraddicevano sull'import di `makeAircraftRaw` in `stores.test.ts`: entrambi ordinavano di aggiungerlo | Confronto fra i due step | Il Task 8 dichiara esplicitamente che l'import c'è già e non va ri-aggiunto (Task 8) |
+
 ## Cosa resta fuori da questo piano
 
 - **Piano 2 — densità e movimento**: tile cache a 10°, doppia cadenza (sweep globale magro + celle in vista), dead reckoning con tetto temporale, raggio in pixel-schermo, ordine di disegno gerarchico. È qui che adsb.fi entra davvero in servizio, perché i raggi camera-driven stanno sotto il suo tetto di 250 NM.
+- **Un watcher per `/health`**: cron esterno o servizio Railway che interroghi l'endpoint e avvisi sul 503. Il Piano 1 rende il guasto diagnosticabile, non ancora notificato.
+- **Corsa lunga di `build:routes`**: lo script è pronto e ripartibile, ma la costruzione completa della cache richiede ore e va lanciata quando conviene. Il server funziona anche con una cache parziale: semplicemente con meno aerei blu.
 - **Piano 3 — interazione e visivo**: pannello con conteggi e checkbox, focus con geodetica e marker D/A, ricerca per numero di volo, palette caldo/grigio/blu. Include anche la **superficie visibile** del presidio §3.4 punto 3: il Task 8 espone `feedAgeSeconds()` nello store ma nessun componente lo mostra ancora, perché la UI del pannello nasce lì. Fino ad allora il feed fermo è visibile su `/health` e nel 503 di `/api/states`, non nell'interfaccia.
 
 Il Piano 1 lascia il sito funzionante e onesto: feed vivo che si alimenta da solo, rotte vere, guasti visibili. I piani 2 e 3 lo rendono anche bello e leggibile.
