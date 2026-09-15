@@ -895,7 +895,7 @@ Il cuore della cura. Tre difetti della v1 si incontrano qui, e a essi si aggiung
 
 **Interfaces:**
 - Consumes: `SourceSelector` dal Task 3
-- Produces: `createFeedState(opts?: FeedStateOptions): FeedState`. `FeedState` espone `put(key: string, body: string): void`, `get(key: string): { body: string; stale: boolean } | null`, `recordFailure(message: string): void`, `health(): FeedHealth`. `FeedHealth = { status: 'starting' | 'ok' | 'degraded'; lastSuccessAt: string | null; feedAgeSeconds: number | null; lastError: string | null }`. `FeedStateOptions = { maxFreshMs?: number; maxStaleMs?: number; degradedAfterMs?: number; now?: () => number }`.
+- Produces: `createFeedState(opts?: FeedStateOptions): FeedState`. `FeedState` espone `put(key: string, body: string): void`, `get(key: string): { body: string; stale: boolean } | null`, `recordFailure(message: string): void`, `health(): FeedHealth`. `FeedHealth = { status: 'starting' | 'ok' | 'degraded'; lastSuccessAt: string | null; feedAgeSeconds: number | null; lastError: string | null }`. `FeedStateOptions = { maxFreshMs?: number; maxStaleMs?: number; degradedAfterMs?: number; startupGraceMs?: number; now?: () => number }`.
 
 **Perché tre stati e non due.** `railway.toml` usa `/health` come healthcheck del deploy, con `restartPolicyType = ON_FAILURE` e 10 tentativi. Se `/health` rispondesse 503 quando nessun fetch è ancora riuscito, si creerebbe uno stallo: Railway non instrada traffico finché il check non passa, e senza traffico nessun fetch parte. Il deploy che deve riparare il guasto non entrerebbe mai in servizio. Lo stato `starting` distingue "non ho ancora iniziato" (200, legittimo al boot) da `degraded`, cioè "ero vivo e ora sono fermo" (503, il segnale che alla v1 è mancato per 25 giorni).
 
@@ -1330,7 +1330,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `USER_AGENT` dal Task 1, importato come `'../src/data/sources/userAgent.js'`
-- Produces: `createRouteResolver(opts?: RouteResolverOptions): RouteResolver`. `RouteResolver` espone `seed(records: SeedRecord[]): void`, `get(callsign: string): FlightRoute | null`, `enqueue(callsigns: string[]): void`, `pump(fetchImpl?: typeof fetch): Promise<number>`, `stats(): ResolverStats`. `FlightRoute = { callsignIcao: string; callsignIata: string | null; airlineName: string | null; originIata: string; originName: string; destinationIata: string; destinationName: string }`. `SeedRecord = { callsign: string; route: FlightRoute | null }` — `null` significa "già interrogato, sconosciuto". `ResolverStats = { resolved: number; unknown: number; queued: number; suspendedUntil: string | null; consecutiveRateLimits: number; lastError: string | null }`. `RouteResolverOptions = { maxPerPump?: number; rateLimitCooldownMs?: number; maxAttempts?: number; now?: () => number }`.
+- Produces: `createRouteResolver(opts?: RouteResolverOptions): RouteResolver`. `RouteResolver` espone `seed(records: SeedRecord[]): void`, `get(callsign: string): FlightRoute | null`, `enqueue(callsigns: string[]): void`, `pump(fetchImpl?: typeof fetch): Promise<number>`, `stats(): ResolverStats`. `FlightRoute = { callsignIcao: string; callsignIata: string | null; airlineName: string | null; originIata: string; originName: string; destinationIata: string; destinationName: string }`. `SeedRecord = { callsign: string; route: FlightRoute | null }` — `null` significa "già interrogato, sconosciuto". `ResolverStats = { resolved: number; unknown: number; queued: number; abandoned: number; suspendedUntil: string | null; consecutiveRateLimits: number; lastError: string | null }`. `RouteResolverOptions = { maxPerPump?: number; rateLimitCooldownMs?: number; maxAttempts?: number; minIntervalMs?: number; now?: () => number }`.
 
 **Tre vincoli di realtà, tutti misurati dal vivo.**
 
@@ -1385,14 +1385,17 @@ const adsbdbRateLimited = {
   json: async () => ({ response: 'rate limited for 300 seconds' }),
 };
 
+/** Tests must not actually wait between lookups. */
+const mk = (opts = {}) => createRouteResolver({ minIntervalMs: 0, ...opts });
+
 describe('createRouteResolver — cache and lookups', () => {
   it('returns null before anything has been resolved', () => {
-    expect(createRouteResolver().get('BAW274')).toBeNull();
+    expect(mk().get('BAW274')).toBeNull();
   });
 
   it('serves a seeded route without any network call', () => {
     const fetchImpl = vi.fn();
-    const r = createRouteResolver();
+    const r = mk();
     r.seed([{ callsign: 'BAW274', route: ROUTE }]);
     expect(r.get('BAW274')?.originIata).toBe('LAS');
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -1401,7 +1404,7 @@ describe('createRouteResolver — cache and lookups', () => {
 
   it('does not re-enqueue a callsign the seed already judged unknown', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(adsbdbOk('LAS', 'LHR'));
-    const r = createRouteResolver({ maxPerPump: 10 });
+    const r = mk({ maxPerPump: 10 });
     r.seed([{ callsign: 'NJE004M', route: null }]);
     r.enqueue(['NJE004M']);
     expect(r.stats().queued).toBe(0);
@@ -1411,7 +1414,7 @@ describe('createRouteResolver — cache and lookups', () => {
 
   it('resolves a queued callsign and serves it from cache afterwards', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(adsbdbOk('LAS', 'LHR'));
-    const r = createRouteResolver({ maxPerPump: 10 });
+    const r = mk({ maxPerPump: 10 });
     r.enqueue(['BAW274']);
     await r.pump(fetchImpl as unknown as typeof fetch);
     expect(r.get('BAW274')?.originIata).toBe('LAS');
@@ -1421,7 +1424,7 @@ describe('createRouteResolver — cache and lookups', () => {
 
   it('sends the project User-Agent to adsbdb', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(adsbdbOk('LAS', 'LHR'));
-    const r = createRouteResolver({ maxPerPump: 10 });
+    const r = mk({ maxPerPump: 10 });
     r.enqueue(['BAW274']);
     await r.pump(fetchImpl as unknown as typeof fetch);
     const init = fetchImpl.mock.calls[0]![1] as RequestInit;
@@ -1430,7 +1433,7 @@ describe('createRouteResolver — cache and lookups', () => {
 
   it('treats HTTP 404 as a VERDICT, not a transport error', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(adsbdbUnknown);
-    const r = createRouteResolver({ maxPerPump: 10 });
+    const r = mk({ maxPerPump: 10 });
     r.enqueue(['NJE004M']);
     await r.pump(fetchImpl as unknown as typeof fetch);
     expect(r.get('NJE004M')).toBeNull();
@@ -1442,7 +1445,7 @@ describe('createRouteResolver — cache and lookups', () => {
 
   it('caps the number of lookups per pump', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(adsbdbOk('AAA', 'BBB'));
-    const r = createRouteResolver({ maxPerPump: 2 });
+    const r = mk({ maxPerPump: 2 });
     r.enqueue(['AAA111', 'BBB222', 'CCC333', 'DDD444']);
     await r.pump(fetchImpl as unknown as typeof fetch);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
@@ -1455,7 +1458,7 @@ describe('createRouteResolver — cache and lookups', () => {
       status: 200,
       json: async () => ({ response: { flightroute: { callsign: 'XXX1', origin: {}, destination: {} } } }),
     });
-    const r = createRouteResolver({ maxPerPump: 10 });
+    const r = mk({ maxPerPump: 10 });
     r.enqueue(['XXX1']);
     await r.pump(fetchImpl as unknown as typeof fetch);
     expect(r.get('XXX1')).toBeNull();
@@ -1464,7 +1467,7 @@ describe('createRouteResolver — cache and lookups', () => {
 
   it('normalises the callsign to uppercase and trims it', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(adsbdbOk('LAS', 'LHR'));
-    const r = createRouteResolver({ maxPerPump: 10 });
+    const r = mk({ maxPerPump: 10 });
     r.enqueue([' baw274 ']);
     await r.pump(fetchImpl as unknown as typeof fetch);
     expect(fetchImpl.mock.calls[0]![0]).toBe('https://api.adsbdb.com/v0/callsign/BAW274');
@@ -1478,7 +1481,7 @@ describe('createRouteResolver — rate limiting', () => {
     // that keeps firing never recovers on its own.
     const fetchImpl = vi.fn().mockResolvedValue(adsbdbRateLimited);
     let clock = 1_000_000;
-    const r = createRouteResolver({ maxPerPump: 10, rateLimitCooldownMs: 300_000, now: () => clock });
+    const r = mk({ maxPerPump: 10, rateLimitCooldownMs: 300_000, now: () => clock });
     r.enqueue(['A111', 'B222', 'C333', 'D444']);
     await r.pump(fetchImpl as unknown as typeof fetch);
     expect(fetchImpl).toHaveBeenCalledTimes(1); // stopped at the first 429
@@ -1489,7 +1492,7 @@ describe('createRouteResolver — rate limiting', () => {
   it('emits NO request at all while suspended', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(adsbdbRateLimited);
     let clock = 1_000_000;
-    const r = createRouteResolver({ maxPerPump: 10, rateLimitCooldownMs: 300_000, now: () => clock });
+    const r = mk({ maxPerPump: 10, rateLimitCooldownMs: 300_000, now: () => clock });
     r.enqueue(['A111']);
     await r.pump(fetchImpl as unknown as typeof fetch);
     fetchImpl.mockClear();
@@ -1502,7 +1505,7 @@ describe('createRouteResolver — rate limiting', () => {
   it('resumes once the cooldown has elapsed', async () => {
     const fetchImpl = vi.fn().mockResolvedValueOnce(adsbdbRateLimited).mockResolvedValue(adsbdbOk('LAS', 'LHR'));
     let clock = 1_000_000;
-    const r = createRouteResolver({ maxPerPump: 10, rateLimitCooldownMs: 300_000, now: () => clock });
+    const r = mk({ maxPerPump: 10, rateLimitCooldownMs: 300_000, now: () => clock });
     r.enqueue(['BAW274']);
     await r.pump(fetchImpl as unknown as typeof fetch);
     clock += 301_000;
@@ -1514,7 +1517,7 @@ describe('createRouteResolver — rate limiting', () => {
   it('backs off exponentially on repeated rate limits', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(adsbdbRateLimited);
     let clock = 1_000_000;
-    const r = createRouteResolver({ maxPerPump: 10, rateLimitCooldownMs: 300_000, now: () => clock });
+    const r = mk({ maxPerPump: 10, rateLimitCooldownMs: 300_000, now: () => clock });
     r.enqueue(['A111', 'B222']);
 
     await r.pump(fetchImpl as unknown as typeof fetch);
@@ -1530,7 +1533,7 @@ describe('createRouteResolver — rate limiting', () => {
   it('clears the backoff counter after a success', async () => {
     const fetchImpl = vi.fn().mockResolvedValueOnce(adsbdbRateLimited).mockResolvedValue(adsbdbOk('LAS', 'LHR'));
     let clock = 1_000_000;
-    const r = createRouteResolver({ maxPerPump: 10, rateLimitCooldownMs: 1000, now: () => clock });
+    const r = mk({ maxPerPump: 10, rateLimitCooldownMs: 1000, now: () => clock });
     r.enqueue(['BAW274']);
     await r.pump(fetchImpl as unknown as typeof fetch);
     clock += 2000;
@@ -1540,7 +1543,7 @@ describe('createRouteResolver — rate limiting', () => {
 
   it('exposes the rate limit in stats so /health can report it', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(adsbdbRateLimited);
-    const r = createRouteResolver({ maxPerPump: 10 });
+    const r = mk({ maxPerPump: 10 });
     r.enqueue(['A111']);
     await r.pump(fetchImpl as unknown as typeof fetch);
     expect(r.stats().lastError).toMatch(/429|rate/i);
@@ -1549,11 +1552,40 @@ describe('createRouteResolver — rate limiting', () => {
   it('gives up on a callsign after repeated transport failures', async () => {
     // Without a cap, a permanently failing callsign recirculates forever.
     const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
-    const r = createRouteResolver({ maxPerPump: 1, maxAttempts: 3 });
+    const r = mk({ maxPerPump: 1, maxAttempts: 3 });
     r.enqueue(['BAW274']);
     for (let i = 0; i < 4; i++) await r.pump(fetchImpl as unknown as typeof fetch);
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     expect(r.stats().queued).toBe(0);
+    expect(r.stats().abandoned).toBe(1);
+  });
+
+  it('REMEMBERS an abandoned callsign so the server cannot re-enqueue it', async () => {
+    // The server calls enqueue() on every feed cycle. Without a permanent
+    // record, a callsign given up on comes straight back and the attempt cap
+    // achieves nothing.
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+    const r = mk({ maxPerPump: 1, maxAttempts: 3 });
+    r.enqueue(['BAW274']);
+    for (let i = 0; i < 4; i++) await r.pump(fetchImpl as unknown as typeof fetch);
+
+    r.enqueue(['BAW274']);
+    expect(r.stats().queued).toBe(0);
+    await r.pump(fetchImpl as unknown as typeof fetch);
+    expect(fetchImpl).toHaveBeenCalledTimes(3); // no fourth attempt
+  });
+
+  it('waits minIntervalMs between lookups inside one pump', async () => {
+    // pump() with maxPerPump > 1 used to fire the whole batch back-to-back,
+    // which is how the project's 1-request-per-1.5s rule got broken from the
+    // inside.
+    const fetchImpl = vi.fn().mockResolvedValue(adsbdbOk('LAS', 'LHR'));
+    const r = createRouteResolver({ maxPerPump: 3, minIntervalMs: 40 });
+    r.enqueue(['A111', 'B222', 'C333']);
+    const started = Date.now();
+    await r.pump(fetchImpl as unknown as typeof fetch);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(80); // two gaps, not three
   });
 });
 ```
@@ -1588,6 +1620,8 @@ export interface ResolverStats {
   resolved: number;
   unknown: number;
   queued: number;
+  /** Callsigns given up on after repeated transport failures. */
+  abandoned: number;
   suspendedUntil: string | null;
   consecutiveRateLimits: number;
   lastError: string | null;
@@ -1599,6 +1633,12 @@ export interface RouteResolverOptions {
   rateLimitCooldownMs?: number;
   /** Transport failures tolerated per callsign before giving up on it. */
   maxAttempts?: number;
+  /**
+   * Minimum gap between two lookups inside one pump. The project floor is one
+   * request per 1.5 s; a batch fired back-to-back breaks it from the inside.
+   * Tests pass 0.
+   */
+  minIntervalMs?: number;
   now?: () => number;
 }
 
@@ -1632,7 +1672,11 @@ interface AdsbdbResponse {
 const DEFAULT_MAX_PER_PUMP = 1;
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 300_000;
 const DEFAULT_MAX_ATTEMPTS = 3;
+const DEFAULT_MIN_INTERVAL_MS = 1500;
 const MAX_COOLDOWN_MS = 3_600_000;
+
+const sleep = (ms: number): Promise<void> =>
+  ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve();
 
 /** Raised by lookup() on 429 so pump() can stop the whole batch. */
 class RateLimited extends Error {}
@@ -1660,6 +1704,7 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
   const maxPerPump = opts.maxPerPump ?? DEFAULT_MAX_PER_PUMP;
   const baseCooldownMs = opts.rateLimitCooldownMs ?? DEFAULT_RATE_LIMIT_COOLDOWN_MS;
   const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+  const minIntervalMs = opts.minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS;
   const now = opts.now ?? Date.now;
 
   const resolved = new Map<string, FlightRoute>();
@@ -1667,6 +1712,8 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
   const queue: string[] = [];
   const queued = new Set<string>();
   const attempts = new Map<string, number>();
+  /** Permanent record of callsigns we stopped trying, so enqueue() skips them. */
+  const abandoned = new Set<string>();
 
   let suspendedUntil = 0;
   let consecutiveRateLimits = 0;
@@ -1733,7 +1780,7 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
       for (const raw of callsigns) {
         const cs = key(raw);
         if (!cs) continue;
-        if (resolved.has(cs) || unknown.has(cs) || queued.has(cs)) continue;
+        if (resolved.has(cs) || unknown.has(cs) || queued.has(cs) || abandoned.has(cs)) continue;
         queue.push(cs);
         queued.add(cs);
       }
@@ -1748,6 +1795,9 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
       for (let i = 0; i < batch.length; i++) {
         const cs = batch[i]!;
         queued.delete(cs);
+        // Space out the batch. The server pumps one at a time, but a caller
+        // asking for more must not turn a single pump into a burst.
+        if (i > 0) await sleep(minIntervalMs);
         try {
           if (await lookup(cs, fetchImpl)) count += 1;
           consecutiveRateLimits = 0;
@@ -1768,7 +1818,11 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
           lastError = e instanceof Error ? e.message : String(e);
           const tried = (attempts.get(cs) ?? 0) + 1;
           if (tried >= maxAttempts) {
-            attempts.delete(cs); // give up: it would recirculate forever
+            // Give up permanently. Merely dropping it from the queue is not
+            // enough: the server calls enqueue() every feed cycle and the
+            // callsign would come straight back, making the cap useless.
+            attempts.delete(cs);
+            abandoned.add(cs);
           } else {
             attempts.set(cs, tried);
             queue.push(cs);
@@ -1784,6 +1838,7 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
         resolved: resolved.size,
         unknown: unknown.size,
         queued: queue.length,
+        abandoned: abandoned.size,
         suspendedUntil: now() < suspendedUntil ? new Date(suspendedUntil).toISOString() : null,
         consecutiveRateLimits,
         lastError,
@@ -1796,7 +1851,7 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
 - [ ] **Step 4: Eseguire il test e verificare che passi**
 
 Run: `npx vitest run tests/unit/server/routeResolver.test.ts`
-Expected: PASS, 16 test
+Expected: PASS, 18 test
 
 - [ ] **Step 5: Verificare contro adsbdb reale, con parsimonia**
 
@@ -1887,9 +1942,14 @@ const hoursArg = process.argv.indexOf('--hours');
 const RUN_HOURS = hoursArg > -1 ? Number(process.argv[hoursArg + 1]) : 4;
 
 // Conservative and self-correcting: start slow, back off hard on 429.
-let delayMs = 1500;
-const MIN_DELAY_MS = 1200;
-const MAX_DELAY_MS = 30_000;
+// MIN_DELAY_MS is the project floor of one request per 1.5 s. The loop below
+// MUST await this between lookups: an earlier draft computed delayMs, logged
+// it, and never slept on it — measured at 185 req/s against a stubbed fetch
+// while its own log claimed 0.67 req/s.
+let delayMs = 2000;
+const MIN_DELAY_MS = 1500;
+const MAX_DELAY_MS = 60_000;
+const MAX_TRANSPORT_ATTEMPTS = 3;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -1951,7 +2011,8 @@ async function lookup(cs) {
 
 const deadline = Date.now() + RUN_HOURS * 3600_000;
 const pending = [];
-let resolvedCount = 0, unknownCount = 0, lastSample = 0;
+const attempts = new Map();
+let resolvedCount = 0, unknownCount = 0, abandonedCount = 0, lastSample = 0;
 
 console.log(`building for ${RUN_HOURS}h, starting at ${(1000 / delayMs).toFixed(2)} req/s`);
 
@@ -1991,9 +2052,29 @@ while (Date.now() < deadline) {
     continue;
   }
 
-  if (outcome === 'ok') resolvedCount++;
-  else if (outcome === 'unknown') unknownCount++;
-  else pending.push(cs); // transport hiccup: back of the line
+  if (outcome === 'ok') {
+    resolvedCount++;
+    attempts.delete(cs);
+  } else if (outcome === 'unknown') {
+    unknownCount++;
+    attempts.delete(cs);
+  } else {
+    // Transport hiccup: retry a bounded number of times, then give up.
+    // Without a cap a permanently failing callsign recirculates forever.
+    const tried = (attempts.get(cs) ?? 0) + 1;
+    if (tried >= MAX_TRANSPORT_ATTEMPTS) {
+      attempts.delete(cs);
+      abandonedCount++;
+      console.warn(`[give up] ${cs} after ${tried} transport failures`);
+    } else {
+      attempts.set(cs, tried);
+      pending.push(cs);
+    }
+  }
+
+  // THE THROTTLE. Everything above is bookkeeping; this line is what keeps us
+  // inside adsbdb's tolerance. Never remove it, never make it conditional.
+  await sleep(delayMs);
 
   if ((resolvedCount + unknownCount) % 100 === 0) {
     save();
@@ -2006,7 +2087,7 @@ while (Date.now() < deadline) {
 }
 
 save();
-console.log(`\ndone: ${cache.size} callsigns cached (${resolvedCount} resolved, ${unknownCount} unknown this run), ${pending.length} still pending`);
+console.log(`\ndone: ${cache.size} callsigns cached (${resolvedCount} resolved, ${unknownCount} unknown, ${abandonedCount} abandoned this run), ${pending.length} still pending`);
 console.log(`written to ${OUT} — commit it`);
 ```
 
@@ -2025,7 +2106,17 @@ mkdir -p server/data
 node scripts/build-route-cache.mjs --hours 0.05
 ```
 
-Expected: circa tre minuti di esecuzione, un `[sample]` iniziale con migliaia di callsign, poi righe di avanzamento, e `server/data/route-cache.json` scritto. Se compare `[429]`, lo script deve **dormire 360 s in silenzio** e non emettere altre richieste: è il comportamento voluto.
+**Prima di lanciarlo, verificare che il throttle esista davvero.** È il punto in cui una stesura precedente sparava a 185 req/s mentre il proprio log dichiarava 0,67:
+
+```bash
+grep -n "await sleep(delayMs)" scripts/build-route-cache.mjs
+```
+
+Se quella riga non compare nel ciclo principale, **non eseguire lo script**: manca il throttle e il risultato è un ban immediato.
+
+Expected: circa tre minuti di esecuzione e `server/data/route-cache.json` scritto. Con `delayMs` iniziale di 2000 ms, tre minuti devono produrre **al massimo ~90 lookup**: un `[sample]` iniziale e nessuna o al più una riga di avanzamento, che compare ogni 100 esiti. Se ne vedi molte di più il throttle non funziona: interrompi con Ctrl-C e attendi sei minuti prima di qualunque altra chiamata ad adsbdb.
+
+Se compare `[429]`, lo script deve **dormire 360 s in silenzio** e non emettere altre richieste: è il comportamento voluto.
 
 Verificare la forma del file:
 
@@ -2873,6 +2964,18 @@ Il terzo preflight ha prodotto **3 critici, 9 major, 16 minori**. Due revisori h
 | 18 | `verify-feed.mjs` stampava **`VERIFICATION PASSED` con `route: 0.0%`**: l'unico controllo sulle rotte era condizionato a `withRoute > 0`, quindi non poteva fallire proprio nel caso che conta | Output reale sullo stesso server bloccato dal 429 | Controlli incondizionati su `suspendedUntil`, sul numero di callsign noti al resolver, e sul `lastError` (Task 9) |
 | 19 | A tick alterni il selettore riportava "tutte le sorgenti in cooldown" invece della causa vera: col breaker aperto `errors` restava vuoto | Lettura del ramo `continue` senza `errors.push` | Il selettore ricorda la causa di ciascun breaker e la riporta anche quando salta la sorgente (Task 3) |
 | 20 | Task 1 e Task 8 si contraddicevano sull'import di `makeAircraftRaw` in `stores.test.ts`: entrambi ordinavano di aggiungerlo | Confronto fra i due step | Il Task 8 dichiara esplicitamente che l'import c'è già e non va ri-aggiunto (Task 8) |
+
+### Quarta tornata di correzioni
+
+Il quarto preflight ha prodotto **3 critici** (lo stesso difetto trovato da tre lenti indipendenti), **5 major**, 24 minori.
+
+| # | Difetto | Evidenza | Correzione |
+|---|---|---|---|
+| 21 | **Critico.** Lo script di pre-seed dichiarava una cadenza che non applicava: `delayMs` veniva calcolato, loggato, raddoppiato sul 429 — e mai atteso. Il ciclo sparava back-to-back. Lanciarlo sarebbe stato un ban immediato, e il log avrebbe stampato una conferma falsa mentre il ban maturava | Script estratto verbatim dal piano ed eseguito con `fetch` stubbato, senza alcuna richiesta reale: **3684 richieste in 19,8 s = 186 req/s**, mentre il log dichiarava `starting at 0.67 req/s` | `await sleep(delayMs)` nel ciclo, con un commento che ne vieta la rimozione; `MIN_DELAY_MS` portato a 1500 per rispettare il tetto di progetto; lo Step 3 ora fa verificare con un `grep` che il throttle esista prima di eseguire, e dichiara quanti lookup aspettarsi (Task 6) |
+| 22 | `pump()` con `maxPerPump > 1` eseguiva l'intero batch back-to-back: lo Step 5 del Task 5 ne chiedeva 5, cioè cinque richieste in pochi millisecondi | Lettura del ciclo `for` senza pause | `minIntervalMs` (default 1500) atteso fra un lookup e il successivo, con test che lo verifica (Task 5) |
+| 23 | Il tetto `maxAttempts` era inutile: un callsign abbandonato non veniva registrato da nessuna parte, e `enqueue()` del ciclo di feed successivo lo rimetteva in coda | Lettura di `enqueue()`, che controllava solo `resolved`/`unknown`/`queued` | Set `abandoned` permanente, controllato da `enqueue()` ed esposto in `stats()` (Task 5) |
+| 24 | Anche lo script di pre-seed rimetteva in coda all'infinito sugli errori di trasporto | Ramo `else pending.push(cs)` senza tetto | Contatore di tentativi e abbandono dopo tre fallimenti, come nel resolver (Task 6) |
+| 25 | Il blocco `Interfaces` del Task 4 ometteva `startupGraceMs`, che il test dello stesso task passa: il contratto non coincideva con il codice | Confronto fra il blocco Interfaces e lo Step 3 | Interfaccia allineata (Task 4) |
 
 ## Cosa resta fuori da questo piano
 
