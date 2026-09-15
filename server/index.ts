@@ -27,7 +27,15 @@ import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import { Agent, setGlobalDispatcher } from 'undici';
 import { adsbLolSource } from '../src/data/sources/adsbLol.js';
+import { adsbFiSource } from '../src/data/sources/adsbFi.js';
+import { createSourceSelector } from '../src/data/sources/selector.js';
 import type { BoundingBox } from '../src/types.js';
+
+// Plan 1 uses a single global sweep, which only adsb.lol can serve.
+// adsb.fi is registered now and starts being used by the Plan 2
+// camera-driven fetch, whose radii fit under its 250 NM ceiling.
+const sources = createSourceSelector([adsbLolSource, adsbFiSource]);
+const GLOBAL_SWEEP = { centre: { lat: 0, lon: 0 }, radiusNm: 10_000 };
 
 // ----------------------------------------------------------------------------
 // Outbound HTTP dispatcher: force IPv4 and bump connect timeout. Node 20+
@@ -117,7 +125,7 @@ app.get('/api/states', async (req, reply) => {
   }
 
   try {
-    const result = await adsbLolSource.fetchRegion({ lat: 0, lon: 0 }, 10_000);
+    const result = await sources.fetchRegion(GLOBAL_SWEEP.centre, GLOBAL_SWEEP.radiusNm);
     const body = JSON.stringify({
       fetchedAt: result.fetchedAt.toISOString(),
       bbox,
