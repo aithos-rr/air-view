@@ -806,14 +806,18 @@ const tiles = buildTileGrid();
 const scheduler = createTileScheduler(tiles);
 const WORLD_KEY = 'world';
 
-// Two tiles per cycle at 1.5 s apart stays near 1.3 requests/s towards a
-// free aggregator. With ~413 tiles — fewer once ocean tiles go dormant —
-// a full sweep takes roughly five minutes.
+// Measured live: a single tile fetch takes from 11 s to over 90 s. A fixed
+// setInterval would stack cycles on top of each other and fire unbounded
+// concurrent requests at a free service. The loop reschedules itself AFTER
+// each cycle completes, and a guard refuses to start a second one.
 const TILES_PER_CYCLE = 2;
-const TILE_CYCLE_MS = 3_000;
+/** Minimum pause between the end of one cycle and the start of the next. */
+const TILE_CYCLE_GAP_MS = 3_000;
+/** Courtesy pause between two tiles inside one cycle. */
+const TILE_GAP_MS = 1_500;
 ```
 
-Sostituire `refreshGlobalFeed` con:
+**Non esiste alcuna funzione di refresh da sostituire**: il server attuale fa il fetch inline dentro il gestore `/api/states`. Creare questa funzione **dopo** `await app.register(cors, ...)` — deve stare sotto la dichiarazione di `app`, perché il suo corpo chiama `app.log` — e rimuovere il fetch inline dal gestore, che viene riscritto allo Step 10.
 
 ```ts
 /**
@@ -823,11 +827,25 @@ Sostituire `refreshGlobalFeed` con:
  * there was no feed at all — and with a Railway healthcheck gating traffic
  * that would be a deadlock. The server feeds itself.
  */
+let cycleInFlight = false;
+
 async function refreshNextTiles(): Promise<void> {
+  if (cycleInFlight) return; // a slow cycle must not be overlapped by the next
+  cycleInFlight = true;
+  try {
+    await runCycle();
+  } finally {
+    cycleInFlight = false;
+  }
+}
+
+async function runCycle(): Promise<void> {
   const batch = scheduler.next(TILES_PER_CYCLE);
   let anySuccess = false;
 
-  for (const tile of batch) {
+  for (let i = 0; i < batch.length; i++) {
+    const tile = batch[i]!;
+    if (i > 0) await new Promise((r) => setTimeout(r, TILE_GAP_MS));
     try {
       const result = await sources.fetchRegion(tile.centre, TILE_RADIUS_NM);
       fleet.absorb(result.aircraft, Math.floor(result.fetchedAt.getTime() / 1000));
@@ -920,9 +938,16 @@ app.get('/health', async (_req, reply) => {
 Nel blocco `try { await app.listen(...) }`, dopo la riga di log:
 
 ```ts
-  void refreshNextTiles();
-  const tileTimer = setInterval(() => void refreshNextTiles(), TILE_CYCLE_MS);
-  tileTimer.unref();
+  // Self-rescheduling loop, NOT setInterval: a cycle can take minutes when
+  // the upstream is slow, and a fixed timer would pile cycles on top of one
+  // another until the request rate is unbounded.
+  const scheduleNextCycle = (): void => {
+    const t = setTimeout(() => {
+      void refreshNextTiles().finally(scheduleNextCycle);
+    }, TILE_CYCLE_GAP_MS);
+    t.unref();
+  };
+  void refreshNextTiles().finally(scheduleNextCycle);
 ```
 
 - [ ] **Step 13: Verificare entrambi i programmi**
@@ -931,7 +956,15 @@ Nel blocco `try { await app.listen(...) }`, dopo la riga di log:
 npm run build:all && npm test -- --run
 ```
 
-- [ ] **Step 14: Verificare il comportamento reale del server**
+- [ ] **Step 14: Verificare che non sia rimasto un timer a cadenza fissa**
+
+```bash
+grep -n "setInterval" server/index.ts
+```
+
+Expected: nessuna occorrenza relativa a `refreshNextTiles`. Un `setInterval` da 3 s su un ciclo che dal vivo può durare 90 s produce decine di cicli sovrapposti e richieste concorrenti illimitate verso un servizio gratuito.
+
+- [ ] **Step 15: Verificare il comportamento reale del server**
 
 ```bash
 npm run server
@@ -957,7 +990,7 @@ Expected: `"status":"ok"`; `fleet.size` cresce ciclo dopo ciclo mentre le tile v
 
 Lasciare girare qualche minuto e controllare che `tiles.sweepsCompleted` avanzi e che `fleet.size` si stabilizzi invece di crescere senza limite: è `prune` che lavora.
 
-- [ ] **Step 15: Commit**
+- [ ] **Step 16: Commit**
 
 ```bash
 git add -A
@@ -1945,9 +1978,9 @@ if (existsSync(seedPath)) {
 
 In `tsconfig.server.json`, aggiungere all'`include` il percorso `"src/data/completeness.ts"`: senza, il modulo non entra nel programma del server e `build:server` fallisce.
 
-- [ ] **Step 9: Arricchire e marcare dentro `refreshGlobalFeed`**
+- [ ] **Step 9: Arricchire e marcare dentro `refreshNextTiles`**
 
-Fra l'ottenimento di `result` e la scrittura in cache:
+**Dopo la guardia `if (!anySuccess) return;` e dopo `fleet.prune(...)`, prima di `feed.put(...)`.** L'arricchimento gira una volta per ciclo, non una per tile: `result` vive dentro il ciclo delle tile e qui non è visibile.
 
 ```ts
     const world = fleet.snapshot();
@@ -2223,7 +2256,11 @@ L'ultimo anello della catena che ha prodotto il globo vuoto.
 
 **Interfaces:**
 - Consumes: `makeAircraftRaw` dal Task 1
-- Produces: `useAircraftStore` guadagna `feedFetchedAt: number` (sostituisce `fetchedAt`) e `feedAgeSeconds(): number`; `updateBatch(raws, batchFetchedAtUnix)` prende due argomenti; `removeStale(batchFetchedAtUnix)` cambia semantica; `StreamOptions.onBatch(aircraft, fetchedAt)` prende due argomenti; `fetchStates` si sposta in `src/data/statesClient.ts` con la stessa firma.
+- Produces: `useAircraftStore` guadagna `feedFetchedAt: number` (sostituisce `fetchedAt`) e `feedAgeSeconds(): number`; `updateBatch(raws, batchFetchedAtUnix)` prende due argomenti e **sostituisce** la flotta anziché fonderla; `removeStale` viene **rimosso**; `StreamOptions.onBatch(aircraft, fetchedAt)` prende due argomenti; `fetchStates` si sposta in `src/data/statesClient.ts` con la stessa firma.
+
+**Il server è l'unica autorità su chi è in volo.** La v1 misurava la staleness lato client contro l'orologio locale, e con un feed congelato cancellava l'intera flotta. La correzione ovvia sarebbe misurarla contro il timestamp del batch — ma con il feed a tile anche quella sarebbe sbagliata: il server tiene gli aerei 900 s mentre una tile viene rivisitata ogni ~620 s, quindi una finestra client di 120 s cancellerebbe l'81% della flotta appena ricevuta. Il globo tornerebbe quasi vuoto, in forma più mite ma per la stessa ragione.
+
+Qui la finestra client sparisce del tutto: il payload del server **è** il mondo, il server fa già `prune`, e il client si limita a sincronizzarsi con ciò che riceve. Due autorità sulla stessa decisione sono una di troppo, e sono destinate a divergere.
 
 **Tre file importano ciò che questo task rinomina.** Il `git mv` rompe `src/data/aircraftStream.ts`, `tests/unit/data/statesClient.test.ts` **e** `tests/unit/data/aircraftStream.test.ts`, che fa `spyOn` sul modulo. Dimenticare il terzo impedisce alla suite di caricarsi.
 
@@ -2251,30 +2288,38 @@ describe('aircraftStore', () => {
     expect(useAircraftStore.getState().aircraft.get('a1')?.trail.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('keeps every aircraft of a batch even when the batch itself is old', () => {
-    // The v1 bug: a frozen feed made now - lastContact enormous for ALL
-    // aircraft, so removeStale deleted the entire fleet and the globe emptied.
+  it('KEEPS an aircraft whose last fix is ten minutes old', () => {
+    // The tiled feed revisits a tile roughly every 620 s and the server
+    // deliberately keeps aircraft for 900 s. A client-side window of 120 s
+    // would delete ~81% of the fleet the server just sent — the v1 empty
+    // globe all over again, in a milder form.
     const store = useAircraftStore.getState();
     const batchAt = 1_716_163_200;
+    store.updateBatch(
+      [makeAircraftRaw({ icao24: 'a', lastContact: batchAt }), makeAircraftRaw({ icao24: 'old', lastContact: batchAt - 600 })],
+      batchAt
+    );
+    expect(useAircraftStore.getState().aircraft.size).toBe(2);
+  });
+
+  it('keeps the whole fleet even when the batch itself is ancient', () => {
+    // The v1 bug: a frozen feed made now - lastContact enormous for ALL
+    // aircraft, so the client deleted the entire fleet.
+    const store = useAircraftStore.getState();
+    const batchAt = 1_000_000;
     store.updateBatch(
       [makeAircraftRaw({ icao24: 'a', lastContact: batchAt }), makeAircraftRaw({ icao24: 'b', lastContact: batchAt - 10 })],
       batchAt
     );
-    store.removeStale(batchAt);
     expect(useAircraftStore.getState().aircraft.size).toBe(2);
   });
 
-  it('drops only aircraft stale relative to their own batch', () => {
+  it('drops an aircraft the server no longer reports — the server prunes, not us', () => {
     const store = useAircraftStore.getState();
-    const batchAt = 1_716_163_200;
-    store.updateBatch(
-      [makeAircraftRaw({ icao24: 'fresh', lastContact: batchAt }), makeAircraftRaw({ icao24: 'old', lastContact: batchAt - 600 })],
-      batchAt
-    );
-    store.removeStale(batchAt);
+    store.updateBatch([makeAircraftRaw({ icao24: 'a' }), makeAircraftRaw({ icao24: 'gone' })], 100);
+    store.updateBatch([makeAircraftRaw({ icao24: 'a' })], 160);
     const ids = [...useAircraftStore.getState().aircraft.keys()];
-    expect(ids).toContain('fresh');
-    expect(ids).not.toContain('old');
+    expect(ids).toEqual(['a']);
   });
 
   it('reports the feed age from the batch timestamp', () => {
@@ -2298,8 +2343,6 @@ import { create } from 'zustand';
 import type { Aircraft, AircraftRaw, FetchStatus } from '@/types';
 
 const TRAIL_MAX = 30;
-/** An aircraft is dropped when it is this far behind its own batch. */
-const STALE_SECONDS = 120;
 
 interface AircraftState {
   aircraft: Map<string, Aircraft>;
@@ -2307,8 +2350,8 @@ interface AircraftState {
   feedFetchedAt: number;
   fetchStatus: FetchStatus;
   setFetchStatus: (s: FetchStatus) => void;
+  /** Replaces the fleet with what the server reports, preserving trails. */
   updateBatch: (raws: AircraftRaw[], batchFetchedAtUnix: number) => void;
-  removeStale: (batchFetchedAtUnix: number) => void;
   feedAgeSeconds: () => number;
 }
 
@@ -2319,37 +2362,33 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
 
   setFetchStatus: (s) => set({ fetchStatus: s }),
 
+  /**
+   * The payload IS the world: the server assembles it from tiles and prunes
+   * it on its own schedule. The client mirrors that instead of applying a
+   * second, independent staleness rule.
+   *
+   * v1 compared lastContact against the LOCAL clock, so a frozen feed made
+   * every aircraft look infinitely stale and the whole fleet was deleted —
+   * the last link in the chain that emptied the globe. Measuring against the
+   * batch timestamp would have been better but still wrong here: the server
+   * keeps aircraft for 900 s while a tile is revisited every ~620 s, so any
+   * short client window would delete most of a legitimately assembled fleet.
+   */
   updateBatch: (raws, batchFetchedAtUnix) =>
     set((state) => {
-      const next = new Map(state.aircraft);
+      const next = new Map<string, Aircraft>();
       for (const r of raws) {
-        const prev = next.get(r.icao24);
+        const prev = state.aircraft.get(r.icao24);
         const trail = prev?.trail ? [...prev.trail] : [];
         // Only real received positions enter the trail — never computed ones.
-        if (prev && prev.longitude !== null && prev.latitude !== null) {
+        if (prev && prev.longitude !== null && prev.latitude !== null && prev.lastContact !== r.lastContact) {
           trail.push({ lon: prev.longitude, lat: prev.latitude, t: prev.lastContact });
           if (trail.length > TRAIL_MAX) trail.shift();
         }
         next.set(r.icao24, { ...r, trail });
       }
+      // Aircraft absent from the payload are gone: the server already pruned.
       return { aircraft: next, feedFetchedAt: batchFetchedAtUnix };
-    }),
-
-  /**
-   * Drops aircraft that are stale *relative to the batch that carried them*.
-   *
-   * v1 compared lastContact against the local clock, so a frozen feed made
-   * every aircraft look infinitely stale and the whole fleet was deleted —
-   * the final link in the chain that emptied the globe. A stopped feed is
-   * not this function's problem: it is reported, not silently drained.
-   */
-  removeStale: (batchFetchedAtUnix) =>
-    set((state) => {
-      const next = new Map(state.aircraft);
-      for (const [icao, ac] of next) {
-        if (batchFetchedAtUnix - ac.lastContact > STALE_SECONDS) next.delete(icao);
-      }
-      return { aircraft: next };
     }),
 
   feedAgeSeconds: () => {
@@ -2419,7 +2458,6 @@ Sostituire il callback `onBatch` con:
         return ac;
       });
       useAircraftStore.getState().updateBatch(enriched, batchUnix);
-      useAircraftStore.getState().removeStale(batchUnix);
       useAircraftStore.getState().setFetchStatus('idle');
     },
 ```
@@ -2440,8 +2478,14 @@ git commit -m "fix(state): stop deleting the fleet when the feed stops
 
 removeStale compared lastContact against the local clock, so a frozen
 feed made every aircraft infinitely stale and the entire fleet was
-dropped — the last link in the chain that emptied the globe. Staleness
-is now measured against the batch that carried the aircraft.
+dropped — the last link in the chain that emptied the globe.
+
+It is deleted rather than fixed. Measuring against the batch timestamp
+would still have been wrong under the tiled feed: the server keeps
+aircraft for 900 s while a tile is revisited every ~620 s, so a 120 s
+client window would have deleted about 81% of a legitimately assembled
+fleet. The server already prunes; the client now mirrors the payload
+instead of applying a second, independent rule that is bound to drift.
 
 Renames openSkyClient to statesClient: it talks to our own proxy, not to
 OpenSky, and has since the adsb.lol switch.
@@ -2642,3 +2686,11 @@ BASE_URL=https://air-view-production.up.railway.app npm run verify:feed
 - **Piano 3 — interazione e visivo**: pannello con conteggi e checkbox, focus con geodetica e marker D/A, ricerca per numero di volo, palette caldo/grigio/blu.
 
 Il tiling introdotto qui era previsto per il Piano 2: il vincolo dei 250 NM lo ha reso un prerequisito. Il Piano 2 ne eredita la griglia e deve solo derivare dalla camera quali tile interrogare più spesso.
+
+## Difetti del quinto preflight corretti
+
+| # | Difetto | Evidenza | Correzione |
+|---|---|---|---|
+| 31 | **Critico.** Il client avrebbe cancellato l'81% della flotta appena ricevuta: finestra client di 120 s contro una flotta server che trattiene gli aerei 900 s e tile rivisitate ogni ~620 s. Il globo vuoto della v1, in forma attenuata, nel task che esiste per impedirlo | Simulazione dello scheduler del piano: sweep completo 619,5 s; tile visitate nella finestra di 120 s: 80 su 413. I test del piano non potevano vederlo — usavano scarti di 10 s | `removeStale` eliminato: il server è l'unica autorità, `updateBatch` sincronizza con il payload. Test con scarto di 600 s che asserisce la **conservazione** (Task 7) |
+| 32 | **Critico.** `setInterval` ogni 3 s senza guardia di rientranza, mentre una fetch di tile dal vivo impiega da 11 a oltre 90 s: decine di cicli sovrapposti e richieste concorrenti illimitate verso un servizio gratuito | Latenze misurate sul campo; lo Step di verifica guardava solo `/health` e non se ne sarebbe accorto | Guardia `cycleInFlight` e loop che si ripianifica **dopo** il completamento, più uno step che verifica con `grep` che nessun `setInterval` sia rimasto (Task 3) |
+| 33 | **Critico.** Due step dicevano di sostituire `refreshGlobalFeed`, una funzione che non esiste in nessun punto del repo: era nel piano precedente, il cui Task 4 non è mai stato implementato | `grep -rn 'refreshGlobalFeed' server/ src/` → nessun risultato | Gli step dicono ora di **creare** la funzione, con il punto di inserimento esatto e il perché (deve stare sotto la dichiarazione di `app`), e il Task 5 nomina `refreshNextTiles` indicando dove inserire l'arricchimento (Task 3, 5) |
