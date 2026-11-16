@@ -1597,8 +1597,11 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
   }
 
   async function lookup(cs: string, fetchImpl: typeof fetch): Promise<boolean> {
+    // undici's default headersTimeout is 300 s: without a signal a single
+    // hung request holds the only pump slot for five minutes.
     const res = await fetchImpl(`https://api.adsbdb.com/v0/callsign/${cs}`, {
       headers: { Accept: 'application/json', 'User-Agent': USER_AGENT },
+      signal: AbortSignal.timeout(10_000),
     });
 
     if (res.status === 429) throw new RateLimited('adsbdb: HTTP 429 rate limited');
@@ -1671,6 +1674,13 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
         // Space out the batch. The server pumps one at a time, but a caller
         // asking for more must not turn a single pump into a burst.
         if (i > 0) await sleep(minIntervalMs);
+        // Re-check: a 429 raised earlier in this same batch must stop the
+        // rest of it, not just future pumps.
+        if (now() < suspendedUntil) {
+          queue.unshift(cs, ...batch.slice(i + 1));
+          for (const rest of batch.slice(i)) queued.add(rest);
+          return count;
+        }
         try {
           if (await lookup(cs, fetchImpl)) count += 1;
           consecutiveRateLimits = 0;
@@ -2199,8 +2209,29 @@ Senza il secondo ciclo `isComplete` resterebbe codice morto: `noUnusedLocals` no
 Accanto al timer del feed, dopo `app.listen`:
 
 ```ts
-  const routeTimer = setInterval(() => void routes.pump(), ROUTE_PUMP_MS);
-  routeTimer.unref();
+  // Same shape as the tile loop, and for the same reason: a hung adsbdb
+  // request must not let pumps stack. Reproduced during review — a single
+  // 300 s hang with a bare setInterval produced 30 concurrent lookups
+  // against the one service that bans hard and renews the ban on every
+  // request sent during the penalty.
+  let routePumpInFlight = false;
+  const scheduleNextPump = (): void => {
+    const t = setTimeout(() => {
+      if (routePumpInFlight) {
+        scheduleNextPump();
+        return;
+      }
+      routePumpInFlight = true;
+      void routes
+        .pump()
+        .finally(() => {
+          routePumpInFlight = false;
+          scheduleNextPump();
+        });
+    }, ROUTE_PUMP_MS);
+    t.unref();
+  };
+  scheduleNextPump();
 ```
 
 Nel corpo di `/health`:
@@ -2439,7 +2470,7 @@ L'ultimo anello della catena che ha prodotto il globo vuoto.
 
 **Interfaces:**
 - Consumes: `makeAircraftRaw` dal Task 1
-- Produces: `useAircraftStore` guadagna `feedFetchedAt: number` (sostituisce `fetchedAt`) e `feedAgeSeconds(): number`; `updateBatch(raws, batchFetchedAtUnix)` prende due argomenti e **sostituisce** la flotta anziché fonderla; `removeStale` viene **rimosso**; `StreamOptions.onBatch(aircraft, fetchedAt)` prende due argomenti; `fetchStates` si sposta in `src/data/statesClient.ts` con la stessa firma.
+- Produces: `vec3ToLatLon(v: Vector3): { lat, lon }`; `SceneHandle.viewCentre(): ViewCentre`; `fetchStates(bbox?, signal?, view?)`; `StreamOptions.getViewCentre?`; `bootstrapData(getViewCentre?)`. `useAircraftStore` guadagna `feedFetchedAt: number` (sostituisce `fetchedAt`) e `feedAgeSeconds(): number`; `updateBatch(raws, batchFetchedAtUnix)` prende due argomenti e **sostituisce** la flotta anziché fonderla; `removeStale` viene **rimosso**; `StreamOptions.onBatch(aircraft, fetchedAt)` prende due argomenti; `fetchStates` si sposta in `src/data/statesClient.ts` con la stessa firma.
 
 **Il server è l'unica autorità su chi è in volo.** La v1 misurava la staleness lato client contro l'orologio locale, e con un feed congelato cancellava l'intera flotta. La correzione ovvia sarebbe misurarla contro il timestamp del batch — ma con il feed a tile anche quella sarebbe sbagliata: uno sweep completo richiede fra 16 e 25 minuti alla latenza reale di adsb.lol (~29 s mediani per tile), e il server dimensiona la propria finestra di ritenzione su quel periodo osservato; una finestra client di 120 s cancellerebbe quasi tutta la flotta appena ricevuta. Il globo tornerebbe quasi vuoto, in forma più mite ma per la stessa ragione.
 
@@ -2646,7 +2677,132 @@ Sostituire il callback `onBatch` con:
     },
 ```
 
-- [ ] **Step 9: Verificare entrambi i programmi e l'intera suite**
+- [ ] **Step 9: Completare il lato client della priorità di viewport**
+
+Senza questo il blocco `lat`/`lon`/`radius` del Task 3 è **codice morto**: il client oggi costruisce solo query bbox e non ne passa nemmeno una. La promessa "la regione inquadrata è fresca" non sarebbe mantenuta.
+
+Aggiungere a `src/globe/geoHelpers.ts` l'inversa della proiezione già presente:
+
+```ts
+/**
+ * 3D position → lat/lon (degrees). Inverse of latLonToVec3, same convention:
+ * lon=0 on +Z, lat=90 on +Y, lon=90 on +X.
+ */
+export function vec3ToLatLon(v: Vector3): { lat: number; lon: number } {
+  const r = v.length();
+  if (r === 0) return { lat: 0, lon: 0 };
+  const lat = 90 - (Math.acos(v.y / r) * 180) / Math.PI;
+  const lon = (Math.atan2(v.x, v.z) * 180) / Math.PI;
+  return { lat, lon };
+}
+```
+
+In `src/globe/scene.ts`, estendere `SceneHandle` perché il resto dell'applicazione possa sapere cosa si sta guardando — oggi espone solo `dispose`:
+
+```ts
+export interface ViewCentre {
+  lat: number;
+  lon: number;
+  radiusNm: number;
+}
+
+export interface SceneHandle {
+  dispose: () => void;
+  viewCentre: () => ViewCentre;
+}
+```
+
+e nell'oggetto restituito da `mountScene`:
+
+```ts
+    viewCentre: () => {
+      // The camera always looks at the origin, so the point under it is the
+      // normalised camera direction. The visible cap half-angle follows from
+      // how far out the camera sits: close in, you see a small disc.
+      const { lat, lon } = vec3ToLatLon(camera.position);
+      const d = camera.position.length();
+      const ratio = Math.min(1, GLOBE_RADIUS / Math.max(d, GLOBE_RADIUS + 1e-6));
+      const halfAngleRad = Math.acos(ratio);
+      return { lat, lon, radiusNm: Math.round(halfAngleRad * 3440.065) };
+    },
+```
+
+In `src/data/statesClient.ts`, accettare il punto osservato:
+
+```ts
+export interface ViewQuery {
+  lat: number;
+  lon: number;
+  radiusNm: number;
+}
+
+export async function fetchStates(
+  bbox?: BoundingBox | null,
+  signal?: AbortSignal,
+  view?: ViewQuery | null
+): Promise<FetchResult> {
+  const params = new URLSearchParams();
+  if (bbox) {
+    params.set('lamin', String(bbox.lamin));
+    params.set('lomin', String(bbox.lomin));
+    params.set('lamax', String(bbox.lamax));
+    params.set('lomax', String(bbox.lomax));
+  }
+  if (view) {
+    // Tells the server which tiles to refresh first. A full sweep takes
+    // 16-25 minutes, so without this the region on screen would be as stale
+    // as the far side of the planet.
+    params.set('lat', view.lat.toFixed(3));
+    params.set('lon', view.lon.toFixed(3));
+    params.set('radius', String(view.radiusNm));
+  }
+  const qs = params.toString();
+  const res = await fetch(qs ? `${ENDPOINT}?${qs}` : ENDPOINT, { signal });
+  if (!res.ok) throw new Error(`Air View proxy: HTTP ${res.status}`);
+  const data = (await res.json()) as { fetchedAt: string; aircraft: AircraftRaw[] };
+  return { fetchedAt: new Date(data.fetchedAt), aircraft: data.aircraft };
+}
+```
+
+In `src/data/aircraftStream.ts`, aggiungere a `StreamOptions`:
+
+```ts
+  /** Where the viewer is looking, so the server can refresh those tiles first. */
+  getViewCentre?: () => ViewQuery | null;
+```
+
+e nella `tick`, passarlo: `const result = await fetchStates(bbox, undefined, opts.getViewCentre?.() ?? null);`
+
+In `src/data/bootstrap.ts`, accettare il punto osservato dal chiamante e inoltrarlo:
+
+```ts
+export async function bootstrapData(getViewCentre?: () => ViewQuery | null): Promise<void> {
+```
+
+e nelle opzioni dello stream: `getViewCentre,`.
+
+Infine, in `src/App.tsx` (o dove `mountScene` e `bootstrapData` vengono chiamati), collegare i due: passare `() => sceneHandle.viewCentre()` a `bootstrapData`. Individuare il punto con:
+
+```bash
+grep -rn "bootstrapData\|mountScene" src/
+```
+
+- [ ] **Step 10: Verificare che la priorità arrivi davvero al server**
+
+```bash
+npm run server
+```
+
+In un altro terminale, dopo che il server ha completato qualche ciclo:
+
+```bash
+curl -s "localhost:3000/api/states?lat=50&lon=8&radius=600" > /dev/null
+curl -s localhost:3000/health | python3 -c "import json,sys; print('prioritised:', json.load(sys.stdin)['tiles']['prioritised'])"
+```
+
+Expected: un valore maggiore di zero. Poi, con il frontend in esecuzione (`npm run dev:full`), aprire il browser, ruotare il globo e controllare nel pannello di rete che le richieste a `/api/states` portino `lat`, `lon` e `radius`. Se non li portano, il collegamento camera→richiesta non è stato fatto e la freschezza della regione inquadrata non esiste.
+
+- [ ] **Step 11: Verificare entrambi i programmi e l'intera suite**
 
 ```bash
 npm run build:all && npm test -- --run
@@ -2654,7 +2810,7 @@ npm run build:all && npm test -- --run
 
 Expected: build pulita, tutti i test verdi. Se la suite non si carica affatto, un import di `openSkyClient` è sopravvissuto: rileggi lo Step 5.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
 git add -A
@@ -2866,7 +3022,7 @@ BASE_URL=https://air-view-production.up.railway.app npm run verify:feed
 
 - **Un watcher per `/health`**: l'healthcheck di `railway.toml` è un cancello di deploy, non un monitor. Il piano rende il guasto diagnosticabile, non notificato.
 - **Corsa lunga di `build:routes`**: lo script è ripartibile e la costruzione completa richiede ore. Il server funziona con cache parziale, solo con meno aerei blu.
-- **Piano 2 — densità e movimento**: fetch guidato dalla camera (che ora ha una griglia già pronta da riusare), dead reckoning con tetto temporale, raggio in pixel-schermo, ordine di disegno gerarchico.
+- **Piano 2 — densità e movimento**: dead reckoning con tetto temporale, raggio in pixel-schermo, ordine di disegno gerarchico.
 - **Piano 3 — interazione e visivo**: pannello con conteggi e checkbox, focus con geodetica e marker D/A, ricerca per numero di volo, palette caldo/grigio/blu.
 
 Il tiling introdotto qui era previsto per il Piano 2: il vincolo dei 250 NM lo ha reso un prerequisito. Il Piano 2 ne eredita la griglia e deve solo derivare dalla camera quali tile interrogare più spesso.
@@ -2889,3 +3045,10 @@ Il tiling introdotto qui era previsto per il Piano 2: il vincolo dei 250 NM lo h
 ## Nota sul risultato atteso
 
 Con questi vincoli il globo ha due velocità, ed è bene saperlo prima di guardarlo: **la regione inquadrata è fresca**, perché le sue tile hanno priorità; **il resto del pianeta è un contesto che si aggiorna in 16-25 minuti**. Non è un compromesso elegante, è il massimo che adsb.lol concede a 29 secondi per tile e 250 NM di raggio. Il dead reckoning del Piano 2 renderà continuo il movimento di ciò che si guarda; la vista globale resterà, per natura, un colpo d'occhio e non un cronometro.
+
+## Difetti del settimo preflight corretti
+
+| # | Difetto | Evidenza | Correzione |
+|---|---|---|---|
+| 36 | **Critico.** La priorità guidata dalla camera era implementata **solo lato server**: il gestore leggeva `lat`/`lon`/`radius` che nessun client invia. Codice morto, e con esso l'unica risposta al difetto #35 — tutto il globo sarebbe rimasto vecchio di 16-25 minuti, inclusa la regione inquadrata. La "Nota sul risultato atteso" prometteva una freschezza che il piano non consegnava | Piano applicato a una copia e server avviato: `curl` manuale con i parametri → `tiles.prioritised = 12`; una richiesta nuda del client reale → `0`. `SceneHandle` espone solo `dispose`, la camera non è raggiungibile dall'esterno | Completato il lato client: `vec3ToLatLon` in geoHelpers, `SceneHandle.viewCentre()` che deriva punto e raggio dalla posizione della camera, `fetchStates` che serializza il punto osservato, `getViewCentre` nello stream e il collegamento in `bootstrap`, più uno step che verifica nel browser che le richieste portino davvero i parametri (Task 7) |
+| 37 | **Critico.** Il pump delle rotte usava `setInterval` senza guardia di rientranza e senza timeout sul fetch: esattamente il difetto #32, corretto per il ciclo delle tile e reintrodotto per le rotte poche pagine dopo | Riprodotto durante la revisione: un singolo hang da 300 s con `setInterval` a 10 s ha prodotto **30 lookup concorrenti** verso adsbdb, contro un tetto di progetto di 1 ogni 1,5 s. Il `headersTimeout` di undici è 300 s e il server ne sovrascriveva solo `connect` | Guardia `routePumpInFlight` e loop che si ripianifica dopo il completamento, `AbortSignal.timeout(10_000)` su ogni lookup, e ricontrollo della sospensione **dentro** il batch, così un 429 ferma anche le richieste rimanenti dello stesso giro (Task 5) |
