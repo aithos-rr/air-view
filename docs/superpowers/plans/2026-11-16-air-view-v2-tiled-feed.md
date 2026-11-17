@@ -449,7 +449,7 @@ function distanceNm(a: GeoPoint, b: GeoPoint): number {
  * Tiles whose centre lies within `radiusNm` of a point, nearest first.
  *
  * Used to turn a viewer's camera into the set of tiles worth refreshing
- * immediately. A full sweep takes 16-25 minutes at adsb.lol's measured
+ * immediately. A full sweep takes ~7 minutes at adsb.lol's measured
  * latency of ~29 s per tile, so without this the region being looked at
  * would be as stale as the far side of the planet.
  */
@@ -709,7 +709,7 @@ describe('createFleet', () => {
   });
 
   it('lets the retention window be retuned at runtime', () => {
-    // A sweep takes 16-25 minutes at adsb.lol's measured latency, and that
+    // A sweep takes ~7 minutes at the poller's request ceiling, and that
     // varies. A window shorter than a sweep deletes aircraft long before
     // their tile comes round again, leaving a rotating smear instead of a
     // fleet — so the poller derives it from the sweep it actually observes.
@@ -1026,17 +1026,23 @@ const MAX_RETENTION_S = 7_200;
 let observedSweepSeconds = 0;
 const pollerStartedMs = Date.now();
 
-// Measured live: adsb.lol takes ~29 s median per tile — 53 s even to return
-// zero aircraft, so the latency is the server's, not the payload's.
-// Sequentially, 413 tiles would take 213 minutes. Fetching several at once
-// is therefore mandatory, not an optimisation: 8 in flight brings a sweep to
-// ~25 minutes at 0.28 requests/s, well inside the courtesy budget.
+// adsb.lol's latency is wildly variable: measured at 0.47 s median one day
+// and 28.6 s the next, with single tiles ranging from 0.２ s to 53 s. So the
+// request rate is NOT derived from it — that is how an earlier revision
+// ended up emitting 3.2 req/s while believing it was doing 0.28. Instead the
+// loop enforces a hard ceiling whatever the upstream does: if a cycle
+// finishes early it waits out the difference, and if it runs long the
+// ceiling is already satisfied.
 //
-// A fixed setInterval would stack cycles on top of each other, so the loop
-// reschedules itself AFTER each cycle and a guard refuses a second one.
+// At 8 tiles per cycle and 1 req/s the cycle period is 8 s and a full sweep
+// of 413 tiles takes ~7 minutes.
 const TILE_CONCURRENCY = 8;
-/** Minimum pause between the end of one cycle and the start of the next. */
+/** Hard ceiling on outbound requests to adsb.lol, whatever the latency. */
+const MAX_TILE_RPS = 1;
+/** Floor on the pause between cycles, even if the ceiling allows less. */
 const TILE_CYCLE_GAP_MS = 2_000;
+/** Cycle period that satisfies the ceiling for a full batch. */
+const MIN_CYCLE_PERIOD_MS = (TILE_CONCURRENCY / MAX_TILE_RPS) * 1000;
 ```
 
 **Non esiste alcuna funzione di refresh da sostituire**: il server attuale fa il fetch inline dentro il gestore `/api/states`. Creare questa funzione **dopo** `await app.register(cors, ...)` — deve stare sotto la dichiarazione di `app`, perché il suo corpo chiama `app.log` — e rimuovere il fetch inline dal gestore, che viene riscritto allo Step 10.
@@ -1137,7 +1143,7 @@ app.get('/api/states', async (req, reply) => {
 
   // A viewer tells us where they are looking, and those tiles jump the
   // queue. Without this, the region on screen would be as stale as the far
-  // side of the planet: a full sweep takes 16-25 minutes.
+  // side of the planet: a full sweep takes ~7 minutes.
   const viewLat = Number(q.lat);
   const viewLon = Number(q.lon);
   const viewRadius = Number(q.radius);
@@ -1200,13 +1206,19 @@ Nel blocco `try { await app.listen(...) }`, dopo la riga di log:
   // Self-rescheduling loop, NOT setInterval: a cycle can take minutes when
   // the upstream is slow, and a fixed timer would pile cycles on top of one
   // another until the request rate is unbounded.
-  const scheduleNextCycle = (): void => {
+  const scheduleNextCycle = (cycleStartedMs: number): void => {
+    // Pace on elapsed time, not on an assumed latency: a fast upstream must
+    // not turn into a faster request rate.
+    const elapsed = Date.now() - cycleStartedMs;
+    const wait = Math.max(TILE_CYCLE_GAP_MS, MIN_CYCLE_PERIOD_MS - elapsed);
     const t = setTimeout(() => {
-      void refreshNextTiles().finally(scheduleNextCycle);
-    }, TILE_CYCLE_GAP_MS);
+      const startedAt = Date.now();
+      void refreshNextTiles().finally(() => scheduleNextCycle(startedAt));
+    }, wait);
     t.unref();
   };
-  void refreshNextTiles().finally(scheduleNextCycle);
+  const firstStart = Date.now();
+  void refreshNextTiles().finally(() => scheduleNextCycle(firstStart));
 ```
 
 - [ ] **Step 13: Verificare entrambi i programmi**
@@ -1221,7 +1233,18 @@ npm run build:all && npm test -- --run
 grep -n "setInterval" server/index.ts
 ```
 
-Expected: nessuna occorrenza relativa a `refreshNextTiles`. Un `setInterval` da 3 s su un ciclo che dal vivo può durare 90 s produce decine di cicli sovrapposti e richieste concorrenti illimitate verso un servizio gratuito.
+Expected: nessuna occorrenza relativa a `refreshNextTiles`. Un timer a cadenza fissa su un ciclo che può durare minuti produce cicli sovrapposti e richieste concorrenti illimitate verso un servizio gratuito.
+
+**Poi misurare il rate reale**, che è la cosa che conta e che un `grep` non può vedere. Con il server avviato, contare le richieste emesse in due minuti:
+
+```bash
+npm run server 2>&1 | tee /tmp/airview.log &
+sleep 125
+grep -c "tile fetch\|feed refreshed\|tile:" /tmp/airview.log
+curl -s localhost:3000/health | python3 -c "import json,sys; t=json.load(sys.stdin)['tiles']; print('tile servite finora:', t['rotationServed'])"
+```
+
+Expected: circa **120 tile in due minuti**, cioè ~1 richiesta/s. Se ne vedi molte di più il limitatore non sta funzionando: una revisione precedente di questo piano emetteva 3,2 req/s credendo di emetterne 0,28, perché il ritmo era dedotto da una latenza misurata in un momento sfortunato invece che imposto.
 
 - [ ] **Step 15: Verificare il comportamento reale del server**
 
@@ -2572,6 +2595,7 @@ L'ultimo anello della catena che ha prodotto il globo vuoto.
 
 **Files:**
 - Modify: `src/state/aircraftStore.ts`, `src/data/bootstrap.ts`, `src/data/aircraftStream.ts`
+- Modify: `src/globe/geoHelpers.ts`, `src/globe/scene.ts`, e il punto in cui `mountScene` e `bootstrapData` vengono chiamati (cercarlo con `grep -rn "bootstrapData\|mountScene" src/`)
 - Rename: `src/data/openSkyClient.ts` → `src/data/statesClient.ts` (e il suo test)
 - Modify: `tests/unit/state/stores.test.ts`, `tests/unit/data/aircraftStream.test.ts`
 
@@ -2579,7 +2603,7 @@ L'ultimo anello della catena che ha prodotto il globo vuoto.
 - Consumes: `makeAircraftRaw` dal Task 1
 - Produces: `vec3ToLatLon(v: Vector3): { lat, lon }`; `SceneHandle.viewCentre(): ViewCentre`; `fetchStates(bbox?, signal?, view?)`; `StreamOptions.getViewCentre?`; `bootstrapData(getViewCentre?)`. `useAircraftStore` guadagna `feedFetchedAt: number` (sostituisce `fetchedAt`) e `feedAgeSeconds(): number`; `updateBatch(raws, batchFetchedAtUnix)` prende due argomenti e **sostituisce** la flotta anziché fonderla; `removeStale` viene **rimosso**; `StreamOptions.onBatch(aircraft, fetchedAt)` prende due argomenti; `fetchStates` si sposta in `src/data/statesClient.ts` con la stessa firma.
 
-**Il server è l'unica autorità su chi è in volo.** La v1 misurava la staleness lato client contro l'orologio locale, e con un feed congelato cancellava l'intera flotta. La correzione ovvia sarebbe misurarla contro il timestamp del batch — ma con il feed a tile anche quella sarebbe sbagliata: uno sweep completo richiede fra 16 e 25 minuti alla latenza reale di adsb.lol (~29 s mediani per tile), e il server dimensiona la propria finestra di ritenzione su quel periodo osservato; una finestra client di 120 s cancellerebbe quasi tutta la flotta appena ricevuta. Il globo tornerebbe quasi vuoto, in forma più mite ma per la stessa ragione.
+**Il server è l'unica autorità su chi è in volo.** La v1 misurava la staleness lato client contro l'orologio locale, e con un feed congelato cancellava l'intera flotta. La correzione ovvia sarebbe misurarla contro il timestamp del batch — ma con il feed a tile anche quella sarebbe sbagliata: uno sweep completo richiede fra circa 7 minuti al tetto di una richiesta al secondo che il poller impone, e il server dimensiona la propria finestra di ritenzione su quel periodo osservato; una finestra client di 120 s cancellerebbe quasi tutta la flotta appena ricevuta. Il globo tornerebbe quasi vuoto, in forma più mite ma per la stessa ragione.
 
 Qui la finestra client sparisce del tutto: il payload del server **è** il mondo, il server fa già `prune`, e il client si limita a sincronizzarsi con ciò che riceve. Due autorità sulla stessa decisione sono una di troppo, e sono destinate a divergere.
 
@@ -2610,7 +2634,7 @@ describe('aircraftStore', () => {
   });
 
   it('KEEPS an aircraft whose last fix is ten minutes old', () => {
-    // A full sweep takes 16-25 minutes at the measured upstream latency,
+    // A full sweep takes ~7 minutes at the poller's request ceiling,
     // and the server sizes its retention on that. A client-side window of
     // 120 s would delete most of the fleet the server just sent — the v1 empty
     // globe all over again, in a milder form.
@@ -2692,7 +2716,7 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
    * every aircraft look infinitely stale and the whole fleet was deleted —
    * the last link in the chain that emptied the globe. Measuring against the
    * batch timestamp would have been better but still wrong here: a full
-   * sweep takes 16-25 minutes at the measured upstream latency and the
+   * sweep takes ~7 minutes at the poller's request ceiling and the
    * server sizes its own retention on that observed period, so any short
    * client window would delete most of a legitimately assembled fleet.
    */
@@ -2820,7 +2844,15 @@ export function vec3ToLatLon(v: Vector3): { lat: number; lon: number } {
 }
 ```
 
-In `src/globe/scene.ts`, estendere `SceneHandle` perché il resto dell'applicazione possa sapere cosa si sta guardando — oggi espone solo `dispose`:
+In `src/globe/scene.ts`, **per prima cosa estendere l'import**, che oggi porta solo una funzione:
+
+```ts
+import { latLonAltToVec3, vec3ToLatLon, GLOBE_RADIUS } from './geoHelpers';
+```
+
+Senza questa riga il frammento sotto non compila: `TS2304: Cannot find name 'vec3ToLatLon'`.
+
+Poi estendere `SceneHandle` perché il resto dell'applicazione possa sapere cosa si sta guardando — oggi espone solo `dispose`:
 
 ```ts
 export interface ViewCentre {
@@ -2873,7 +2905,7 @@ export async function fetchStates(
   }
   if (view) {
     // Tells the server which tiles to refresh first. A full sweep takes
-    // 16-25 minutes, so without this the region on screen would be as stale
+    // ~7 minutes, so without this the region on screen would be as stale
     // as the far side of the planet.
     params.set('lat', view.lat.toFixed(3));
     params.set('lon', view.lon.toFixed(3));
@@ -2887,7 +2919,11 @@ export async function fetchStates(
 }
 ```
 
-In `src/data/aircraftStream.ts`, aggiungere a `StreamOptions`:
+In `src/data/aircraftStream.ts`, aggiungere **l'import del tipo** e il campo:
+
+```ts
+import type { ViewQuery } from './statesClient';
+```
 
 ```ts
   /** Where the viewer is looking, so the server can refresh those tiles first. */
@@ -2896,7 +2932,11 @@ In `src/data/aircraftStream.ts`, aggiungere a `StreamOptions`:
 
 e nella `tick`, passarlo: `const result = await fetchStates(bbox, undefined, opts.getViewCentre?.() ?? null);`
 
-In `src/data/bootstrap.ts`, accettare il punto osservato dal chiamante e inoltrarlo:
+In `src/data/bootstrap.ts`, aggiungere **lo stesso import** e accettare il punto osservato dal chiamante:
+
+```ts
+import type { ViewQuery } from './statesClient';
+```
 
 ```ts
 export async function bootstrapData(getViewCentre?: () => ViewQuery | null): Promise<void> {
@@ -2945,7 +2985,7 @@ dropped — the last link in the chain that emptied the globe.
 
 It is deleted rather than fixed. Measuring against the batch timestamp
 would still have been wrong under the tiled feed: a full sweep takes
-16-25 minutes at the measured upstream latency and the server sizes its
+~7 minutes at the poller's request ceiling and the server sizes its
 retention on that, so a 120 s client window would have deleted most of a
 legitimately assembled fleet. The server already prunes; the client now mirrors the payload
 instead of applying a second, independent rule that is bound to drift.
@@ -3154,7 +3194,7 @@ Il tiling introdotto qui era previsto per il Piano 2: il vincolo dei 250 NM lo h
 
 | # | Difetto | Evidenza | Correzione |
 |---|---|---|---|
-| 31 | **Critico.** Il client avrebbe cancellato l'81% della flotta appena ricevuta: finestra client di 120 s contro una flotta server che trattiene gli aerei 900 s e tile rivisitate ogni ~620 s. Il globo vuoto della v1, in forma attenuata, nel task che esiste per impedirlo | Sweep reale fra 16 e 25 minuti alla latenza misurata; una finestra client di 120 s ne copre una frazione minima. I test del piano non potevano vederlo — usavano scarti di 10 s | `removeStale` eliminato: il server è l'unica autorità, `updateBatch` sincronizza con il payload. Test con scarto di 600 s che asserisce la **conservazione** (Task 7) |
+| 31 | **Critico.** Il client avrebbe cancellato l'81% della flotta appena ricevuta: finestra client di 120 s contro una flotta server che trattiene gli aerei 900 s e tile rivisitate ogni ~620 s. Il globo vuoto della v1, in forma attenuata, nel task che esiste per impedirlo | Sweep reale fra circa 7 minuti al tetto di richieste imposto dal poller; una finestra client di 120 s ne copre una frazione minima. I test del piano non potevano vederlo — usavano scarti di 10 s | `removeStale` eliminato: il server è l'unica autorità, `updateBatch` sincronizza con il payload. Test con scarto di 600 s che asserisce la **conservazione** (Task 7) |
 | 32 | **Critico.** `setInterval` ogni 3 s senza guardia di rientranza, mentre una fetch di tile dal vivo impiega da 11 a oltre 90 s: decine di cicli sovrapposti e richieste concorrenti illimitate verso un servizio gratuito | Latenze misurate sul campo; lo Step di verifica guardava solo `/health` e non se ne sarebbe accorto | Guardia `cycleInFlight` e loop che si ripianifica **dopo** il completamento, più uno step che verifica con `grep` che nessun `setInterval` sia rimasto (Task 3) |
 | 33 | **Critico.** Due step dicevano di sostituire `refreshGlobalFeed`, una funzione che non esiste in nessun punto del repo: era nel piano precedente, il cui Task 4 non è mai stato implementato | `grep -rn 'refreshGlobalFeed' server/ src/` → nessun risultato | Gli step dicono ora di **creare** la funzione, con il punto di inserimento esatto e il perché (deve stare sotto la dichiarazione di `app`), e il Task 5 nomina `refreshNextTiles` indicando dove inserire l'arricchimento (Task 3, 5) |
 
@@ -3163,17 +3203,17 @@ Il tiling introdotto qui era previsto per il Piano 2: il vincolo dei 250 NM lo h
 | # | Difetto | Evidenza | Correzione |
 |---|---|---|---|
 | 34 | **Critico.** La finestra di ritenzione della flotta (900 s fissi) era più corta del tempo reale di una spazzata, quindi `prune` avrebbe cancellato ogni aereo molto prima che la sua tile tornasse: non una flotta cumulativa ma una macchia rotante su circa un sesto della griglia. Il mio «~620 s per sweep» contava **solo** il gap fra cicli, ignorando la pausa fra tile e la latenza di rete che il piano stesso dichiarava di aver misurato | Latenza misurata dal vivo: 17,6 s / 39,7 s / 8,1 s / 52,8 s su quattro tile, mediana **28,6 s** — e 52,8 s per restituire **zero** aerei, quindi la lentezza è del server, non del payload. Sweep sequenziale di 413 tile: **213 minuti** | Otto fetch concorrenti (sweep ~25 min a 0,28 richieste/s) e finestra di ritenzione **derivata dallo sweep osservato** invece che fissata a mano, con floor e cap. I due numeri non possono più divergere perché uno è calcolato dall'altro (Task 3) |
-| 35 | Con uno sweep di 16-25 minuti, le posizioni della vista globale sarebbero vecchie di decine di minuti: un aereo in crociera percorre oltre 200 NM in venti minuti. È l'opposto del requisito di partenza — posizioni aggiornate di frequente, non icone che sembrano ferme | Aritmetica sulla latenza misurata | Anticipato il fetch guidato dalla camera, che era previsto per il Piano 2: `/api/states` accetta il punto osservato, le tile sotto il viewport saltano la coda e vengono rinfrescate subito, lo sweep globale resta in sottofondo per il colpo d'occhio (Task 2, 3) |
+| 35 | Con uno sweep di ~7 minuti, le posizioni della vista globale sarebbero vecchie di decine di minuti: un aereo in crociera percorre oltre 200 NM in venti minuti. È l'opposto del requisito di partenza — posizioni aggiornate di frequente, non icone che sembrano ferme | Aritmetica sulla latenza misurata | Anticipato il fetch guidato dalla camera, che era previsto per il Piano 2: `/api/states` accetta il punto osservato, le tile sotto il viewport saltano la coda e vengono rinfrescate subito, lo sweep globale resta in sottofondo per il colpo d'occhio (Task 2, 3) |
 
 ## Nota sul risultato atteso
 
-Con questi vincoli il globo ha due velocità, ed è bene saperlo prima di guardarlo: **la regione inquadrata è fresca**, perché le sue tile hanno priorità; **il resto del pianeta è un contesto che si aggiorna in 16-25 minuti**. Non è un compromesso elegante, è il massimo che adsb.lol concede a 29 secondi per tile e 250 NM di raggio. Il dead reckoning del Piano 2 renderà continuo il movimento di ciò che si guarda; la vista globale resterà, per natura, un colpo d'occhio e non un cronometro.
+Con questi vincoli il globo ha due velocità, ed è bene saperlo prima di guardarlo: **la regione inquadrata è fresca**, perché le sue tile hanno priorità; **il resto del pianeta è un contesto che si aggiorna in ~7 minuti**. Non è un compromesso elegante, è il massimo che adsb.lol concede a 29 secondi per tile e 250 NM di raggio. Il dead reckoning del Piano 2 renderà continuo il movimento di ciò che si guarda; la vista globale resterà, per natura, un colpo d'occhio e non un cronometro.
 
 ## Difetti del settimo preflight corretti
 
 | # | Difetto | Evidenza | Correzione |
 |---|---|---|---|
-| 36 | **Critico.** La priorità guidata dalla camera era implementata **solo lato server**: il gestore leggeva `lat`/`lon`/`radius` che nessun client invia. Codice morto, e con esso l'unica risposta al difetto #35 — tutto il globo sarebbe rimasto vecchio di 16-25 minuti, inclusa la regione inquadrata. La "Nota sul risultato atteso" prometteva una freschezza che il piano non consegnava | Piano applicato a una copia e server avviato: `curl` manuale con i parametri → `tiles.prioritised = 12`; una richiesta nuda del client reale → `0`. `SceneHandle` espone solo `dispose`, la camera non è raggiungibile dall'esterno | Completato il lato client: `vec3ToLatLon` in geoHelpers, `SceneHandle.viewCentre()` che deriva punto e raggio dalla posizione della camera, `fetchStates` che serializza il punto osservato, `getViewCentre` nello stream e il collegamento in `bootstrap`, più uno step che verifica nel browser che le richieste portino davvero i parametri (Task 7) |
+| 36 | **Critico.** La priorità guidata dalla camera era implementata **solo lato server**: il gestore leggeva `lat`/`lon`/`radius` che nessun client invia. Codice morto, e con esso l'unica risposta al difetto #35 — tutto il globo sarebbe rimasto vecchio di ~7 minuti, inclusa la regione inquadrata. La "Nota sul risultato atteso" prometteva una freschezza che il piano non consegnava | Piano applicato a una copia e server avviato: `curl` manuale con i parametri → `tiles.prioritised = 12`; una richiesta nuda del client reale → `0`. `SceneHandle` espone solo `dispose`, la camera non è raggiungibile dall'esterno | Completato il lato client: `vec3ToLatLon` in geoHelpers, `SceneHandle.viewCentre()` che deriva punto e raggio dalla posizione della camera, `fetchStates` che serializza il punto osservato, `getViewCentre` nello stream e il collegamento in `bootstrap`, più uno step che verifica nel browser che le richieste portino davvero i parametri (Task 7) |
 | 37 | **Critico.** Il pump delle rotte usava `setInterval` senza guardia di rientranza e senza timeout sul fetch: esattamente il difetto #32, corretto per il ciclo delle tile e reintrodotto per le rotte poche pagine dopo | Riprodotto durante la revisione: un singolo hang da 300 s con `setInterval` a 10 s ha prodotto **30 lookup concorrenti** verso adsbdb, contro un tetto di progetto di 1 ogni 1,5 s. Il `headersTimeout` di undici è 300 s e il server ne sovrascriveva solo `connect` | Guardia `routePumpInFlight` e loop che si ripianifica dopo il completamento, `AbortSignal.timeout(10_000)` su ogni lookup, e ricontrollo della sospensione **dentro** il batch, così un 429 ferma anche le richieste rimanenti dello stesso giro (Task 5) |
 
 ## Difetti dell'ottavo preflight corretti
@@ -3188,3 +3228,10 @@ Con questi vincoli il globo ha due velocità, ed è bene saperlo prima di guarda
 | # | Difetto | Evidenza | Correzione |
 |---|---|---|---|
 | 40 | **Critico.** Il test «serves a prioritised tile even when it is dormant» contraddiceva la guardia `minRefreshMs` introdotta dalla correzione precedente: `next(3)` marca le tile come appena servite, quindi `prioritise()` le scartava e `next(1)` restituiva un array vuoto. Due test dello stesso file esigevano regole opposte | Piano applicato verbatim a una copia e suite eseguita: **144 test verdi, 1 solo fallito** — `Cannot read properties of undefined (reading 'id')` su quella riga. Entrambi i programmi TypeScript compilano puliti | Decisa e resa esplicita la precedenza: la richiesta del viewer scavalca la **dormienza** ma non la **freschezza**, perché ri-accodare a ogni poll è il meccanismo che affama la rotazione. Il test isola la prima regola con `minRefreshMs: 0`, la seconda ha il proprio test, e il commento del codice dichiara quale vince (Task 2) |
+
+## Difetti del decimo preflight corretti
+
+| # | Difetto | Evidenza | Correzione |
+|---|---|---|---|
+| 41 | **Critico.** Il ritmo del poller era dimensionato su una latenza di «~29 s mediani», misurata da me in un momento di congestione. Oggi adsb.lol risponde in **0,47 s mediani**: con 8 concorrenti e un gap fisso di 2 s il rate reale sarebbe **3,2 richieste/s**, oltre il doppio del tetto di 1,5 dichiarato nei Global Constraints di questo stesso piano, sostenuto giorno e notte contro il servizio gratuito che ha già bloccato il progetto una volta | Rimisurato: 0,28 / 0,40 / 0,55 / 2,35 / 0,24 / 1,97 s su sei tile, mediana **0,47 s** — e la tile oceanica vuota, che il piano dichiarava impiegare 53 s, risponde in 2,3 s | Il rate **non si deriva più dalla latenza**: un tetto esplicito di 1 richiesta/s, applicato aspettando la differenza quando un ciclo finisce presto. È robusto in entrambi gli scenari — se la latenza torna a 30 s il ciclo è già abbastanza lento da soddisfarlo. Lo sweep diventa di ~7 minuti, e c'è uno step che **misura le richieste al secondo** invece di limitarsi a cercare `setInterval` |
+| 42 | **Critico.** Tre import mancanti bloccavano la compilazione: `vec3ToLatLon` e `GLOBE_RADIUS` in `scene.ts`, `ViewQuery` in `aircraftStream.ts` e `bootstrap.ts`. Il blocco Files del Task 7 non elencava nemmeno i tre file che lo Step 9 modifica | `npx tsc --noEmit` sulla copia: tre `TS2304`. Aggiunti gli import, **145 test verdi** e entrambi i programmi puliti | Import dichiarati esplicitamente prima di ogni frammento, e i file aggiunti al blocco Files (Task 7) |
