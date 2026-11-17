@@ -46,8 +46,9 @@ export const adsbFiSource: AircraftSource = {
   id: 'adsb-fi',
   label: 'adsb.fi',
   // Verified live: 250 NM -> 200; 1000 NM -> 400; 5000 and 10 000 NM -> 429.
-  // This provider is usable by the Plan 2 camera-driven fetch, not by the
-  // Plan 1 global sweep. The selector skips it rather than failing.
+  // Same ceiling as adsb.lol since 2026-11, so this is no longer a source the
+  // selector always skips: with a tiled feed every request fits under 250 NM
+  // and adsb.fi becomes a live fallback whenever adsb.lol fails.
   maxRadiusNm: 250,
 
   async fetchRegion(centre: GeoPoint, radiusNm: number, fetchImpl: typeof fetch = fetch): Promise<SourceResult> {

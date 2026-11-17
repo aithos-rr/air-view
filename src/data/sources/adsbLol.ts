@@ -44,7 +44,10 @@ function normalise(ac: AdsbLolAircraft & { hex: string }, nowMs: number): Aircra
 export const adsbLolSource: AircraftSource = {
   id: 'adsb-lol',
   label: 'adsb.lol',
-  maxRadiusNm: 10_000,
+  // Verified live 2026-11-16: 250 NM -> 200; 251 NM and above -> 403
+  // "radius exceeds 250 NM". There is no global endpoint any more:
+  // /v2/all -> 400, /api/0/all -> 503, /v2/mil is military traffic only.
+  maxRadiusNm: 250,
 
   async fetchRegion(centre: GeoPoint, radiusNm: number, fetchImpl: typeof fetch = fetch): Promise<SourceResult> {
     const url = `https://api.adsb.lol/v2/lat/${centre.lat}/lon/${centre.lon}/dist/${radiusNm}`;

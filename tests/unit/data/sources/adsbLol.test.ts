@@ -14,8 +14,11 @@ describe('adsbLolSource', () => {
     expect((init.headers as Record<string, string>)['User-Agent']).toBe(USER_AGENT);
   });
 
-  it('declares a radius ceiling large enough for the global sweep', () => {
-    expect(adsbLolSource.maxRadiusNm).toBeGreaterThanOrEqual(10_000);
+  it('declares the 250 NM ceiling adsb.lol actually enforces', () => {
+    // Verified live 2026-11-16: dist=250 -> 200; dist=251 and above -> 403
+    // with body "radius exceeds 250 NM". An earlier revision asserted
+    // >= 10 000 here and went green on mocks while production returned 502.
+    expect(adsbLolSource.maxRadiusNm).toBe(250);
   });
 
   it('builds a centre+radius URL from the requested region', async () => {
