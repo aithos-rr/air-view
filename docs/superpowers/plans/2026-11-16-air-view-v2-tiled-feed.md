@@ -232,7 +232,12 @@ describe('createTileScheduler', () => {
   });
 
   it('serves a prioritised tile even when it is dormant', () => {
-    const s = createTileScheduler(tiles3(), { dormantAfterEmptySweeps: 1 });
+    // Dormancy is overridden by a viewer's request: someone looking at a
+    // region is better evidence than our own history of that tile.
+    // minRefreshMs is set to 0 to isolate that rule from the freshness one,
+    // which is exercised by its own test below — and which wins: a tile
+    // fetched seconds ago is not re-queued even for a viewer.
+    const s = createTileScheduler(tiles3(), { dormantAfterEmptySweeps: 1, minRefreshMs: 0 });
     for (const t of s.next(3)) s.record(t.id, 0);
     s.prioritise(['b']);
     expect(s.next(1)[0]!.id).toBe('b');
@@ -506,6 +511,9 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
 
       // Prioritised tiles jump the queue, dormancy included: a viewer looking
       // at a region is better evidence than our own history of that tile.
+      // Freshness is the one thing priority does NOT override — prioritise()
+      // refuses a tile fetched within minRefreshMs, because re-queuing it on
+      // every poll is how the queue outgrows the budget.
       // But only up to a share of the batch — the rest belongs to the
       // rotation, or the globe outside the viewport is never refreshed and
       // the fleet decays into the region on screen.
@@ -577,7 +585,7 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
 - [ ] **Step 4: Eseguire il test e verificare che passi**
 
 Run: `npx vitest run tests/unit/data/sources/tileGrid.test.ts`
-Expected: PASS, 20 test
+Expected: PASS, 19 test
 
 - [ ] **Step 5: Verificare la griglia reale senza fare volume**
 
@@ -3174,3 +3182,9 @@ Con questi vincoli il globo ha due velocità, ed è bene saperlo prima di guarda
 |---|---|---|---|
 | 38 | **Critico.** La priorità da viewport affamava la rotazione: `next()` serviva la coda prioritaria senza alcun tetto, e un solo visitatore chiedeva 12 tile ogni 30 s contro 8 servite ogni 31-55 s. Il cursore non avanzava mai, `sweepsCompleted` restava 0, la dormienza non si attivava e `prune` cancellava tutto ciò che sta fuori dall'inquadratura — il difetto #34 reintrodotto dalla correzione del #36 | Simulazione sul codice del piano, due ore e griglia reale: camera ferma → **8 tile di rotazione su 413**, `sweepsCompleted` 0; camera in movimento con ciclo lento → backlog prioritario che cresce a 284 senza mai svuotarsi | Metà di ogni batch è riservata alla rotazione; la coda prioritaria è limitata a 12 voci e scarta le più vecchie; `prioritise()` ignora una tile servita negli ultimi 60 s; il client ne chiede 6 invece di 12. In più `observedSweepSeconds` si misura sulle tile **di rotazione**, non su tutte, altrimenti la finestra di ritenzione continuerebbe a mentire (Task 2, 3) |
 | 39 | **Critico.** Due asserzioni su `fetchStates` si rompono quando la firma passa da uno a tre argomenti. Il piano enunciava la regola — «`toHaveBeenCalledWith` verifica la lista completa» — e la applicava solo a `onBatch`. Lo step di verifica non poteva passare, e il suo suggerimento diagnostico indicava la causa sbagliata | Riprodotto con vitest 2.1.9 nel repo: `expected "spy" to be called with arguments: [ { lamin: 1 } ] / Received: [ {lamin: 1}, undefined, null ]` | Entrambe le asserzioni corrette nello Step 7, e il suggerimento diagnostico dello Step 11 distingue ora «la suite non si carica» da «due test rossi per arity» (Task 7) |
+
+## Difetto del nono preflight corretto
+
+| # | Difetto | Evidenza | Correzione |
+|---|---|---|---|
+| 40 | **Critico.** Il test «serves a prioritised tile even when it is dormant» contraddiceva la guardia `minRefreshMs` introdotta dalla correzione precedente: `next(3)` marca le tile come appena servite, quindi `prioritise()` le scartava e `next(1)` restituiva un array vuoto. Due test dello stesso file esigevano regole opposte | Piano applicato verbatim a una copia e suite eseguita: **144 test verdi, 1 solo fallito** — `Cannot read properties of undefined (reading 'id')` su quella riga. Entrambi i programmi TypeScript compilano puliti | Decisa e resa esplicita la precedenza: la richiesta del viewer scavalca la **dormienza** ma non la **freschezza**, perché ri-accodare a ogni poll è il meccanismo che affama la rotazione. Il test isola la prima regola con `minRefreshMs: 0`, la seconda ha il proprio test, e il commento del codice dichiara quale vince (Task 2) |
