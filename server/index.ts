@@ -31,9 +31,14 @@ import { adsbFiSource } from '../src/data/sources/adsbFi.js';
 import { createSourceSelector } from '../src/data/sources/selector.js';
 import type { BoundingBox } from '../src/types.js';
 
-// Plan 1 uses a single global sweep, which only adsb.lol can serve.
-// adsb.fi is registered now and starts being used by the Plan 2
-// camera-driven fetch, whose radii fit under its 250 NM ceiling.
+// Plan 1's single global sweep. No source can serve it any more: adsb.lol
+// and adsb.fi both cap at 250 NM (verified live 2026-11-16), so the
+// selector skips every source on radius and /api/states answers 502
+// without issuing a single upstream request. That is the production
+// failure, and it is not a header or a network problem.
+// The sweep is replaced by per-tile requests under the 250 NM ceiling in
+// Task 3 of docs/superpowers/plans/2026-11-16-air-view-v2-tiled-feed.md;
+// until then this endpoint is known broken.
 const sources = createSourceSelector([adsbLolSource, adsbFiSource]);
 const GLOBAL_SWEEP = { centre: { lat: 0, lon: 0 }, radiusNm: 10_000 };
 
@@ -144,7 +149,9 @@ app.get('/api/states', async (req, reply) => {
         : null;
     req.log.error(
       { err: msg, causeMessage: cause?.message, causeCode: cause?.code, bbox },
-      'adsb.lol upstream failed'
+      // Not necessarily an upstream failure: the selector also throws when it
+      // skips every source, in which case no request left this process.
+      'ADS-B region fetch failed'
     );
     if (hit) {
       return reply
