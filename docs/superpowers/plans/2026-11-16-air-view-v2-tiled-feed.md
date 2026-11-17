@@ -238,6 +238,41 @@ describe('createTileScheduler', () => {
     expect(s.next(1)[0]!.id).toBe('b');
   });
 
+  it('NEVER lets priority starve the rotation', () => {
+    // Simulated on this code: with an unbounded priority queue a single
+    // viewer asking for 12 tiles every 30 s left the rotation at 8 tiles out
+    // of 413 in two hours, sweeps at zero, and prune() deleting the world.
+    const many = Array.from({ length: 40 }, (_, i) => ({
+      id: `t${i}`, region: 'r', centre: { lat: i, lon: 0 },
+    }));
+    const s = createTileScheduler(many);
+    s.prioritise(many.slice(0, 12).map((t) => t.id));
+    const served = s.next(8);
+    expect(served.length).toBe(8);
+    expect(s.stats().rotationServed).toBeGreaterThanOrEqual(4); // half the batch
+  });
+
+  it('caps the priority queue so a moving camera cannot grow it without bound', () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({
+      id: `t${i}`, region: 'r', centre: { lat: i, lon: 0 },
+    }));
+    const s = createTileScheduler(many, { maxPriorityQueue: 5 });
+    s.prioritise(many.map((t) => t.id));
+    expect(s.stats().prioritised).toBe(5);
+  });
+
+  it('does not re-queue a tile it served moments ago', () => {
+    let clock = 1_000_000;
+    const s = createTileScheduler(tiles3(), { minRefreshMs: 60_000, now: () => clock });
+    s.prioritise(['a']);
+    s.next(2);
+    s.prioritise(['a']);
+    expect(s.stats().prioritised).toBe(0);
+    clock += 61_000;
+    s.prioritise(['a']);
+    expect(s.stats().prioritised).toBe(1);
+  });
+
   it('drops a tile from the priority set once it has been served', () => {
     const s = createTileScheduler(tiles3());
     s.prioritise(['c']);
@@ -369,6 +404,11 @@ export interface SchedulerOptions {
   dormantAfterEmptySweeps?: number;
   /** A dormant tile is retried once every this many sweeps. */
   dormantRetryEvery?: number;
+  /** Longest the priority queue may grow; oldest entries are dropped. */
+  maxPriorityQueue?: number;
+  /** A tile served more recently than this is not re-queued by prioritise(). */
+  minRefreshMs?: number;
+  now?: () => number;
 }
 
 export interface TileScheduler {
@@ -376,7 +416,15 @@ export interface TileScheduler {
   /** Marks tiles as wanted now — typically those under a viewer's camera. */
   prioritise(tileIds: string[]): void;
   record(tileId: string, aircraftCount: number): void;
-  stats(): { total: number; productive: number; dormant: number; sweepsCompleted: number; prioritised: number };
+  stats(): {
+    total: number;
+    productive: number;
+    dormant: number;
+    sweepsCompleted: number;
+    prioritised: number;
+    /** Tiles served from the rotation, not from the priority queue. */
+    rotationServed: number;
+  };
 }
 
 const NM_PER_RADIAN = 3440.065;
@@ -410,6 +458,18 @@ export function tilesNear(grid: Tile[], centre: GeoPoint, radiusNm: number): Til
 
 const DEFAULT_DORMANT_AFTER = 3;
 const DEFAULT_RETRY_EVERY = 20;
+const DEFAULT_MAX_PRIORITY_QUEUE = 12;
+const DEFAULT_MIN_REFRESH_MS = 60_000;
+/**
+ * Share of each batch reserved for the rotation.
+ *
+ * Without it the priority queue eats the entire budget: a viewer asks for 12
+ * tiles every 30 s while the poller serves 8 every 31-55 s, so the rotation
+ * never advances, sweeps stay at zero, dormancy never engages, and prune()
+ * deletes the rest of the world. Simulated on this very code: 8 rotation
+ * tiles out of 413 in two hours.
+ */
+const ROTATION_SHARE = 0.5;
 
 /**
  * Hands out tiles in rotation, learning which ones are worth asking about.
@@ -421,14 +481,19 @@ const DEFAULT_RETRY_EVERY = 20;
 export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}): TileScheduler {
   const dormantAfter = opts.dormantAfterEmptySweeps ?? DEFAULT_DORMANT_AFTER;
   const retryEvery = opts.dormantRetryEvery ?? DEFAULT_RETRY_EVERY;
+  const maxPriorityQueue = opts.maxPriorityQueue ?? DEFAULT_MAX_PRIORITY_QUEUE;
+  const minRefreshMs = opts.minRefreshMs ?? DEFAULT_MIN_REFRESH_MS;
+  const now = opts.now ?? Date.now;
 
   const emptyStreak = new Map<string, number>();
   const dormant = new Set<string>();
   const byId = new Map(tiles.map((t) => [t.id, t]));
   /** Insertion order matters: the newest request is served first. */
   const priority: string[] = [];
+  const lastServedAt = new Map<string, number>();
   let cursor = 0;
   let sweeps = 0;
+  let rotationServed = 0;
 
   function isDue(tile: Tile): boolean {
     if (!dormant.has(tile.id)) return true;
@@ -441,10 +506,17 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
 
       // Prioritised tiles jump the queue, dormancy included: a viewer looking
       // at a region is better evidence than our own history of that tile.
-      while (out.length < count && priority.length > 0) {
+      // But only up to a share of the batch — the rest belongs to the
+      // rotation, or the globe outside the viewport is never refreshed and
+      // the fleet decays into the region on screen.
+      const priorityQuota = Math.max(1, Math.floor(count * (1 - ROTATION_SHARE)));
+      while (out.length < priorityQuota && priority.length > 0) {
         const id = priority.shift()!;
         const tile = byId.get(id);
-        if (tile) out.push(tile);
+        if (tile) {
+          out.push(tile);
+          lastServedAt.set(id, now());
+        }
       }
 
       let examined = 0;
@@ -453,16 +525,28 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
         cursor += 1;
         examined += 1;
         if (cursor % tiles.length === 0) sweeps += 1;
-        if (isDue(tile)) out.push(tile);
+        if (isDue(tile)) {
+          out.push(tile);
+          lastServedAt.set(tile.id, now());
+          rotationServed += 1;
+        }
       }
       return out;
     },
 
     prioritise(tileIds) {
+      const t = now();
       for (const id of tileIds) {
         if (!byId.has(id) || priority.includes(id)) continue;
+        // A tile fetched moments ago gains nothing from being fetched again,
+        // and re-queuing it on every poll is how the queue outgrows the
+        // budget in the first place.
+        const served = lastServedAt.get(id);
+        if (served !== undefined && t - served < minRefreshMs) continue;
         priority.push(id);
       }
+      // Newest requests win: an old entry describes a camera that has moved.
+      while (priority.length > maxPriorityQueue) priority.shift();
     },
 
     record(tileId, aircraftCount) {
@@ -483,6 +567,7 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
         dormant: dormant.size,
         sweepsCompleted: sweeps,
         prioritised: priority.length,
+        rotationServed,
       };
     },
   };
@@ -492,7 +577,7 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
 - [ ] **Step 4: Eseguire il test e verificare che passi**
 
 Run: `npx vitest run tests/unit/data/sources/tileGrid.test.ts`
-Expected: PASS, 17 test
+Expected: PASS, 20 test
 
 - [ ] **Step 5: Verificare la griglia reale senza fare volume**
 
@@ -930,7 +1015,6 @@ const WORLD_KEY = 'world';
 const MIN_RETENTION_S = 900;
 const MAX_RETENTION_S = 7_200;
 
-let tilesVisited = 0;
 let observedSweepSeconds = 0;
 const pollerStartedMs = Date.now();
 
@@ -997,7 +1081,6 @@ async function runCycle(): Promise<void> {
 
   if (!anySuccess) return;
 
-  tilesVisited += outcomes.length;
   const nowUnix = Math.floor(Date.now() / 1000);
 
   // The retention window must outlast a full sweep, or prune() deletes an
@@ -1005,8 +1088,12 @@ async function runCycle(): Promise<void> {
   // into a rotating smear over a fraction of the grid. The sweep period is
   // measured rather than assumed: at ~29 s median latency it lands around
   // 25 minutes, but it varies with upstream load.
+  // Measured on the ROTATION, not on every tile served: priority tiles are
+  // re-fetched repeatedly and counting them would make the sweep look far
+  // faster than it is, and the retention window would silently lie.
   const elapsedS = (Date.now() - pollerStartedMs) / 1000;
-  const sweepSeconds = tilesVisited > 0 ? (elapsedS / tilesVisited) * tiles.length : 0;
+  const rotationServed = scheduler.stats().rotationServed;
+  const sweepSeconds = rotationServed > 0 ? (elapsedS / rotationServed) * tiles.length : 0;
   observedSweepSeconds = Math.round(sweepSeconds);
   fleet.setMaxAgeSeconds(
     Math.min(MAX_RETENTION_S, Math.max(MIN_RETENTION_S, Math.round(sweepSeconds * 2)))
@@ -1049,7 +1136,9 @@ app.get('/api/states', async (req, reply) => {
   if (Number.isFinite(viewLat) && Number.isFinite(viewLon)) {
     const radius = Number.isFinite(viewRadius) ? Math.min(viewRadius, 2000) : 600;
     const wanted = tilesNear(tiles, { lat: viewLat, lon: viewLon }, radius);
-    scheduler.prioritise(wanted.slice(0, 12).map((t) => t.id));
+    // Six, not twelve: the scheduler reserves half of each batch for the
+    // rotation, so asking for more only grows a queue that cannot be served.
+    scheduler.prioritise(wanted.slice(0, 6).map((t) => t.id));
   }
 
   const cached = feed.get(WORLD_KEY);
@@ -1172,6 +1261,16 @@ curl -s localhost:3000/health | python3 -c "import json,sys; print('prioritised:
 ```
 
 Expected: un valore maggiore di zero subito dopo la richiesta, che torna a zero man mano che quelle tile vengono servite.
+
+**La verifica che conta davvero**: la rotazione deve continuare ad avanzare *mentre* qualcuno guarda. Simulare un visitatore per qualche minuto e controllare che `rotationServed` cresca:
+
+```bash
+for i in $(seq 1 10); do curl -s "localhost:3000/api/states?lat=50&lon=8&radius=600" > /dev/null; sleep 30; done &
+sleep 60; curl -s localhost:3000/health | python3 -c "import json,sys; t=json.load(sys.stdin)['tiles']; print('rotationServed:', t['rotationServed'], '| prioritised:', t['prioritised'])"
+sleep 180; curl -s localhost:3000/health | python3 -c "import json,sys; t=json.load(sys.stdin)['tiles']; print('rotationServed:', t['rotationServed'], '| prioritised:', t['prioritised'])"
+```
+
+Expected: `rotationServed` **cresce** fra le due letture e `prioritised` resta piccolo e limitato. Se `rotationServed` resta fermo mentre il visitatore interroga, la priorità sta affamando la rotazione: il resto del pianeta non viene mai aggiornato e `prune` lo cancellerà. È il difetto che la quota riservata esiste per impedire, ed è invisibile a una `curl` singola.
 
 - [ ] **Step 16: Commit**
 
@@ -2650,7 +2749,9 @@ e in `tick`, sostituire `opts.onBatch(result.aircraft);` con `opts.onBatch(resul
 
 - [ ] **Step 7: Adeguare l'asserzione di `aircraftStream.test.ts` al secondo argomento**
 
-Nel test `calls fetchStates immediately on start`, `toHaveBeenCalledWith` verifica la lista **completa** degli argomenti e fallirebbe ora che sono due. Sostituire quell'asserzione con:
+`toHaveBeenCalledWith` verifica la lista **completa** degli argomenti, quindi **tre** asserzioni di questo file si rompono: una su `onBatch`, che passa da uno a due argomenti, e due su `fetchStates`, che passa da uno a tre con lo Step 9. Correggerle tutte:
+
+Nel test `calls fetchStates immediately on start`:
 
 ```ts
     expect(onBatch).toHaveBeenCalledWith(
@@ -2658,6 +2759,20 @@ Nel test `calls fetchStates immediately on start`, `toHaveBeenCalledWith` verifi
       expect.any(Date)
     );
 ```
+
+Nel test `passes the bounding box from getBoundingBox to fetchStates`:
+
+```ts
+    expect(client.fetchStates).toHaveBeenCalledWith(bbox, undefined, null);
+```
+
+Nel test `passes null bbox when getBoundingBox is omitted`:
+
+```ts
+    expect(client.fetchStates).toHaveBeenCalledWith(null, undefined, null);
+```
+
+Senza queste due ultime correzioni lo Step 11 non può passare: la suite si carica, ma due test diventano rossi.
 
 - [ ] **Step 8: Aggiornare `src/data/bootstrap.ts`**
 
@@ -2808,7 +2923,7 @@ Expected: un valore maggiore di zero. Poi, con il frontend in esecuzione (`npm r
 npm run build:all && npm test -- --run
 ```
 
-Expected: build pulita, tutti i test verdi. Se la suite non si carica affatto, un import di `openSkyClient` è sopravvissuto: rileggi lo Step 5.
+Expected: build pulita, tutti i test verdi. Se la suite non si carica affatto, un import di `openSkyClient` è sopravvissuto (Step 5). Se invece si carica ma due test di `aircraftStream` falliscono con `expected "spy" to be called with arguments`, mancano le correzioni di arity dello Step 7.
 
 - [ ] **Step 12: Commit**
 
@@ -3052,3 +3167,10 @@ Con questi vincoli il globo ha due velocità, ed è bene saperlo prima di guarda
 |---|---|---|---|
 | 36 | **Critico.** La priorità guidata dalla camera era implementata **solo lato server**: il gestore leggeva `lat`/`lon`/`radius` che nessun client invia. Codice morto, e con esso l'unica risposta al difetto #35 — tutto il globo sarebbe rimasto vecchio di 16-25 minuti, inclusa la regione inquadrata. La "Nota sul risultato atteso" prometteva una freschezza che il piano non consegnava | Piano applicato a una copia e server avviato: `curl` manuale con i parametri → `tiles.prioritised = 12`; una richiesta nuda del client reale → `0`. `SceneHandle` espone solo `dispose`, la camera non è raggiungibile dall'esterno | Completato il lato client: `vec3ToLatLon` in geoHelpers, `SceneHandle.viewCentre()` che deriva punto e raggio dalla posizione della camera, `fetchStates` che serializza il punto osservato, `getViewCentre` nello stream e il collegamento in `bootstrap`, più uno step che verifica nel browser che le richieste portino davvero i parametri (Task 7) |
 | 37 | **Critico.** Il pump delle rotte usava `setInterval` senza guardia di rientranza e senza timeout sul fetch: esattamente il difetto #32, corretto per il ciclo delle tile e reintrodotto per le rotte poche pagine dopo | Riprodotto durante la revisione: un singolo hang da 300 s con `setInterval` a 10 s ha prodotto **30 lookup concorrenti** verso adsbdb, contro un tetto di progetto di 1 ogni 1,5 s. Il `headersTimeout` di undici è 300 s e il server ne sovrascriveva solo `connect` | Guardia `routePumpInFlight` e loop che si ripianifica dopo il completamento, `AbortSignal.timeout(10_000)` su ogni lookup, e ricontrollo della sospensione **dentro** il batch, così un 429 ferma anche le richieste rimanenti dello stesso giro (Task 5) |
+
+## Difetti dell'ottavo preflight corretti
+
+| # | Difetto | Evidenza | Correzione |
+|---|---|---|---|
+| 38 | **Critico.** La priorità da viewport affamava la rotazione: `next()` serviva la coda prioritaria senza alcun tetto, e un solo visitatore chiedeva 12 tile ogni 30 s contro 8 servite ogni 31-55 s. Il cursore non avanzava mai, `sweepsCompleted` restava 0, la dormienza non si attivava e `prune` cancellava tutto ciò che sta fuori dall'inquadratura — il difetto #34 reintrodotto dalla correzione del #36 | Simulazione sul codice del piano, due ore e griglia reale: camera ferma → **8 tile di rotazione su 413**, `sweepsCompleted` 0; camera in movimento con ciclo lento → backlog prioritario che cresce a 284 senza mai svuotarsi | Metà di ogni batch è riservata alla rotazione; la coda prioritaria è limitata a 12 voci e scarta le più vecchie; `prioritise()` ignora una tile servita negli ultimi 60 s; il client ne chiede 6 invece di 12. In più `observedSweepSeconds` si misura sulle tile **di rotazione**, non su tutte, altrimenti la finestra di ritenzione continuerebbe a mentire (Task 2, 3) |
+| 39 | **Critico.** Due asserzioni su `fetchStates` si rompono quando la firma passa da uno a tre argomenti. Il piano enunciava la regola — «`toHaveBeenCalledWith` verifica la lista completa» — e la applicava solo a `onBatch`. Lo step di verifica non poteva passare, e il suo suggerimento diagnostico indicava la causa sbagliata | Riprodotto con vitest 2.1.9 nel repo: `expected "spy" to be called with arguments: [ { lamin: 1 } ] / Received: [ {lamin: 1}, undefined, null ]` | Entrambe le asserzioni corrette nello Step 7, e il suggerimento diagnostico dello Step 11 distingue ora «la suite non si carica» da «due test rossi per arity» (Task 7) |
