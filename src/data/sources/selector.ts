@@ -19,9 +19,12 @@ const DEFAULT_COOLDOWN_MS = 120_000;
  * Tries sources in order, skipping any that cannot serve the requested
  * radius and any whose breaker is open.
  *
- * The radius check is not an optimisation: adsb.fi rejects anything above
- * 250 NM, so without it the global sweep would call a provider guaranteed
- * to fail, open its breaker, and leave us with no fallback at all.
+ * The radius check is not an optimisation. Verified live 2026-11-17: BOTH
+ * providers cap at 250 NM — adsb.lol answers 403 "radius exceeds 250 NM"
+ * above it, adsb.fi answers 400. Asking either for more is a guaranteed
+ * failure that would open its breaker for nothing, and there is no third
+ * source to fall through to. The feed is therefore assembled from tiles of
+ * 230 NM; see src/data/sources/tileGrid.ts.
  *
  * The breaker exists because otherwise a provider that is down would cost
  * every request a timeout before falling through — turning an outage into
