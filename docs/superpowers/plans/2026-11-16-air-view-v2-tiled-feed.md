@@ -1019,8 +1019,14 @@ const tiles = buildTileGrid();
 const scheduler = createTileScheduler(tiles);
 const WORLD_KEY = 'world';
 
-/** Floor and ceiling for the derived retention window. */
-const MIN_RETENTION_S = 900;
+/**
+ * Floor and ceiling for the derived retention window.
+ *
+ * The floor is deliberately below twice the nominal sweep (~413 s): set
+ * higher, it would win in every normal regime and the derivation would be
+ * inert — a constant wearing the costume of a measurement.
+ */
+const MIN_RETENTION_S = 600;
 const MAX_RETENTION_S = 7_200;
 
 let observedSweepSeconds = 0;
@@ -1091,6 +1097,10 @@ async function runCycle(): Promise<void> {
     fleet.absorb(result.aircraft, Math.floor(result.fetchedAt.getTime() / 1000));
     scheduler.record(tile.id, result.aircraft.length);
     anySuccess = true;
+    // One line per successful tile: without it the request rate cannot be
+    // observed from outside, and the whole point of the ceiling is that it
+    // must be verifiable rather than believed.
+    app.log.info({ tile: tile.id, aircraft: result.aircraft.length }, 'tile fetched');
   }
 
   if (!anySuccess) return;
@@ -1235,16 +1245,24 @@ grep -n "setInterval" server/index.ts
 
 Expected: nessuna occorrenza relativa a `refreshNextTiles`. Un timer a cadenza fissa su un ciclo che può durare minuti produce cicli sovrapposti e richieste concorrenti illimitate verso un servizio gratuito.
 
-**Poi misurare il rate reale**, che è la cosa che conta e che un `grep` non può vedere. Con il server avviato, contare le richieste emesse in due minuti:
+**Poi misurare il rate reale**, che è la cosa che conta e che un `grep` non può vedere. La misura si prende da `/health`, confrontando due letture a distanza nota — non cercando stringhe nei log, perché una stringa che il codice non emette darebbe zero sia con il limitatore funzionante sia con il limitatore rotto.
+
+Con il server avviato da qualche minuto:
 
 ```bash
-npm run server 2>&1 | tee /tmp/airview.log &
-sleep 125
-grep -c "tile fetch\|feed refreshed\|tile:" /tmp/airview.log
-curl -s localhost:3000/health | python3 -c "import json,sys; t=json.load(sys.stdin)['tiles']; print('tile servite finora:', t['rotationServed'])"
+A=$(curl -s localhost:3000/health | python3 -c "import json,sys; print(json.load(sys.stdin)['tiles']['rotationServed'])")
+sleep 120
+B=$(curl -s localhost:3000/health | python3 -c "import json,sys; print(json.load(sys.stdin)['tiles']['rotationServed'])")
+python3 -c "print(f'tile/s osservate: {($B - $A)/120:.2f}  (tetto dichiarato: 1.0)')"
 ```
 
-Expected: circa **120 tile in due minuti**, cioè ~1 richiesta/s. Se ne vedi molte di più il limitatore non sta funzionando: una revisione precedente di questo piano emetteva 3,2 req/s credendo di emetterne 0,28, perché il ritmo era dedotto da una latenza misurata in un momento sfortunato invece che imposto.
+Expected: **circa 1,0 tile al secondo**, o meno se l'upstream è lento. Un valore sensibilmente superiore significa che il limitatore non funziona: una revisione precedente di questo piano emetteva 3,2 req/s credendo di emetterne 0,28, perché il ritmo era dedotto da una latenza misurata in un momento sfortunato invece che imposto.
+
+Il conteggio da log resta utile come controprova, ora che ogni tile riuscita ne emette uno:
+
+```bash
+grep -c "tile fetched" /tmp/airview.log
+```
 
 - [ ] **Step 15: Verificare il comportamento reale del server**
 
@@ -1282,7 +1300,7 @@ print('OK: la finestra copre lo sweep' if win >= sweep else 'ROTTO: prune cancel
 "
 ```
 
-Expected: `observedSweepSeconds` si assesta fra 900 e 1500 s con otto fetch concorrenti, e `fleet.maxAgeSeconds` è **almeno** pari ad esso. Se la finestra fosse più corta dello sweep, `prune` cancellerebbe ogni aereo prima che la sua tile torni, e la flotta sarebbe una macchia rotante su una frazione della griglia invece del mondo.
+Expected: `observedSweepSeconds` si assesta attorno a **400-450 s** (circa 7 minuti), che è ciò che il tetto di 1 richiesta/s impone su 413 tile — sale verso i 1600 s solo se adsb.lol torna alle latenze di decine di secondi osservate in passato. `fleet.maxAgeSeconds` deve essere **almeno** pari allo sweep osservato. Se la finestra fosse più corta dello sweep, `prune` cancellerebbe ogni aereo prima che la sua tile torni, e la flotta sarebbe una macchia rotante su una frazione della griglia invece del mondo.
 
 Verificare infine la priorità del viewport:
 
