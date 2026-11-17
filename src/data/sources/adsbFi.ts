@@ -46,9 +46,12 @@ export const adsbFiSource: AircraftSource = {
   id: 'adsb-fi',
   label: 'adsb.fi',
   // Verified live: 250 NM -> 200; 1000 NM -> 400; 5000 and 10 000 NM -> 429.
-  // Same ceiling as adsb.lol since 2026-11, so this is no longer a source the
-  // selector always skips: with a tiled feed every request fits under 250 NM
-  // and adsb.fi becomes a live fallback whenever adsb.lol fails.
+  // Same ceiling as adsb.lol since 2026-11, so the gap that once separated the
+  // two providers is gone. That does not help yet: the only caller of the
+  // selector still asks for a 10 000 NM sweep, so BOTH sources are skipped for
+  // radius and /api/states answers 502. adsb.fi is therefore a fallback for
+  // nothing today. It will become one once the tiled feed (Task 3) issues every
+  // request under 250 NM — not before.
   maxRadiusNm: 250,
 
   async fetchRegion(centre: GeoPoint, radiusNm: number, fetchImpl: typeof fetch = fetch): Promise<SourceResult> {
