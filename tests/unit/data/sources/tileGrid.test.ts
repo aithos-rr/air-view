@@ -39,6 +39,20 @@ const tiles3 = () => [
   { id: 'c', region: 'r', centre: { lat: 2, lon: 2 } },
 ];
 
+/**
+ * Great-circle distance, written out independently of the source so the
+ * ordering assertions cannot be satisfied by a shared bug.
+ */
+function haversineNm(a: { lat: number; lon: number }, b: { lat: number; lon: number }): number {
+  const toRad = (d: number): number => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * 3440.065 * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
 describe('tilesNear', () => {
   it('returns the tiles whose centre falls within the radius', () => {
     const grid = buildTileGrid();
@@ -53,8 +67,42 @@ describe('tilesNear', () => {
   });
 
   it('orders the nearest tile first', () => {
-    const near = tilesNear(buildTileGrid(), { lat: 50, lon: 8 }, 800);
+    // Load-bearing, not cosmetic: the server prioritises only the first six
+    // tiles of this list. If the order reversed, it would refresh the
+    // farthest tiles inside the radius and leave the region under the camera
+    // as stale as the far side of the planet — the exact failure this
+    // mechanism exists to prevent.
+    const camera = { lat: 50, lon: 8 };
+    const grid = buildTileGrid();
+    const near = tilesNear(grid, camera, 800);
     expect(near.length).toBeGreaterThan(1);
+
+    const distances = near.map((t) => haversineNm(camera, t.centre));
+    for (let i = 1; i < distances.length; i++) {
+      expect(distances[i]!).toBeGreaterThanOrEqual(distances[i - 1]!);
+    }
+    // The head of the list is the nearest tile of the whole grid, not merely
+    // the nearest of some arbitrary subset that happened to come out first.
+    const nearestOfGrid = Math.min(...grid.map((t) => haversineNm(camera, t.centre)));
+    expect(distances[0]!).toBeCloseTo(nearestOfGrid, 6);
+  });
+
+  it('puts the six tiles the server prioritises nearest the camera', () => {
+    // Task 3 calls prioritise(tilesNear(...).slice(0, 6)): those six must be
+    // the six nearest, or the priority queue refreshes the wrong region.
+    const camera = { lat: 50, lon: 8 };
+    const grid = buildTileGrid();
+    const near = tilesNear(grid, camera, 600);
+    expect(near.length).toBeGreaterThan(6);
+
+    const allSorted = grid
+      .map((t) => haversineNm(camera, t.centre))
+      .sort((a, b) => a - b)
+      .slice(0, 6);
+    const head = near.slice(0, 6).map((t) => haversineNm(camera, t.centre));
+    expect(head).toEqual(allSorted);
+    // And they are genuinely close by, not a spread across the radius.
+    expect(head[5]!).toBeLessThan(500);
   });
 });
 
