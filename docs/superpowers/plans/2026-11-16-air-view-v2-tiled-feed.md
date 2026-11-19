@@ -181,6 +181,15 @@ describe('createTileScheduler', () => {
     expect(new Set(batch.map((t) => t.id)).size).toBe(batch.length);
   });
 
+  it('does not repeat tiles when the rotation laps inside one batch', () => {
+    // The real case: fewer due tiles than the batch size. The cursor wraps
+    // and would hand out the same tiles again — six fetches for three tiles.
+    const s = createTileScheduler(tiles3(), { minRefreshMs: 0 });
+    const batch = s.next(8); // more than the three tiles available
+    expect(new Set(batch.map((t) => t.id)).size).toBe(batch.length);
+    expect(batch.length).toBeLessThanOrEqual(3);
+  });
+
   it('caps the priority queue so a moving camera cannot grow it without bound', () => {
     const many = Array.from({ length: 40 }, (_, i) => ({
       id: `t${i}`, region: 'r', centre: { lat: i, lon: 0 },
@@ -465,6 +474,7 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
         if (alreadyOut.has(tile.id)) continue;
         if (isDue(tile)) {
           out.push(tile);
+          alreadyOut.add(tile.id); // without this the cursor laps and repeats
           lastServedAt.set(tile.id, now());
           rotationServed += 1;
         }
@@ -515,7 +525,7 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
 - [ ] **Step 4: Eseguire il test e verificare che passi**
 
 Run: `npx vitest run tests/unit/data/sources/tileGrid.test.ts`
-Expected: PASS, 19 test
+Expected: PASS, 21 test
 
 - [ ] **Step 5: Verificare la griglia reale senza fare volume**
 
@@ -531,7 +541,14 @@ EOF
 npx tsx probe-grid.mts && rm probe-grid.mts
 ```
 
-Expected: circa 413 tile, con `north-america` ed `europe` fra le regioni più rappresentate. **Non** interrogare adsb.lol in questo passo: la griglia è deterministica e si verifica senza rete.
+Expected: **esattamente 413 tile**, con questa distribuzione (la funzione è deterministica, quindi il confronto è esatto):
+
+```
+oceania 77 | north-america 71 | south-america 69 | southeast-asia 41
+east-asia 39 | europe 35 | india 26 | north-africa 26 | gulf 20 | southern-africa 9
+```
+
+Le regioni più numerose sono quelle con le bounding box più larghe, non quelle con più traffico: `europe` è sesta con 35 tile ed è corretto così. **Non** interrogare adsb.lol in questo passo: la griglia si verifica senza rete.
 
 - [ ] **Step 6: Verificare ENTRAMBI i programmi e committare**
 
@@ -2106,7 +2123,11 @@ Nel blocco `"scripts"`:
 
 - [ ] **Step 3: Lanciare una corsa breve per verificare che funzioni**
 
+**Arrestare prima il server**, se è ancora in esecuzione dal Task 3. Il poller emette ~0,67 richieste/s verso adsb.lol e il campionatore altrettante: sommate superano il vincolo di progetto e si avvicinano al tasso che ha già prodotto un 429 su entrambe le sorgenti. Sono due client indipendenti che non si coordinano.
+
 ```bash
+pkill -f "tsx watch server/index.ts" || true
+curl -sf localhost:3000/health > /dev/null && echo "ATTENZIONE: un server risponde ancora su :3000 — fermalo prima di proseguire" || echo "nessun server locale attivo, procedo"
 mkdir -p server/data
 node scripts/build-route-cache.mjs --hours 0.05
 ```
