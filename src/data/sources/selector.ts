@@ -23,8 +23,14 @@ const DEFAULT_COOLDOWN_MS = 120_000;
  * providers cap at 250 NM — adsb.lol answers 403 "radius exceeds 250 NM"
  * above it, adsb.fi answers 400. Asking either for more is a guaranteed
  * failure that would open its breaker for nothing, and there is no third
- * source to fall through to. The feed is therefore assembled from tiles of
- * 230 NM; see src/data/sources/tileGrid.ts.
+ * source to fall through to. That is why this module is the one that emits
+ * the "no ADS-B source accepts a N NM radius" error today: the only caller,
+ * server/index.ts, still asks for a single 10 000 NM sweep, so every source
+ * is skipped on radius and /api/states answers 502 without issuing a single
+ * upstream request. Nothing here can fix that — the caller has to stop
+ * asking for more than 250 NM. It will, once the tiled feed (Task 3 of
+ * docs/superpowers/plans/2026-11-16-air-view-v2-tiled-feed.md) requests one
+ * tile at a time; until then this endpoint is known broken.
  *
  * The breaker exists because otherwise a provider that is down would cost
  * every request a timeout before falling through — turning an outage into
