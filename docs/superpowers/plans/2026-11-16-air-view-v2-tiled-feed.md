@@ -64,7 +64,7 @@ Expected: entrambi gli adattatori dichiarano `maxRadiusNm: 250`, build pulita su
 
 ### Task 2: GIÀ COMPLETATO — NON RIESEGUIRE: griglia di tile adattiva
 
-Questo task è **già implementato e committato** sul branch `v2-design` dai commit `ad2743d`, `430039d`, `69c9302`, `641c9d0` e `8ae051c`. I blocchi di codice e di test qui sotto sono una **fotografia del codice committato** — risincronizzati verbatim il 2026-11-19 con `src/data/sources/tileGrid.ts` e `tests/unit/data/sources/tileGrid.test.ts` — non istruzioni da applicare.
+Questo task è **già implementato e committato** sul branch `v2-design` dai commit `ad2743d`, `430039d`, `69c9302`, `641c9d0` e `8ae051c`. I blocchi di codice e di test qui sotto sono una **fotografia del codice committato** — risincronizzati verbatim il 2026-11-19 con `src/data/sources/tileGrid.ts` e `tests/unit/data/sources/tileGrid.test.ts` — non istruzioni da applicare. **Unica eccezione, dichiarata qui per non doverla indovinare:** il commento di `tilesNear` riprodotto sotto è già nella forma che il Task 3 Step 11b installa. Il file committato dice ancora «~10 minutes at adsb.lol's measured latency of ~29 s per tile», e quella latenza è stata smentita dalla rimisurazione del difetto #41 (0,47 s mediani); il Task 3 riscrive quel commento e mette `src/data/sources/tileGrid.ts` nella propria riga `git add`. **Seconda eccezione, dalla stessa data:** il Task 3 (Step 8e-8h) aggiunge `recordFailure` allo scheduler, perche' `record()` e' raggiunto solo sul ramo di successo del poller e una tile che fallisce sempre non diventerebbe mai dormiente. Da quel momento il file vero ha un metodo in piu' di questa fotografia, e il suo test quattro casi in piu'; tutto il resto resta identico.
 
 **Non rieseguire gli step originali**: lo Step 1 chiederebbe di creare un file che esiste già, lo Step 2 si aspetta un rosso che non può più esserci, e riscrivere lo Step 3 sopra il file vero reintrodurrebbe difetti già chiusi. Per verificare lo stato basta `npm run build:all && npm test -- --run`.
 
@@ -74,7 +74,7 @@ Questo task è **già implementato e committato** sul branch `v2-design` dai com
 
 **Interfaces:**
 - Consumes: `GeoPoint` dal Task 1 del piano precedente
-- Produces: `TILE_RADIUS_NM: number`; `buildTileGrid(): Tile[]` con `Tile = { id: string; region: string; centre: GeoPoint }`; `tilesNear(grid: Tile[], centre: GeoPoint, radiusNm: number): Tile[]`; `createTileScheduler(tiles: Tile[], opts?: SchedulerOptions): TileScheduler` con `TileScheduler.next(count: number): Tile[]`, `prioritise(tileIds: string[]): void`, `record(tileId: string, aircraftCount: number): void`, `stats(): { total: number; productive: number; dormant: number; sweepsCompleted: number; prioritised: number; rotationServed: number }`. `SchedulerOptions = { dormantAfterEmptySweeps?: number; dormantRetryEvery?: number; maxPriorityQueue?: number; minRefreshMs?: number; now?: () => number }`. `rotationServed` conta le sole tile servite dalla rotazione, non quelle prioritarie: il Task 3 Step 9 ci deriva la finestra di ritenzione e lo Step 14 ci misura il rate, e contare anche le tile del viewport — rifetchate di continuo — farebbe sembrare la spazzata molto più veloce di com'è.
+- Produces: `TILE_RADIUS_NM: number`; `buildTileGrid(): Tile[]` con `Tile = { id: string; region: string; centre: GeoPoint }`; `tilesNear(grid: Tile[], centre: GeoPoint, radiusNm: number): Tile[]`; `createTileScheduler(tiles: Tile[], opts?: SchedulerOptions): TileScheduler` con `TileScheduler.next(count: number): Tile[]`, `prioritise(tileIds: string[]): void`, `record(tileId: string, aircraftCount: number): void`, `recordFailure(tileId: string): void` (aggiunto dal Task 3 Step 8g: senza di esso la dormienza impara solo dal vuoto e mai dal fallimento, e una tile che non risponde mai consuma uno slot da 1,5 s a ogni spazzata per sempre), `stats(): { total: number; productive: number; dormant: number; sweepsCompleted: number; prioritised: number; rotationServed: number }`. `SchedulerOptions = { dormantAfterEmptySweeps?: number; dormantRetryEvery?: number; maxPriorityQueue?: number; minRefreshMs?: number; now?: () => number }`. `rotationServed` conta le sole tile servite dalla rotazione, non quelle prioritarie: il Task 3 Step 9 ci deriva la finestra di ritenzione e lo Step 14 ci misura il rate, e contare anche le tile del viewport — rifetchate di continuo — farebbe sembrare la spazzata molto più veloce di com'è.
 
 **Perché adattiva.** La griglia copre riquadri geografici, ma molte tile cadono su oceano aperto dove nessun ricevitore esiste. Misurato dal vivo: una tile sugli Stati Uniti centrali restituisce **660 aerei**, una sul Pacifico orientale **zero**. Interrogare indefinitamente le tile vuote sprecherebbe la gran parte del budget di richieste verso un servizio gratuito. Lo scheduler impara: dopo alcuni passaggi a vuoto una tile diventa dormiente e viene ritentata di rado, perché la copertura ADS-B cambia nel tempo e una tile morta oggi può rianimarsi domani.
 
@@ -688,9 +688,12 @@ function distanceNm(a: GeoPoint, b: GeoPoint): number {
  * Tiles whose centre lies within `radiusNm` of a point, nearest first.
  *
  * Used to turn a viewer's camera into the set of tiles worth refreshing
- * immediately. A full sweep takes ~10 minutes at adsb.lol's measured
- * latency of ~29 s per tile, so without this the region being looked at
- * would be as stale as the far side of the planet.
+ * immediately. A full sweep is 546 tiles fetched one at a time, at most one
+ * every 1.5 s: 820-1000 s, i.e. 14-17 minutes. The ~10 minutes this comment
+ * used to claim read the pace off a 29 s median latency measured during
+ * congestion; the pace comes from the floor, and 546 x 1.5 s = 819 s is a
+ * floor no latency can beat. Without this the region being looked at would
+ * be as stale as the far side of the planet.
  */
 export function tilesNear(grid: Tile[], centre: GeoPoint, radiusNm: number): Tile[] {
   return grid
@@ -908,16 +911,16 @@ Il cambiamento concettuale di questo piano. Con un endpoint globale il server po
 
 **Files:**
 - Create: `server/fleet.ts`, `server/feedState.ts`, `server/errorChain.ts`
-- Modify: `server/index.ts`, `src/data/sources/selector.ts`
-- Test: `tests/unit/server/fleet.test.ts`, `tests/unit/server/feedState.test.ts`, `tests/unit/server/errorChain.test.ts`
+- Modify: `server/index.ts`, `src/data/sources/selector.ts`, `src/data/sources/adsbFi.ts`, `src/data/sources/tileGrid.ts` — `adsbFi.ts` solo per il commento che lo Step 11b rende falso; `tileGrid.ts` (già committato dal Task 2) per lo stesso motivo **e** perché lo Step 8g gli aggiunge `recordFailure`
+- Test: `tests/unit/server/fleet.test.ts`, `tests/unit/server/feedState.test.ts`, `tests/unit/server/errorChain.test.ts`, `tests/unit/data/sources/tileGrid.test.ts` (esteso dallo Step 8e); lo Step 11b aggiorna anche un commento di `tests/unit/data/sources/selector.test.ts`
 
 **Interfaces:**
 - Consumes: `TileScheduler`, `buildTileGrid`, `TILE_RADIUS_NM` dal Task 2; `SourceSelector` e `UpstreamHttpError` (`status`, `retryAfterSeconds`) dal Task 1
-- Produces: `createFleet(opts?: FleetOptions): Fleet` con `Fleet.absorb(aircraft: AircraftRaw[], atUnix: number): number`, `Fleet.snapshot(): AircraftRaw[]`, `Fleet.prune(nowUnix: number): number`, `Fleet.size(): number`, `Fleet.setMaxAgeSeconds(seconds: number): void`, `Fleet.maxAgeSeconds(): number`; `FleetOptions = { maxAgeSeconds?: number }`. `createFeedState(opts?: FeedStateOptions): FeedState` come nel piano precedente, con `FeedHealth.status: 'starting' | 'ok' | 'degraded'`.
+- Produces: `createFleet(opts?: FleetOptions): Fleet` con `Fleet.absorb(aircraft: AircraftRaw[], atUnix: number): number`, `Fleet.snapshot(maxRecords?: number): AircraftRaw[]`, `Fleet.prune(nowUnix: number): number`, `Fleet.size(): number`, `Fleet.setMaxAgeSeconds(seconds: number): void`, `Fleet.maxAgeSeconds(): number`; `FleetOptions = { maxAgeSeconds?: number }`. `createFeedState(opts?: FeedStateOptions): FeedState` come nel piano precedente, con `FeedHealth.status: 'starting' | 'ok' | 'degraded'`. Su moduli già committati questo task produce inoltre: `TileScheduler.recordFailure(tileId: string): void` (Step 8g) e `SourcesFailedError extends Error` con `attempted: boolean` (Step 8k), che dice se su quella chiamata una richiesta è davvero partita o se il messaggio è solo il ricordo di un errore precedente.
 
 **Semantica di `lastContact` dentro la flotta.** Dal commit 8ae051c `AircraftRaw.lastContact` è `number | null`, e `null` significa «​il provider non ha detto quanto è vecchio questo fix», non «​è fresco». Il Task 7 e il Task 8 poggiano su questa semantica, perciò è dichiarata qui e non solo nel codice.
 
-- **La flotta invecchia su `absorbedAt`, non su `lastContact`.** Ogni record è tenuto insieme all'istante `atUnix` in cui lo abbiamo assorbito, e `prune(nowUnix)` confronta quello. Due ragioni. La finestra di ritenzione misura la cadenza della *nostra* spazzata — quanto passa prima che una tile torni — che è una proprietà del poller e non dell'orologio del provider. E con `lastContact` nullable l'unico modo type-safe di scrivere il vecchio confronto, cioè saltare ciò che non si può confrontare, renderebbe immortale un aereo di staleness ignota. Ne segue che l'appartenenza alla flotta non dipende da timestamp altrui, coerentemente con il principio che il Task 7 enuncia: «il server è l'unica autorità su chi è in volo».
+- **La flotta invecchia su `absorbedAt`, non su `lastContact`.** Ogni record è tenuto insieme all'istante `atUnix` in cui lo abbiamo assorbito, e `prune(nowUnix)` confronta quello. Due ragioni. La finestra di ritenzione misura la cadenza della *nostra* spazzata — quanto passa prima che una tile torni — che è una proprietà del poller e non dell'orologio del provider. E con `lastContact` nullable l'unico modo type-safe di scrivere il vecchio confronto, cioè saltare ciò che non si può confrontare, renderebbe immortale un aereo di staleness ignota. **In concreto: `absorb` riceve `Math.floor(Date.now() / 1000)`, mai `result.fetchedAt`.** `fetchedAt` non è l'istante del nostro fetch: entrambi gli adattatori lo derivano dal campo `now` della risposta upstream (`src/data/sources/adsbLol.ts`, `src/data/sources/adsbFi.ts`), mentre `prune(nowUnix)` gira su `Date.now()`. Passarlo ad `absorb` metterebbe a confronto due orologi diversi a ogni ciclo, e la deriva di quello del provider allungherebbe o accorcerebbe in silenzio la finestra di ritenzione. Ne segue che l'appartenenza alla flotta non dipende da timestamp altrui, coerentemente con il principio che il Task 7 enuncia: «il server è l'unica autorità su chi è in volo».
 - **In `absorb` vince il record in arrivo ogni volta che le due età non sono confrontabili.** Se entrambi i `lastContact` sono non-null vince il più recente, com'era già. Se uno dei due è `null` le età non sono ordinabili, e vince il record in arrivo perché è l'informazione fetchata più di recente che abbiamo. Attenzione: `prev.lastContact !== r.lastContact` **non** restringe il null, perché sono entrambi nullable — il confronto va scritto con due controlli espliciti.
 
 - [ ] **Step 1: Scrivere il test della flotta**
@@ -1022,15 +1025,37 @@ describe('createFleet', () => {
     expect(f.snapshot().find((x) => x.icao24 === 'b')!.latitude).toBe(30);
   });
 
+  it('ages on OUR clock, whatever clock the provider stamped the batch with', () => {
+    // SourceResult.fetchedAt is NOT the instant of our fetch: both adapters
+    // derive it from the upstream `now` field, so it is the provider's
+    // clock, while prune() is called with ours. Ageing on it let the
+    // provider's drift stretch or shrink the retention window in silence.
+    // Nothing the provider says about time may move what prune() does: the
+    // only clock that counts is the atUnix the poller passes in.
+    const behind = createFleet({ maxAgeSeconds: 600 });
+    const ahead = createFleet({ maxAgeSeconds: 600 });
+    // Same aircraft, same local instant of absorption; only the ages the
+    // provider claims differ — an hour behind, an hour ahead, unstated.
+    behind.absorb([ac('a', 1000 - 3600), ac('b', null)], 1000);
+    ahead.absorb([ac('a', 1000 + 3600), ac('b', null)], 1000);
+    expect(behind.prune(1500)).toBe(0);
+    expect(ahead.prune(1500)).toBe(0);
+    expect(behind.prune(1601)).toBe(2);
+    expect(ahead.prune(1601)).toBe(2);
+    expect(behind.size()).toBe(0);
+    expect(ahead.size()).toBe(0);
+  });
+
   it('starts empty', () => {
     expect(createFleet().snapshot()).toEqual([]);
   });
 
   it('lets the retention window be retuned at runtime', () => {
-    // A sweep takes ~10 minutes at the poller's request ceiling, and that
-    // varies. A window shorter than a sweep deletes aircraft long before
-    // their tile comes round again, leaving a rotating smear instead of a
-    // fleet — so the poller derives it from the sweep it actually observes.
+    // A sweep takes 820-1000 s — 14-17 minutes — at the poller's ceiling of
+    // one tile every 1.5 s, and that varies. A window shorter than a sweep
+    // deletes aircraft long before their tile comes round again, leaving a
+    // rotating smear instead of a fleet — so the poller derives it from the
+    // sweep it actually observes.
     const f = createFleet({ maxAgeSeconds: 600 });
     f.absorb([ac('a', 1000)], 1000);
     f.setMaxAgeSeconds(3000);
@@ -1038,6 +1063,28 @@ describe('createFleet', () => {
     expect(f.prune(3500)).toBe(0); // 2500s old, still inside the new window
     f.setMaxAgeSeconds(600);
     expect(f.prune(3500)).toBe(1);
+  });
+
+  it('caps the snapshot, keeping what we absorbed last', () => {
+    // /api/states serves the WHOLE fleet on every request, so the payload is
+    // as big as the retention window makes it. Dropping the oldest sightings
+    // first drops exactly what prune() would take next.
+    const f = createFleet();
+    f.absorb([ac('old1', 100), ac('old2', 100)], 100);
+    f.absorb([ac('new1', 200), ac('new2', 200)], 200);
+    expect(
+      f
+        .snapshot(2)
+        .map((a) => a.icao24)
+        .sort()
+    ).toEqual(['new1', 'new2']);
+  });
+
+  it('returns the whole fleet when it is under the cap', () => {
+    const f = createFleet();
+    f.absorb([ac('a', 100), ac('b', 100)], 100);
+    expect(f.snapshot(50)).toHaveLength(2);
+    expect(f.snapshot()).toHaveLength(2);
   });
 });
 ```
@@ -1065,7 +1112,15 @@ export interface Fleet {
    * @returns how many records this batch created or updated.
    */
   absorb(aircraft: AircraftRaw[], atUnix: number): number;
-  snapshot(): AircraftRaw[];
+  /**
+   * Every record, or — with maxRecords — the most recently absorbed ones.
+   *
+   * The cap exists because /api/states serves the whole fleet on every
+   * request: the payload grows with the retention window, and in the
+   * slow-upstream regime that window stretches to two hours. Dropping the
+   * oldest sightings first drops what prune() would remove next anyway.
+   */
+  snapshot(maxRecords?: number): AircraftRaw[];
   /** @returns how many records were removed. */
   prune(nowUnix: number): number;
   size(): number;
@@ -1123,8 +1178,17 @@ export function createFleet(opts: FleetOptions = {}): Fleet {
       return changed;
     },
 
-    snapshot() {
-      return [...byIcao.values()].map((e) => e.record);
+    snapshot(maxRecords) {
+      const entries = [...byIcao.values()];
+      if (maxRecords === undefined || entries.length <= maxRecords) {
+        return entries.map((e) => e.record);
+      }
+      // Freshest first, so what falls off the end is what prune() would take
+      // next. The sort only runs when the cap actually bites.
+      return entries
+        .sort((a, b) => b.absorbedAt - a.absorbedAt)
+        .slice(0, maxRecords)
+        .map((e) => e.record);
     },
 
     prune(nowUnix) {
@@ -1161,7 +1225,7 @@ export function createFleet(opts: FleetOptions = {}): Fleet {
 - [ ] **Step 4: Eseguire il test e verificare che passi**
 
 Run: `npx vitest run tests/unit/server/fleet.test.ts`
-Expected: PASS, 11 test
+Expected: PASS, 14 test
 
 - [ ] **Step 5: Scrivere il test di `feedState`**
 
@@ -1501,11 +1565,246 @@ export function upstreamStatus(e: unknown): UpstreamStatus | null {
 Run: `npx vitest run tests/unit/server/errorChain.test.ts`
 Expected: PASS, 7 test
 
+- [ ] **Step 8e: Scrivere il test della dormienza che impara dal fallimento**
+
+`src/data/sources/tileGrid.ts` è già committato dal Task 2, ma il contratto dello scheduler cambia qui, e va cambiato prima dello Step 9 che lo usa. Motivo: `scheduler.record()` è raggiunto **solo sul ramo di successo**, quindi una tile la cui fetch fallisce sempre non diventa mai dormiente, resta nella rotazione per sempre e consuma uno slot da 1,5 s a ogni spazzata. La dormienza — la ragione per cui lo scheduler esiste — imparerebbe solo dal vuoto, mai dal fallimento.
+
+Il vincolo opposto conta quanto questo: **un 429 è globale**, colpisce ogni tile, e non deve addormentare il mondo intero. La distinzione sta nel chiamante, non qui: lo Step 9 decide quali fallimenti sono attribuibili alla singola tile, lo scheduler riceve un metodo separato e non sa nulla di HTTP.
+
+Aggiungere in coda al blocco `describe('createTileScheduler', ...)` di `tests/unit/data/sources/tileGrid.test.ts`, **prima** della parentesi che lo chiude:
+
+```ts
+  it('marks a tile dormant when its fetch keeps FAILING, not only when it is empty', () => {
+    // record() is reached only on the poller's success branch, so before
+    // recordFailure() a tile that always failed stayed in the rotation for
+    // ever: one 1.5 s slot per sweep, every sweep, for a tile that never
+    // answers. Dormancy learned from emptiness and never from failure.
+    const s = createTileScheduler(tiles3(), { dormantAfterEmptySweeps: 3 });
+    for (let i = 0; i < 3; i++) s.recordFailure('b');
+    expect(s.stats().dormant).toBe(1);
+    expect(s.stats().productive).toBe(2);
+  });
+
+  it('counts a failure and an empty answer on the SAME streak', () => {
+    // Both mean the tile yielded no aircraft this time round and both cost
+    // the same slot. Two separate counters would let a tile alternate
+    // between failing and answering empty and never reach either threshold.
+    const s = createTileScheduler(tiles3(), { dormantAfterEmptySweeps: 3 });
+    s.record('a', 0);
+    s.recordFailure('a');
+    expect(s.stats().dormant).toBe(0);
+    s.record('a', 0);
+    expect(s.stats().dormant).toBe(1);
+  });
+
+  it('wakes a tile that answers again after failing', () => {
+    // Dormancy stays reversible whatever put the tile to sleep: an outage
+    // on one region is not evidence about the next month.
+    const s = createTileScheduler(tiles3(), { dormantAfterEmptySweeps: 2 });
+    s.recordFailure('c');
+    s.recordFailure('c');
+    expect(s.stats().dormant).toBe(1);
+    s.record('c', 7);
+    expect(s.stats().dormant).toBe(0);
+    expect(s.stats().productive).toBe(3);
+  });
+
+  it('drops a failing tile out of the rotation, which is the point of all this', () => {
+    // The slot is the scarce resource: one request every 1.5 s. A tile that
+    // cannot be fetched has to stop spending one on every sweep.
+    const s = createTileScheduler(tiles3(), {
+      dormantAfterEmptySweeps: 1, dormantRetryEvery: 100, minRefreshMs: 0,
+    });
+    // One full sweep first: isDue() lets a dormant tile through on every
+    // retryEvery-th sweep, and sweep ZERO is one of those — without this the
+    // test would pass for the wrong reason, or fail for one.
+    for (const t of s.next(3)) s.record(t.id, 5);
+    s.recordFailure('b');
+    const served = s.next(3).map((t) => t.id);
+    expect(served).not.toContain('b');
+    expect(served.length).toBe(2);
+  });
+```
+
+- [ ] **Step 8f: Eseguire il test e verificare che fallisca**
+
+Run: `npx vitest run tests/unit/data/sources/tileGrid.test.ts`
+Expected: FAIL — `s.recordFailure is not a function` nei quattro test nuovi, i 34 preesistenti verdi.
+
+- [ ] **Step 8g: Aggiungere `recordFailure` a `src/data/sources/tileGrid.ts`**
+
+File già committato: tre modifiche puntuali, non una riscrittura.
+
+Nell'interfaccia `TileScheduler`, subito dopo `record(tileId: string, aircraftCount: number): void;`:
+
+```ts
+  /**
+   * A fetch that failed for a reason attributable to THIS tile.
+   *
+   * Separate from record() because only the caller can tell a tile's own
+   * failure from the whole feed's: a 429 is the provider's global rate
+   * limit and would otherwise put all 546 tiles to sleep at once.
+   */
+  recordFailure(tileId: string): void;
+```
+
+Dentro `createTileScheduler`, accanto a `isDue`, dichiarare l'helper che le due strade condividono:
+
+```ts
+  /**
+   * One more sweep in which this tile yielded nothing.
+   *
+   * Shared by record(count === 0) and recordFailure() on purpose: an empty
+   * answer and a failed fetch cost the same 1.5 s slot and carry the same
+   * meaning for the rotation. Keeping two streaks would let a tile alternate
+   * between the two and never reach either threshold.
+   */
+  function countBarrenSweep(tileId: string): void {
+    const streak = (emptyStreak.get(tileId) ?? 0) + 1;
+    emptyStreak.set(tileId, streak);
+    if (streak >= dormantAfter) dormant.add(tileId);
+  }
+```
+
+e sostituire il metodo `record` con questa coppia:
+
+```ts
+    record(tileId, aircraftCount) {
+      if (aircraftCount > 0) {
+        emptyStreak.set(tileId, 0);
+        dormant.delete(tileId);
+        return;
+      }
+      countBarrenSweep(tileId);
+    },
+
+    recordFailure(tileId) {
+      countBarrenSweep(tileId);
+    },
+```
+
+- [ ] **Step 8h: Eseguire il test e verificare che passi**
+
+Run: `npx vitest run tests/unit/data/sources/tileGrid.test.ts`
+Expected: PASS, 38 test (34 del Task 2 più i 4 nuovi).
+
+- [ ] **Step 8i: Scrivere il test del 429 citato a memoria**
+
+Durante il cooldown del breaker **nessuna sorgente viene interrogata**, eppure l'errore aggregato di `selector.ts` interpola `lastError`, che per un 429 contiene ancora `HTTP 429`, e lancia con `cause: causes[0]` dove `causes` è vuoto. Lo Step 9 ne ricava `upstreamStatus(e) === null` e poi `/\b429\b/.test(msg) === true`: un messaggio **stale** riarma la sospensione da rate limit con il cooldown di ripiego di 5 minuti, su un tick in cui non è partita una sola richiesta, e il ciclo successivo può rifarlo. Il poller deve poter distinguere «429 appena ricevuto» da «429 ricordato».
+
+Aggiungere a `tests/unit/data/sources/selector.test.ts`, dentro `describe('createSourceSelector', ...)`:
+
+```ts
+  it('marks an error raised while every source was in cooldown as NOT attempted', async () => {
+    // Nothing left the process on that call, so the 429 quoted in the
+    // message is a replay of one from minutes ago. server/index.ts reads
+    // `attempted` before letting message text re-arm the rate-limit
+    // suspension: without it a stale "HTTP 429" froze the feed for five
+    // more minutes on every cycle, without a single request being made.
+    const a = fakeSource('a', 250, async () => {
+      throw new Error('adsb-lol: HTTP 429 (retry after 90s)');
+    });
+    let clock = 1000;
+    const selector = createSourceSelector([a], { breakerCooldownMs: 60_000, now: () => clock });
+
+    const live = await selector.fetchRegion({ lat: 0, lon: 0 }, 10).catch((e: unknown) => e);
+    expect((live as { attempted?: boolean }).attempted).toBe(true);
+
+    clock += 1000; // breaker still open: the source is not asked at all
+    const replayed = await selector.fetchRegion({ lat: 0, lon: 0 }, 10).catch((e: unknown) => e);
+    expect((replayed as Error).message).toMatch(/in cooldown after/);
+    expect((replayed as Error).message).toMatch(/429/); // still readable by an operator
+    expect((replayed as { attempted?: boolean }).attempted).toBe(false);
+    expect(a.fetchRegion).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not pretend to carry a cause when nothing was asked', async () => {
+    // `cause: causes[0]` with an empty `causes` CREATES the property with
+    // value undefined, so a reader cannot tell "no diagnosis exists" from
+    // "the diagnosis was lost" — and every cooldown error looked like the
+    // second. rootCause() then reports the aggregate's own message as the
+    // root, which is the one message that explains nothing.
+    const a = fakeSource('a', 250, async () => { throw new Error('adsb-lol: HTTP 500'); });
+    let clock = 1000;
+    const selector = createSourceSelector([a], { breakerCooldownMs: 60_000, now: () => clock });
+    await selector.fetchRegion({ lat: 0, lon: 0 }, 10).catch(() => undefined);
+    clock += 1000;
+    const replayed = await selector.fetchRegion({ lat: 0, lon: 0 }, 10).catch((e: unknown) => e);
+    expect('cause' in (replayed as Error)).toBe(false);
+  });
+
+  it('still carries the original cause when a source WAS asked', async () => {
+    // The guard above must not cost the diagnostic the cause exists for.
+    const original = Object.assign(new Error('fetch failed'), { code: 'ENOTFOUND' });
+    const a = fakeSource('a', 250, async () => { throw original; });
+    const thrown = await createSourceSelector([a])
+      .fetchRegion({ lat: 0, lon: 0 }, 10)
+      .catch((e: unknown) => e);
+    expect((thrown as Error).cause).toBe(original);
+    expect((thrown as { attempted?: boolean }).attempted).toBe(true);
+  });
+```
+
+- [ ] **Step 8j: Eseguire il test e verificare che fallisca**
+
+Run: `npx vitest run tests/unit/data/sources/selector.test.ts`
+Expected: FAIL — `attempted` è `undefined` e `'cause' in err` è `true`; i 12 test preesistenti restano verdi.
+
+- [ ] **Step 8k: Marcare l'errore aggregato in `src/data/sources/selector.ts`**
+
+File già committato. Esportare il tipo sopra `createSourceSelector`:
+
+```ts
+/**
+ * The aggregate thrown when no source could serve the request.
+ *
+ * `attempted` says whether a request actually left the process on THIS
+ * call. It is false when every source was skipped by its own breaker: the
+ * message then quotes the error that opened the breaker minutes ago, and a
+ * reader that re-parses it — server/index.ts matching /\b429\b/ — would
+ * re-arm a five-minute rate-limit suspension on a tick that asked nothing.
+ */
+export interface SourcesFailedError extends Error {
+  attempted: boolean;
+}
+```
+
+e sostituire il solo blocco del `throw` aggregato:
+
+```ts
+      if (errors.length > 0) {
+        // A source skipped for radius is still part of the picture: without
+        // this, a mixed roster reports only "adsb-fi: HTTP 500" and the
+        // operator never learns the primary was never asked at all.
+        const alsoSkipped =
+          skippedForRadius.length > 0
+            ? ` | skipped for radius: ${skippedForRadius.join(', ')}`
+            : '';
+        const err = new Error(
+          `all usable ADS-B sources failed: ${errors.join(' | ')}${alsoSkipped}`
+        ) as SourcesFailedError;
+        // causes is non-empty exactly when a source was really tried, which
+        // is also what makes the message describe THIS call rather than an
+        // earlier one. `new Error(m, { cause: undefined })` would still
+        // create the property, so it is assigned only when there is one.
+        if (causes.length > 0) (err as Error & { cause?: unknown }).cause = causes[0];
+        err.attempted = causes.length > 0;
+        throw err;
+      }
+```
+
+- [ ] **Step 8l: Eseguire il test e verificare che passi**
+
+Run: `npx vitest run tests/unit/data/sources/selector.test.ts`
+Expected: PASS, 15 test (12 preesistenti più i 3 nuovi).
+
 - [ ] **Step 9: Riscrivere il ciclo di aggiornamento in `server/index.ts`**
 
 Rimuovere il blocco della cache artigianale (`const cache = new Map...`, `CACHE_TTL_MS`, `GLOBAL_KEY`, `bboxKey`) e `GLOBAL_SWEEP`. Aggiungere agli import e alle costanti:
 
 ```ts
+import { gzip } from 'node:zlib';
+import { promisify } from 'node:util';
 import { createFeedState } from './feedState.js';
 import { createFleet } from './fleet.js';
 import { rootCause, upstreamStatus } from './errorChain.js';
@@ -1518,13 +1817,83 @@ const scheduler = createTileScheduler(tiles);
 const WORLD_KEY = 'world';
 
 /**
+ * Hard ceiling on the records in one payload.
+ *
+ * /api/states serves the whole accumulated fleet on every request — the bbox
+ * is ignored on purpose — so the body is as big as the retention window
+ * makes it, not as big as what the viewer is looking at.
+ *
+ * Measured on 20 000 records of the fourteen fields in src/types.ts, with
+ * realistic variation: 280 B each with no route attached, 414 B with one,
+ * about 340 B at a plausible route coverage — against about 143 B in v1,
+ * which carried neither registration nor model nor route nor the
+ * completeness flag. At the retention FLOOR of 1 200 s the fleet holds
+ * twenty minutes of sightings, more aircraft than any snapshot, so the body
+ * lands between 5,6 and 8,3 MB. Step 15a measures the real figure rather
+ * than trusting this one.
+ *
+ * 24 000 is that 10 MB expressed in records: 24 000 x 414 B is 9,9 MB, the
+ * worst case with a route on every aircraft. It therefore does not bind in
+ * the normal regime — it is the backstop for the slow-upstream one, where
+ * the window stretches to MAX_RETENTION_S = 7 200 s and the fleet becomes
+ * two hours of sightings. When it binds, the payload is the most recently
+ * absorbed records and `capped: true` says so in the body and on /health;
+ * the fix is the one Step 15 already names, shrink the grid or accept a
+ * partial feed.
+ */
+const MAX_PAYLOAD_AIRCRAFT = 24_000;
+
+const gzipAsync = promisify(gzip);
+
+/**
+ * The current cycle's payload, compressed once instead of once per request.
+ *
+ * Measured at 6,1x with no routes attached and 7,8x with a route on every
+ * record: twenty thousand objects with the same fourteen keys is close to
+ * the best case for a dictionary coder, so ~7 MB leaves as ~1 MB.
+ * Compressing in the handler would redo that work for every client on a body
+ * that changes once a cycle, and gzipSync would block the same event loop
+ * that paces the tile fetches.
+ *
+ * Two variants, because withStaleFlag() writes the freshness INTO the body
+ * and a compressed body cannot be patched afterwards. (That function is
+ * declared in Step 10 below; a function declaration is hoisted, and this
+ * code runs only after listen().) Null until the cycle's compression
+ * resolves, and the handler serves the raw string until then.
+ */
+let encodedWorld: { fresh: Buffer; stale: Buffer } | null = null;
+let lastPayloadAircraft = 0;
+let lastPayloadBytes = 0;
+let lastPayloadGzipBytes = 0;
+let lastPayloadCapped = false;
+
+/**
+ * Ceiling on the radius a viewer may ask us to refresh first.
+ *
+ * Not a round number any more. The orbit controls in src/globe/scene.ts hold
+ * the camera between 3,0 and 10,0 globe radii, and at the far limit the cap
+ * it can actually see is 4 886 NM (visibleCapRadiusNm in geoHelpers.ts). The
+ * old ceiling of 2 000 NM sat BELOW the smallest value the client could
+ * produce, so every request arrived clamped to exactly 2 000 and the zoom
+ * level never reached the server at all. This one bounds a malformed client
+ * without ever truncating an honest one.
+ */
+const MAX_VIEW_RADIUS_NM = 5_000;
+/** No lat/lon in the query: refresh a region the size of a zoomed-in view. */
+const DEFAULT_VIEW_RADIUS_NM = 600;
+
+/**
  * Floor and ceiling for the derived retention window.
  *
  * A nominal sweep is 546 tiles x 1.5 s = 819 s, so this 1200 s floor is
  * about one and a half of them: a tile always comes round again well before
- * the window expires. It stays under two nominal sweeps (1638 s) because
- * above that it would win in every normal regime and the derivation would be
- * inert — a constant wearing the costume of a measurement.
+ * the window expires. 546 is the worst case and also the boot case, when
+ * nothing is dormant yet; the derived figure below is measured over the DUE
+ * tiles, so once the ocean and edge tiles fall asleep the sweep shortens and
+ * this floor legitimately wins. That is the floor doing its job, not the
+ * derivation going inert — the derivation still binds in the regime it was
+ * written for, an upstream slower than the 1.5 s slot, where a sweep runs
+ * into hours and only MAX_RETENTION_S holds it back.
  */
 const MIN_RETENTION_S = 1_200;
 const MAX_RETENTION_S = 7_200;
@@ -1637,7 +2006,23 @@ async function runCycle(): Promise<void> {
   const batch = scheduler.next(TILES_PER_CYCLE);
   if (batch.length === 0) return;
 
+  // OUR clock, stamped once per cycle and handed to every absorb() below.
+  // `result.fetchedAt` is NOT the instant of our fetch: both adapters derive
+  // it from the upstream `now` field (adsbLol.ts, adsbFi.ts), so it is the
+  // provider's clock — while prune() runs on Date.now(). Comparing the two
+  // every cycle let the provider's drift stretch or shrink the retention
+  // window in silence, and broke the invariant this task declares: fleet
+  // membership depends on no one else's clock. Stamped once rather than per
+  // tile so every record of a cycle ages together; a cycle lasts seconds
+  // against a window of at least 1200 s, and the error is in the safe
+  // direction — a record is never stamped later than it actually arrived.
+  const cycleAtUnix = Math.floor(Date.now() / 1000);
+
   let anySuccess = false;
+  // Tiles whose failure may be theirs or may be the whole feed's — a
+  // timeout, a transport error, a 5xx. They are charged to the tile only if
+  // another tile succeeds in this same cycle; see the catch below.
+  const ambiguousFailures: string[] = [];
 
   // Sequential, spaced. NOT Promise.all: a burst of eight is what earned the
   // 429 that killed the feed in testing, even while the average was inside
@@ -1652,7 +2037,7 @@ async function runCycle(): Promise<void> {
     lastTileFetchAtMs = Date.now();
     try {
       const result = await sources.fetchRegion(tile.centre, TILE_RADIUS_NM, fetchWithTileTimeout);
-      fleet.absorb(result.aircraft, Math.floor(result.fetchedAt.getTime() / 1000));
+      fleet.absorb(result.aircraft, cycleAtUnix);
       scheduler.record(tile.id, result.aircraft.length);
       anySuccess = true;
       // One line per successful tile: without it the request rate cannot be
@@ -1672,8 +2057,13 @@ async function runCycle(): Promise<void> {
       // keep asking during the penalty and it is renewed rather than served.
       // The selector carries only the FIRST source's error as `cause`, so a
       // 429 raised by the second one survives in the message alone — hence
-      // both checks.
-      if (http?.status === 429 || /\b429\b/.test(msg)) {
+      // the text fallback. But that text has to describe a FRESH 429: while
+      // a breaker is open the selector replays the message that opened it
+      // without asking anything upstream, and re-arming a five-minute
+      // suspension on a quote would freeze the feed cycle after cycle.
+      // Step 8k marks exactly that error `attempted: false`.
+      const attempted = (e as { attempted?: unknown }).attempted;
+      if (http?.status === 429 || (attempted !== false && /\b429\b/.test(msg))) {
         const retryAfterSeconds = http?.status === 429 ? http.retryAfterSeconds : null;
         const waitMs =
           retryAfterSeconds === null
@@ -1689,11 +2079,32 @@ async function runCycle(): Promise<void> {
         );
         break;
       }
+      // Dormancy has to learn from failure too: record() above is reached
+      // only on the success branch, so a tile that can never be fetched kept
+      // its 1.5 s slot on every sweep for ever. Only the provider answering
+      // ABOUT THIS REGION is evidence about the tile, and a 4xx other than
+      // 429 is exactly that, so it counts at once. A timeout, a transport
+      // error or a 5xx may just as easily be the whole feed failing: those
+      // are held back and charged only if another tile succeeds in this
+      // cycle. Without the split, one DNS outage would send all 546 tiles
+      // dormant in three sweeps and the feed would crawl back over hours.
+      if (http !== null && http.status >= 400 && http.status < 500) {
+        scheduler.recordFailure(tile.id);
+      } else {
+        ambiguousFailures.push(tile.id);
+      }
       app.log.warn(
         { err: msg, code: root.code, cause: root.message, tile: tile.id },
         'tile fetch failed'
       );
     }
+  }
+
+  // A failure that might have been the feed's is charged to the tile only
+  // here, with the evidence that the feed was alive: another tile answered
+  // in this same cycle.
+  if (anySuccess) {
+    for (const id of ambiguousFailures) scheduler.recordFailure(id);
   }
 
   if (!anySuccess) return;
@@ -1703,14 +2114,25 @@ async function runCycle(): Promise<void> {
   // The retention window must outlast a full sweep, or prune() deletes an
   // aircraft long before its tile comes round again and the fleet degrades
   // into a rotating smear over a fraction of the grid. The sweep period is
-  // measured rather than assumed: at ~29 s median latency it lands around
-  // 25 minutes, but it varies with upstream load.
+  // measured rather than assumed: 546 tiles at the 1.5 s floor is 819 s and
+  // the slots actually observed put it at 820-1000 s (14-17 minutes), but it
+  // moves with upstream load, which is why it is derived and not a constant.
   // Measured on the ROTATION, not on every tile served: priority tiles are
   // re-fetched repeatedly and counting them would make the sweep look far
   // faster than it is, and the retention window would silently lie.
+  // And over the tiles the rotation actually VISITS. Multiplying by
+  // tiles.length counted the dormant ones as well, which the rotation skips
+  // at zero cost — and dormant ocean and edge tiles are the steady state
+  // Task 2 exists to reach, so the figure this plan calls the revisit period
+  // was not one, and the window derived from it was inflated. `productive`
+  // is total minus dormant; a dormant tile is still retried once every
+  // DEFAULT_RETRY_EVERY sweeps, which adds at most ~5% to the true period
+  // and is swallowed by the factor of two below.
   const elapsedS = (Date.now() - pollerStartedMs) / 1000;
-  const rotationServed = scheduler.stats().rotationServed;
-  const sweepSeconds = rotationServed > 0 ? (elapsedS / rotationServed) * tiles.length : 0;
+  const stats = scheduler.stats();
+  const dueTiles = Math.max(1, stats.productive);
+  const sweepSeconds =
+    stats.rotationServed > 0 ? (elapsedS / stats.rotationServed) * dueTiles : 0;
   observedSweepSeconds = Math.round(sweepSeconds);
   fleet.setMaxAgeSeconds(
     Math.min(MAX_RETENTION_S, Math.max(MIN_RETENTION_S, Math.round(sweepSeconds * 2)))
@@ -1718,21 +2140,57 @@ async function runCycle(): Promise<void> {
 
   fleet.prune(nowUnix);
 
-  feed.put(
-    WORLD_KEY,
-    JSON.stringify({
-      fetchedAt: new Date(nowUnix * 1000).toISOString(),
-      source: 'tiled',
-      bbox: null,
-      aircraft: fleet.snapshot(),
-    })
-  );
+  const payloadAircraft = fleet.snapshot(MAX_PAYLOAD_AIRCRAFT);
+  lastPayloadAircraft = payloadAircraft.length;
+  lastPayloadCapped = fleet.size() > payloadAircraft.length;
+  const body = JSON.stringify({
+    fetchedAt: new Date(nowUnix * 1000).toISOString(),
+    source: 'tiled',
+    bbox: null,
+    // Declared, not silent. A truncated world served as the whole world is
+    // the same class of failure as a frozen feed served as a live one, and
+    // this project has already paid for that one.
+    capped: lastPayloadCapped,
+    fleetSize: fleet.size(),
+    aircraft: payloadAircraft,
+  });
+  lastPayloadBytes = Buffer.byteLength(body);
+  feed.put(WORLD_KEY, body);
+
+  if (lastPayloadCapped) {
+    app.log.warn(
+      { fleet: fleet.size(), served: payloadAircraft.length, retentionS: fleet.maxAgeSeconds() },
+      'payload capped — the fleet outgrew MAX_PAYLOAD_AIRCRAFT'
+    );
+  }
+
+  // Compressed AFTER the cache is filled, never before: a request landing
+  // mid-compression gets the raw body rather than waiting on it.
+  encodedWorld = null;
+  try {
+    const [fresh, stale] = await Promise.all([
+      gzipAsync(withStaleFlag(body, false)),
+      gzipAsync(withStaleFlag(body, true)),
+    ]);
+    encodedWorld = { fresh, stale };
+    lastPayloadGzipBytes = fresh.length;
+    app.log.info(
+      { aircraft: payloadAircraft.length, bytes: lastPayloadBytes, gzipBytes: fresh.length },
+      'payload encoded'
+    );
+  } catch (e) {
+    // Not fatal: without the buffers the handler falls back to the raw body.
+    lastPayloadGzipBytes = 0;
+    app.log.warn({ err: e instanceof Error ? e.message : String(e) }, 'payload compression failed');
+  }
 }
 ```
 
 - [ ] **Step 10: Sostituire il gestore `/api/states`**
 
-La chiave di lettura è sempre `WORLD_KEY`: il poller scrive lì e un lettore che usasse una chiave derivata dal bbox mancherebbe sempre la cache. Il flag `stale` va **nel corpo**, perché `statesClient.ts` legge solo `res.json()` e un header non lo vedrebbe mai.
+La chiave di lettura è sempre `WORLD_KEY`: il poller scrive lì e un lettore che usasse una chiave derivata dal bbox mancherebbe sempre la cache. Il flag `stale` va **nel corpo**, perché `statesClient.ts` legge solo `res.json()` e un header non lo vedrebbe mai — e il Task 7 lo porta fino allo schermo, altrimenti questo spostamento non compra niente. L'header `x-feed-stale` resta per chi guarda con `curl`, non per il browser.
+
+Il corpo esce **già compresso** quando il client dichiara di accettare gzip. È l'unica risposta seria al fatto che questo endpoint serve l'intera flotta accumulata a ogni richiesta, bbox ignorato di proposito: lo Step 15a misura quanto pesa e il tetto `MAX_PAYLOAD_AIRCRAFT` dice cosa succede quando cresce.
 
 ```ts
 /** Injects the freshness flag into an already-serialised payload. */
@@ -1746,12 +2204,18 @@ app.get('/api/states', async (req, reply) => {
 
   // A viewer tells us where they are looking, and those tiles jump the
   // queue. Without this, the region on screen would be as stale as the far
-  // side of the planet: a full sweep takes ~10 minutes.
+  // side of the planet: a full sweep takes 820-1000 s, 14-17 minutes.
   const viewLat = Number(q.lat);
   const viewLon = Number(q.lon);
   const viewRadius = Number(q.radius);
   if (Number.isFinite(viewLat) && Number.isFinite(viewLon)) {
-    const radius = Number.isFinite(viewRadius) ? Math.min(viewRadius, 2000) : 600;
+    // Clamped, not trusted — but the ceiling is now above what the camera
+    // can produce (see MAX_VIEW_RADIUS_NM), so an honest client is never
+    // truncated and the zoom level survives the trip. A negative radius is
+    // floored at 0, where tilesNear simply returns nothing.
+    const radius = Number.isFinite(viewRadius)
+      ? Math.min(Math.max(viewRadius, 0), MAX_VIEW_RADIUS_NM)
+      : DEFAULT_VIEW_RADIUS_NM;
     const wanted = tilesNear(tiles, { lat: viewLat, lon: viewLon }, radius);
     // Six, not twelve: the scheduler reserves half of each batch for the
     // rotation, so asking for more only grows a queue that cannot be served.
@@ -1760,11 +2224,33 @@ app.get('/api/states', async (req, reply) => {
 
   const cached = feed.get(WORLD_KEY);
   if (cached !== null) {
-    return reply
+    reply
       .header('content-type', 'application/json')
       .header('cache-control', 'public, s-maxage=10, stale-while-revalidate=20')
-      .header('x-feed-stale', String(cached.stale))
-      .send(withStaleFlag(cached.body, cached.stale));
+      .header('x-feed-stale', String(cached.stale));
+
+    // Load-bearing next to a public cache-control: without accept-encoding
+    // in Vary a shared cache may hand the gzip body to a client that never
+    // asked for one. APPENDED, never replaced: @fastify/cors has already
+    // set `vary: Origin` — CORS_ORIGINS is a list with regexes — and
+    // dropping that would let the same cache serve one origin's
+    // Access-Control-Allow-Origin to another.
+    const vary = reply.getHeader('vary');
+    const varied = vary === undefined ? [] : Array.isArray(vary) ? vary.map(String) : [String(vary)];
+    reply.header('vary', [...varied, 'accept-encoding'].join(', '));
+
+    const acceptsGzip = String(req.headers['accept-encoding'] ?? '').includes('gzip');
+    const encoded = encodedWorld;
+    if (acceptsGzip && encoded !== null) {
+      // Compressed once per cycle by refreshNextTiles(), not once per
+      // client: the body changes once a cycle and every client gets the
+      // same bytes.
+      return reply
+        .header('content-encoding', 'gzip')
+        .send(cached.stale ? encoded.stale : encoded.fresh);
+    }
+    // No gzip accepted, or the cycle's compression has not resolved yet.
+    return reply.send(withStaleFlag(cached.body, cached.stale));
   }
 
   // No stale fallback of unbounded age: that is what hid the v1 outage for
@@ -1804,6 +2290,17 @@ app.get('/health', async (_req, reply) => {
     // cannot leave a stale code behind.
     lastErrorCode: health.lastError === null ? null : rootCause(lastTileFailure).code,
     fleet: { size: fleet.size(), maxAgeSeconds: fleet.maxAgeSeconds() },
+    // Measured, not assumed. This endpoint serves the whole fleet on every
+    // request and the body grows with the retention window, so without these
+    // numbers the payload can only be guessed at from outside — and a guess
+    // is what this plan is replacing everywhere else.
+    payload: {
+      aircraft: lastPayloadAircraft,
+      bytes: lastPayloadBytes,
+      gzipBytes: lastPayloadGzipBytes,
+      capped: lastPayloadCapped,
+      maxAircraft: MAX_PAYLOAD_AIRCRAFT,
+    },
     tiles: {
       ...scheduler.stats(),
       observedSweepSeconds,
@@ -1813,9 +2310,9 @@ app.get('/health', async (_req, reply) => {
 });
 ```
 
-- [ ] **Step 11b: Riscrivere i due commenti che il Task 3 rende falsi**
+- [ ] **Step 11b: Riscrivere i commenti che il Task 3 rende falsi**
 
-Il difetto #27 e' esattamente questa classe: un commento che dichiara una causa di guasto non piu' vera manda fuori strada chi indaghera' il guasto successivo. Due blocchi lo diventano nell'istante in cui lo Step 9 atterra.
+Il difetto #27 e' esattamente questa classe: un commento che dichiara una causa di guasto non piu' vera manda fuori strada chi indaghera' il guasto successivo. Quattro blocchi di codice e un commento di test lo diventano nell'istante in cui lo Step 9 atterra, e vanno riscritti tutti qui: il gate in fondo allo step non puo' passare finche' ne sopravvive uno.
 
 In `server/index.ts`, il blocco sopra `const sources = createSourceSelector(...)` (oggi righe 34-41, quello che inizia con «Plan 1's single global sweep.» e finisce con «until then this endpoint is known broken.») descrive uno sweep globale che non esiste piu'. Sostituirlo per intero:
 
@@ -1839,18 +2336,60 @@ In `src/data/sources/selector.ts`, il commento di `createSourceSelector` sostien
  * failure that would open its breaker for nothing, and there is no third
  * source to fall through to. The only caller now stays under that ceiling:
  * server/index.ts polls one 230 NM tile at a time. The check is what caught
- * Plan 1's single 10 000 NM sweep — every source skipped on radius, 502 to
- * the client, not one upstream request — so it stays as the refusal that
- * happens here rather than at the provider.
+ * the single 10 000 NM request Plan 1 issued — every source skipped on
+ * radius, 502 to the client, not one upstream request — so it stays as the
+ * refusal that happens here rather than at the provider.
 ```
 
-Poi verificare che nessuna delle due affermazioni smentite sia sopravvissuta altrove:
+Il testo nuovo racconta la stessa storia **senza** ripetere la stringa che il gate qui sotto cerca. La revisione precedente di questo step scriveva «10 000 NM sweep» dentro il commento e due righe piu' giu' pretendeva zero occorrenze di «10 000 NM sweep»: il grep avrebbe trovato la propria esca, e lo step non sarebbe mai potuto diventare verde.
+
+In `src/data/sources/adsbFi.ts` il commento sopra `maxRadiusNm: 250` (oggi righe 54-60) dichiara che l'unico chiamante chiede ancora uno sweep da 10 000 NM, che entrambe le sorgenti sono scartate per raggio, che `/api/states` risponde 502 e che adsb.fi «is therefore a fallback for nothing today». Dopo lo Step 9 nessuna delle quattro e' vera, e la terza e' la diagnosi sbagliata che chi indaghera' il prossimo 502 leggera' per prima. Sostituire le sette righe da «// Verified live:» a «// request under 250 NM — not before.» con:
+
+```ts
+  // Verified live: 250 NM -> 200; 1000 NM -> 400; 5000 and 10 000 NM -> 429.
+  // Same ceiling as adsb.lol since 2026-11, so the gap that once separated
+  // the two providers is gone. The tiled poller now issues every request
+  // under this ceiling, so adsb.fi is a real fallback again: when adsb.lol
+  // opens its breaker the same tile is served from here, instead of both
+  // sources being skipped on radius and /api/states answering 502.
+```
+
+`src/data/sources/adsbLol.ts` e' stato controllato nello stesso giro e **non** va toccato: il suo commento riporta solo misure (250 NM -> 200, 251 NM -> 403, `/v2/all` -> 400, `/api/0/all` -> 503) e non afferma nulla sul chiamante ne' sullo stato di `/api/states`.
+
+In `src/data/sources/tileGrid.ts` il commento di `tilesNear` deriva la durata dello sweep da «~29 s per tile», la latenza misurata in un momento di congestione e poi smentita dal difetto #41 (rimisurata: 0,47 s mediani). La cadenza non viene piu' dalla latenza ma dal pavimento di 1,5 s per tile, quindi la cifra va rifatta. Sostituire il blocco di commento sopra `export function tilesNear` con:
+
+```ts
+/**
+ * Tiles whose centre lies within `radiusNm` of a point, nearest first.
+ *
+ * Used to turn a viewer's camera into the set of tiles worth refreshing
+ * immediately. A full sweep is 546 tiles fetched one at a time, at most one
+ * every 1.5 s: 820-1000 s, i.e. 14-17 minutes. The ~10 minutes this comment
+ * used to claim read the pace off a 29 s median latency measured during
+ * congestion; the pace comes from the floor, and 546 x 1.5 s = 819 s is a
+ * floor no latency can beat. Without this the region being looked at would
+ * be as stale as the far side of the planet.
+ */
+```
+
+`src/data/sources/tileGrid.ts` e' gia' committato dal Task 2: questa e' una modifica a un file tracciato, e deve comparire nella riga `git add` dello Step 16 come tutte le altre. Il blocco riprodotto nel Task 2 mostra gia' questa versione del commento, con la nota che lo dichiara.
+
+Infine, in `tests/unit/data/sources/selector.test.ts` il test «reports clearly when every source was skipped for radius» si apre con «The real roster at the 10 000 NM sweep the caller still asks for» e con «This is the state Task 3 has to end, not a passing feature». Dopo questo task nessun chiamante chiede quel raggio e quello stato e' finito; il test resta valido, perche' asserisce la regola del selector e non il comportamento del poller. Sostituire le tre righe di commento con:
+
+```ts
+    // The real roster against a radius no caller asks for any more: both
+    // providers declare 250 NM, so neither is called. This is where Plan 1's
+    // 502 came from, kept as a regression test now that the poller stays
+    // under the ceiling.
+```
+
+Poi verificare che nessuna delle affermazioni smentite sia sopravvissuta altrove:
 
 ```bash
-grep -rn "known broken\|10 000 NM sweep\|GLOBAL_SWEEP" server/ src/
+grep -rn "known broken\|10 000 NM sweep\|GLOBAL_SWEEP" server/ src/ tests/
 ```
 
-Expected: nessuna occorrenza. Un commento che descrive un guasto ormai risolto costa piu' di nessun commento: e' il difetto #27, che questo piano ha gia' pagato una volta.
+Expected: nessuna occorrenza. Il `tests/` nel comando non e' decorativo: «the caller still asks for» viveva proprio li', fuori dal raggio della versione precedente di questo gate, che guardava solo `server/` e `src/`. Un commento che descrive un guasto ormai risolto costa piu' di nessun commento: e' il difetto #27, che questo piano ha gia' pagato una volta.
 
 - [ ] **Step 12: Avviare il poller dopo il listen**
 
@@ -1879,17 +2418,37 @@ Nel blocco `try { await app.listen(...) }`, dopo la riga di log:
 npm run build:all && npm test -- --run
 ```
 
-- [ ] **Step 14: Verificare che non sia rimasto un timer a cadenza fissa**
+- [ ] **Step 14: Guardie statiche, avvio del server e rate reale**
+
+Prima i `grep`, che non richiedono un server acceso:
 
 ```bash
 grep -n "setInterval" server/index.ts
+grep -n "fetchedAt.getTime\|fleet.absorb" server/index.ts
+grep -n "sweepSeconds =" server/index.ts
 ```
 
-Expected: nessuna occorrenza relativa a `refreshNextTiles`. Un timer a cadenza fissa su un ciclo che può durare minuti produce cicli sovrapposti e richieste concorrenti illimitate verso un servizio gratuito.
+Expected, nell'ordine:
+
+- nessuna occorrenza di `setInterval` relativa a `refreshNextTiles`. Un timer a cadenza fissa su un ciclo che può durare minuti produce cicli sovrapposti e richieste concorrenti illimitate verso un servizio gratuito;
+- `fleet.absorb(result.aircraft, cycleAtUnix)` e **nessuna** occorrenza di `fetchedAt.getTime`. `result.fetchedAt` viene dal campo `now` del provider, non dal nostro fetch, e confrontarlo con il `Date.now()` di `prune` fa variare la finestra di ritenzione con la deriva di un orologio che non è il nostro;
+- la derivazione moltiplica per `dueTiles`, non per `tiles.length`: la rotazione salta le tile dormienti a costo zero, quindi il totale non è il periodo di rivisita.
 
 **Poi misurare il rate reale**, che è la cosa che conta e che un `grep` non può vedere. La misura si prende da `/health`, confrontando due letture a distanza nota — non cercando stringhe nei log, perché una stringa che il codice non emette darebbe zero sia con il limitatore funzionante sia con il limitatore rotto.
 
-Con il server avviato da qualche minuto:
+Avviare qui il server, in background e con i log su file: nessuno step lo rediriggeva, e il controllo di `tile fetched` più sotto cercava in un file che non esisteva. È lo stesso processo che servirà allo Step 15, quindi **il controllo al boot si fa adesso**, subito dopo l'avvio e prima che il primo ciclo finisca:
+
+```bash
+npm run server > /tmp/airview.log 2>&1 &
+SERVER_PID=$!
+sleep 3
+curl -s -o /dev/null -w "health al boot: HTTP %{http_code}\n" localhost:3000/health
+curl -s localhost:3000/health | python3 -c "import json,sys; print('status al boot:', json.load(sys.stdin)['status'])"
+```
+
+Expected: **HTTP 200** con `"status":"starting"`. Se qui vedi 503 il deploy su Railway fallirebbe: `railway.toml` vincola il deploy a questo endpoint e nessun traffico viene instradato finché non passa.
+
+Dopo tre o quattro minuti di rotazione:
 
 ```bash
 A=$(curl -s localhost:3000/health | python3 -c "import json,sys; print(json.load(sys.stdin)['tiles']['rotationServed'])")
@@ -1900,25 +2459,19 @@ python3 -c "print(f'tile/s osservate: {($B - $A)/120:.2f}  (atteso: ~0.6)')"
 
 Expected: **circa 0,6 tile al secondo** (una ogni 1,5 s), o meno se l'upstream è lento. Un valore sensibilmente superiore significa che il limitatore non funziona: una revisione precedente di questo piano emetteva 3,2 req/s credendo di emetterne 0,28, perché il ritmo era dedotto da una latenza misurata in un momento sfortunato invece che imposto.
 
-Il conteggio da log resta utile come controprova, ora che ogni tile riuscita ne emette uno:
+Il conteggio da log è la controprova, ora che il file esiste davvero e che ogni tile riuscita emette una riga:
 
 ```bash
 grep -c "tile fetched" /tmp/airview.log
 ```
 
+Expected: un numero **maggiore o uguale a `rotationServed`** (ogni tile riuscita emette una riga, venga dalla rotazione o dalla priorità) e che cresce fra due letture. Zero con il server acceso da minuti significa che la riga di log non viene emessa, non che le tile non vengono fetchate: in quel caso controllare lo Step 9 prima di concludere alcunché sul rate.
+
+**Non spegnere il server**: lo Step 15 interroga questo stesso processo. Alla fine dello Step 15, `kill $SERVER_PID` (e, se il figlio di `tsx watch` sopravvive, `pkill -f "server/index.ts"`).
+
 - [ ] **Step 15: Verificare il comportamento reale del server**
 
-```bash
-npm run server
-```
-
-Subito, prima che il primo ciclo finisca:
-
-```bash
-curl -s -o /dev/null -w "health al boot: HTTP %{http_code}\n" localhost:3000/health
-```
-
-Expected: **HTTP 200** con `"status":"starting"`. Se qui vedi 503, il deploy su Railway fallirebbe.
+Il server è quello avviato in background allo Step 14: **non riavviarlo**. Il controllo al boot — HTTP 200 con `"status":"starting"`, senza il quale il deploy su Railway si bloccherebbe — si può fare una volta sola ed è già stato fatto lì; qui serve invece un processo acceso da qualche minuto. I log sono in `/tmp/airview.log`.
 
 Dopo due o tre minuti:
 
@@ -1942,7 +2495,7 @@ print('OK: la finestra copre lo sweep' if win >= sweep else 'ROTTO: prune cancel
 "
 ```
 
-Expected: `observedSweepSeconds` si assesta fra **820 e 1 000 s** (14-17 minuti). Il calcolo, dalle costanti che risultano dopo la spaziatura fra cicli:
+Expected: **nei primi tre quarti d'ora** `observedSweepSeconds` si assesta fra **820 e 1 000 s** (14-17 minuti). In quella finestra nessuna tile è ancora dormiente — servono tre spazzate vuote, cioè oltre 40 minuti — quindi le tile dovute sono tutte e 546 e il calcolo, dalle costanti che risultano dopo la spaziatura fra cicli:
 
 - il pavimento e' una tile ogni 1,5 s misurata da `waitForTileSlot`, quindi 546 x 1,5 s = **819 s**. Alla latenza mediana di 0,47 s rimisurata nel difetto #41 ogni fetch entra dentro il proprio slot, quindi e' il pavimento a vincolare;
 - una tile piu' lenta del pavimento si paga per intero, perche' lo slot vale `max(1,5 s, latenza)`. Sulle sei latenze davvero misurate (0,28 / 0,40 / 0,55 / 2,35 / 0,24 / 1,97 s) lo slot medio e' 1,72 s, cioe' **~940 s**;
@@ -1951,6 +2504,18 @@ Expected: `observedSweepSeconds` si assesta fra **820 e 1 000 s** (14-17 minuti)
 La cifra di 820-900 s che questo piano dichiarava prima era irraggiungibile: con la spaziatura applicata solo `if (i > 0)` un ciclo costava 7 x 1,5 s + 8 x latenza + 1 s, cioe' **785 s a latenza zero** e ~1 040 s alla mediana misurata — un intervallo che l'arrivo in fondo non poteva centrare.
 
 `fleet.maxAgeSeconds` deve essere **almeno** pari allo sweep osservato: a 940 s la finestra derivata vale 1 880 s e lo copre. Se la finestra fosse piu' corta dello sweep, `prune` cancellerebbe ogni aereo prima che la sua tile torni, e la flotta sarebbe una macchia rotante su una frazione della griglia invece del mondo.
+
+**Più avanti la cifra scende, ed è corretto così.** Il numero è il periodo di rivisita delle tile **dovute**, non di tutte: la rotazione salta le dormienti a costo zero, quindi moltiplicare per 546 sovrastimava la rivisita e gonfiava la finestra derivata. Quando le tile oceaniche e di bordo si addormentano, `observedSweepSeconds` cala in proporzione a `tiles.productive / 546` — con il 40% dormiente sono ~490 s — e la finestra derivata finisce sotto `MIN_RETENTION_S`, che la tiene a 1 200 s. Il controllo che conta resta `win >= sweep`, non la cifra assoluta. Guardare anche il denominatore:
+
+```bash
+curl -s localhost:3000/health | python3 -c "
+import json,sys
+t=json.load(sys.stdin)['tiles']
+print(f\"dovute {t['productive']} di {t['total']}, dormienti {t['dormant']}, sweep {t['observedSweepSeconds']}s\")
+"
+```
+
+Expected: `dormienti` a zero nella prima mezz'ora e in crescita dopo; `dovute + dormienti == 546` sempre. Se `dormienti` cresce fino a sfiorare il totale mentre `fleet.size` crolla, non è la dormienza che funziona: è lo Step 9 che sta attribuendo alle tile un guasto globale, e va guardato il log per `tile fetch failed`.
 
 Se adsb.lol tornasse alle latenze di decine di secondi osservate in passato lo sweep le seguirebbe (a 28,6 s mediani sono ~4,3 ore) e lo script stamperebbe `ROTTO`, perche' la finestra sbatte contro `MAX_RETENTION_S` = 7 200 s. In quel regime non e' un difetto dello script: e' il tetto che fa il suo mestiere — trattenere aerei per quattro ore e' memoria, non una flotta — ed e' il segnale che la griglia va ridotta o il feed accettato come parziale.
 
@@ -1973,10 +2538,40 @@ sleep 180; curl -s localhost:3000/health | python3 -c "import json,sys; t=json.l
 
 Expected: `rotationServed` **cresce** fra le due letture e `prioritised` resta piccolo e limitato. Se `rotationServed` resta fermo mentre il visitatore interroga, la priorità sta affamando la rotazione: il resto del pianeta non viene mai aggiornato e `prune` lo cancellerà. È il difetto che la quota riservata esiste per impedire, ed è invisibile a una `curl` singola.
 
+- [ ] **Step 15a: Misurare il payload invece di supporlo**
+
+`/api/states` serve l'intera flotta accumulata a ogni richiesta e il bbox è ignorato di proposito: il peso del corpo non dipende da quanto guardi, dipende da quanto trattieni. Con il pavimento di ritenzione a 1 200 s il corpo contiene **almeno venti minuti di avvistamenti** — più aerei di qualunque istantanea — e ogni record porta ora registrazione, modello, rotta e flag di completezza, cioè più del doppio dei byte della v1. Misurato su 20 000 record con variazione realistica: **280 B senza rotta, 414 B con rotta**, contro i ~143 B della v1 — fra 5,6 e 8,3 MB di corpo per una flotta da ventimila aerei.
+
+Con il server avviato da qualche ciclo:
+
+```bash
+curl -s localhost:3000/health | python3 -c "
+import json,sys
+p = json.load(sys.stdin)['payload']
+ratio = p['bytes'] / p['gzipBytes'] if p['gzipBytes'] else 0
+print(f\"aerei {p['aircraft']}  raw {p['bytes']/1e6:.2f} MB  gzip {p['gzipBytes']/1e6:.2f} MB\")
+print(f\"{p['bytes']/max(p['aircraft'],1):.0f} B/aereo, compressione {ratio:.1f}x, capped={p['capped']} su {p['maxAircraft']}\")
+"
+curl -s -H 'accept-encoding: gzip' -D- -o /tmp/states.gz localhost:3000/api/states | grep -iE "content-encoding|content-length|vary"
+ls -l /tmp/states.gz
+```
+
+Expected: `content-encoding: gzip`, un `vary` che **contiene** `accept-encoding` (accanto a `Origin`, che ci mette `@fastify/cors`) e un file su disco grande quanto `gzipBytes`. La compressione deve valere **almeno 5x** — misurata fra 6,1x e 7,8x sugli stessi 20 000 record: ventimila oggetti con le stesse quattordici chiavi sono quasi il caso migliore per un codificatore a dizionario, e ~7 MB escono come ~1 MB. Un rapporto vicino a 1 significa che si sta servendo il corpo grezzo e che l'header mente.
+
+**Il numero da annotare è `bytes`.** Sopra i **10 MB** — cioè sopra il tetto che `MAX_PAYLOAD_AIRCRAFT` traduce in record — la flotta è cresciuta oltre quanto questo piano ha previsto, e le leve sono due, in quest'ordine: abbassare `MAX_RETENTION_S`, che è la causa — meno minuti trattenuti, meno aerei — oppure abbassare `MAX_PAYLOAD_AIRCRAFT`, che è il sintomo: il corpo viene troncato e `capped` lo dichiara. La terza leva, togliere campi dal record, è stata valutata e scartata: i campi nulli di un record tipico valgono ~40 B su ~340, il 12%, contro il ~90% che prende la compressione, e renderebbero opzionale metà di `AircraftRaw` su tutto il client.
+
+Verificare infine che un client senza gzip non resti a bocca asciutta:
+
+```bash
+curl -s -H 'accept-encoding: identity' localhost:3000/api/states | head -c 40
+```
+
+Expected: il corpo in chiaro, che inizia con `{"stale":false,`.
+
 - [ ] **Step 16: Commit**
 
 ```bash
-git add server/fleet.ts server/feedState.ts server/index.ts tests/unit/server/fleet.test.ts tests/unit/server/feedState.test.ts
+git add server/fleet.ts server/feedState.ts server/errorChain.ts server/index.ts src/data/sources/selector.ts src/data/sources/adsbFi.ts src/data/sources/tileGrid.ts tests/unit/server/fleet.test.ts tests/unit/server/feedState.test.ts tests/unit/server/errorChain.test.ts tests/unit/data/sources/selector.test.ts tests/unit/data/sources/tileGrid.test.ts
 git commit -m "feat(server): cumulative fleet, tile poller and non-blocking health
 
 No single request returns the world any more, so the server keeps a fleet
@@ -1991,6 +2586,14 @@ inside the /api/states handler, so it had no feed of its own.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
+
+Poi, **subito dopo il commit**, verificare che il task non abbia lasciato indietro un file:
+
+```bash
+git status --porcelain server/ src/ tests/
+```
+
+Expected: **nessun output**. E' il controllo che una riga `git add` scritta a mano non puo' fare su se stessa. Un file creato da uno step e dimenticato nello staging resta qui non tracciato, il commit passa verde in locale — dove il file esiste comunque sul disco — e rompe il primo checkout pulito: e' esattamente cio' che stava per succedere con `server/errorChain.ts`, importato da `server/index.ts` allo Step 9 e assente dalla riga di staging, cioe' `TS2307` in build e deploy rotto. Se compare una riga, aggiungere quel percorso alla riga `git add` qui sopra e rifare il commit con `git commit --amend`; **mai** `git add -A`, che tirerebbe dentro `.claude/`, `.agents/`, `mockups/` e `skills-lock.json`.
 
 ---
 ### Task 4: Resolver rotte con rate limit rispettato
@@ -2589,16 +3192,16 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Create: `scripts/build-route-cache.mjs`
 - Create: `server/data/route-cache.json` — generato dallo Step 3 e committato. Nessuno step crea un `.gitkeep`: la cartella arriva con il file, e un `git add` di un percorso inesistente farebbe abortire il commit
 - Create: `src/data/completeness.ts`
-- Modify: `server/index.ts`, `tsconfig.server.json`, `package.json`
+- Modify: `server/index.ts`, `tsconfig.server.json`, `package.json`, `src/types.ts` (solo il commento del campo `route`, che questo task rende falso)
 - Test: `tests/unit/data/completeness.test.ts`
 
 **Interfaces:**
 - Consumes: `RouteResolver`, `SeedRecord`, `FlightRoute` dal Task 4; `FlightRouteLite` e `makeAircraftRaw` dal piano precedente
-- Produces: `isComplete(ac: AircraftRaw): boolean`; `npm run build:routes`; il file `server/data/route-cache.json` con forma `SeedRecord[]`
+- Produces: `isComplete(ac: AircraftRaw): boolean`; `npm run build:routes`; il file `server/data/route-cache.json` con forma `{ gridCursor: number; records: SeedRecord[] }` — `records` è ciò che `RouteResolver.seed()` consuma, `gridCursor` è la posizione raggiunta nella rotazione sulla griglia di campionamento e serve solo allo script offline. Il lettore del server accetta anche la vecchia forma `SeedRecord[]` nuda, così una cache generata prima di questa correzione non si butta
 
 **Perché una cache pre-costruita e perché NON è un ritorno a `openflights-routes.json`.** Il file che il Task 6 elimina era sbagliato *per costruzione*: `list[0]` restituiva una rotta che non aveva alcun rapporto col volo richiesto. Questo file è verificato per costruzione: ogni voce è la risposta di adsbdb *per quello specifico callsign*. Al più invecchia — e i numeri di volo di linea sono stabili nel tempo, `BAW274` vola ogni giorno — mentre quello era falso il giorno stesso in cui è stato generato.
 
-Lo script campiona il feed a intervalli nell'arco di ore, perché un singolo snapshot contiene fra 5.900 e 12.500 callsign a seconda dell'ora e l'insieme di una giornata è molto maggiore. È **ripartibile**: rilegge la cache esistente e riprende, così un'interruzione non butta via il lavoro fatto.
+Lo script campiona il feed a intervalli nell'arco di ore, perché un singolo snapshot contiene fra 5.900 e 12.500 callsign a seconda dell'ora e l'insieme di una giornata è molto maggiore. È **ripartibile in entrambe le metà**: rilegge dal file di cache sia le risposte già ottenute sia la posizione raggiunta nella rotazione sulla griglia, così un'interruzione non butta via il lavoro fatto e la corsa successiva campiona tile nuove. Il cursore sul disco non è un dettaglio: un giro di campionamento prende 20 tile e il cancello ne lascia partire uno ogni 20 minuti, quindi quattro ore percorrono 240 delle 546 tile — con il cursore solo in memoria ogni corsa ripresa, che è il modo d'uso raccomandato, sarebbe ripartita dalla tile 0 e le tile oltre la 240esima non sarebbero mai entrate nella cache.
 
 - [ ] **Step 1: Creare `scripts/build-route-cache.mjs`**
 
@@ -2606,15 +3209,22 @@ Lo script campiona il feed a intervalli nell'arco di ore, perché un singolo sna
 // Builds server/data/route-cache.json by asking adsbdb about the callsigns
 // seen in the live feed. Runs for hours on purpose: adsbdb rate-limits hard
 // (~1190 lookups at 4.8 req/s earned a 300 s ban, and requests sent during
-// the penalty renew it). Resumable: re-reading the existing cache and
-// picking up where it stopped is the normal way to use it.
+// the penalty renew it). Resumable in BOTH halves: the answers already
+// collected AND the position in the 546-tile sampling rotation are read
+// back from the same cache file, so a resumed run asks about new callsigns
+// and samples new tiles. Resuming is the normal way to use this script.
 //
 // Runs under tsx, never under bare node: the sampler imports the server's
 // tile grid, which is TypeScript, and node on its own answers
 // ERR_MODULE_NOT_FOUND to a .js specifier that resolves to a .ts.
 //
-//   npm run build:routes                 # default: 4 hours
-//   npm run build:routes -- --hours 8
+//   npm run build:routes                 # default: 4 hours, 240 of 546 tiles
+//   npm run build:routes -- --hours 10   # one pass over the whole grid
+//
+// Four hours is 12 sampling rounds of 20 tiles, one round per ~20.7 min.
+// All 546 tiles take 28 rounds, ~9.3 h — so either run it for 10 h or run
+// it again: the grid cursor is saved in the cache file and the next run
+// continues from it.
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -2628,12 +3238,18 @@ const CALLSIGN_RX = /^[A-Z]{3}[A-Z0-9]+$/;
 // of it here would be the one nobody updates.
 const GRID = buildTileGrid();
 const TILES_URL = (lat, lon) => `https://api.adsb.lol/v2/lat/${lat}/lon/${lon}/dist/${TILE_RADIUS_NM}`;
-// Tiles per sampling round, taken from the grid in rotation. The grid holds
-// 546 and the courtesy spacing is 1.5 s, so one full walk is ~14 minutes:
-// a round takes the next slice and the cursor carries over, so a long run
-// still covers the world. Unlike the server's poller this has no dormancy,
-// so the price of a single definition is the empty tiles, 1.5 s each.
+// Tiles per sampling round, taken from the grid in rotation. A round is 20
+// tiles at the 1.5 s courtesy spacing (~40 s with latency), and the gate in
+// the main loop lets only one round start every 20 minutes: the sampler
+// walks ~58 tiles an hour, so the 546 of the grid take ~9.3 h — not the
+// ~14 min a back-to-back walk would suggest. That is why gridCursor is
+// PERSISTED in the cache file: with it only in memory a 4 h run covered
+// tiles 0..239 and every resumed run — the way this script is meant to be
+// used — started again at tile 0, so nothing past tile 240 was ever
+// sampled. Unlike the server's poller this has no dormancy, so the price of
+// a single definition is the empty tiles, 1.5 s each.
 const TILES_PER_ROUND = 20;
+/** Position in the grid rotation. Restored from the cache file below. */
 let gridCursor = 0;
 
 const hoursArg = process.argv.indexOf('--hours');
@@ -2653,8 +3269,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const cache = new Map();
 if (existsSync(OUT)) {
-  for (const rec of JSON.parse(readFileSync(OUT, 'utf8'))) cache.set(rec.callsign, rec.route);
-  console.log(`resuming from ${cache.size} cached callsigns`);
+  const parsed = JSON.parse(readFileSync(OUT, 'utf8'));
+  // Two shapes are accepted: the bare array written before the cursor
+  // existed, and the envelope written since. A cache built by an older run
+  // is hours of adsbdb lookups and must not be thrown away by a reader.
+  const records = Array.isArray(parsed) ? parsed : (parsed.records ?? []);
+  for (const rec of records) cache.set(rec.callsign, rec.route);
+  const saved = Array.isArray(parsed) ? 0 : Number(parsed.gridCursor);
+  // Clamped: the grid is rebuilt from code on every run and may be shorter
+  // than it was when the cursor was written.
+  gridCursor = Number.isInteger(saved) && saved >= 0 ? saved % GRID.length : 0;
+  console.log(`resuming from ${cache.size} cached callsigns, grid cursor ${gridCursor}/${GRID.length}`);
 }
 
 function save() {
@@ -2662,31 +3287,46 @@ function save() {
   const records = [...cache.entries()]
     .map(([callsign, route]) => ({ callsign, route }))
     .sort((a, b) => a.callsign.localeCompare(b.callsign));
-  writeFileSync(OUT, JSON.stringify(records, null, 0));
+  // The cursor travels WITH the answers, in one file and one write. A
+  // sidecar file could be deleted, gitignored, or simply left out of the
+  // task's `git add` line, and the sampler would silently restart at tile 0
+  // again — which is the bug this whole envelope exists to kill.
+  writeFileSync(OUT, JSON.stringify({ gridCursor, records }, null, 0));
 }
 
 async function sampleFeed() {
   const out = new Set();
+  const firstTile = GRID[gridCursor].id;
   for (let i = 0; i < TILES_PER_ROUND; i++) {
-    const { lat, lon } = GRID[gridCursor++ % GRID.length].centre;
+    const { lat, lon } = GRID[gridCursor].centre;
+    // Advance before the fetch and keep the index normalised: what gets
+    // written to the cache file has to be a real index into the grid.
+    gridCursor = (gridCursor + 1) % GRID.length;
     try {
       const res = await fetch(TILES_URL(lat, lon), {
         headers: { Accept: 'application/json', 'User-Agent': UA },
       });
+      // No `continue` on a bad status: it would skip the courtesy sleep at
+      // the bottom of the loop, and a provider answering 403 or 429 to every
+      // tile would be hit 20 times with no spacing at all — the one moment
+      // the spacing matters most.
       if (!res.ok) {
         console.warn(`[sample] tile ${lat},${lon}: HTTP ${res.status}`);
-        continue;
-      }
-      const data = await res.json();
-      for (const ac of data.ac ?? []) {
-        const cs = (ac.flight ?? '').trim().toUpperCase();
-        if (CALLSIGN_RX.test(cs)) out.add(cs);
+      } else {
+        const data = await res.json();
+        for (const ac of data.ac ?? []) {
+          const cs = (ac.flight ?? '').trim().toUpperCase();
+          if (CALLSIGN_RX.test(cs)) out.add(cs);
+        }
       }
     } catch (e) {
       console.warn(`[sample] tile ${lat},${lon}: ${e.message}`);
     }
     await sleep(1500); // same courtesy rate as everything else
   }
+  // Printed so the walk is auditable from outside the process: Step 3 reads
+  // this line from two consecutive runs to prove the cursor really survived.
+  console.log(`[sample] walked ${TILES_PER_ROUND} tiles from ${firstTile}, cursor now ${gridCursor}/${GRID.length}`);
   return out;
 }
 
@@ -2737,6 +3377,10 @@ while (Date.now() < deadline) {
         if (!cache.has(cs) && !pending.includes(cs)) { pending.push(cs); added++; }
       }
       lastSample = Date.now();
+      // Saved at once: the cursor on disk is the only thing that makes the
+      // next run walk NEW tiles, and a run stopped with Ctrl-C between two
+      // progress saves would otherwise re-walk the round it just finished.
+      save();
       console.log(`[sample] ${seen.size} callsigns in feed, ${added} new, ${pending.length} pending, ${cache.size} cached`);
     } catch (e) {
       console.warn(`[sample] failed: ${e.message}`);
@@ -2792,7 +3436,11 @@ while (Date.now() < deadline) {
   // inside adsbdb's tolerance. Never remove it, never make it conditional.
   await sleep(delayMs);
 
-  if ((resolvedCount + unknownCount) % 100 === 0) {
+  // `> 0` matters: the sum is 0 until the first ok/unknown lands and
+  // `0 % 100 === 0`, so a run whose first lookups all fail transport printed
+  // a progress line each time — exactly the symptom Step 3 tells you to read
+  // as a missing throttle.
+  if (resolvedCount + unknownCount > 0 && (resolvedCount + unknownCount) % 100 === 0) {
     save();
     const left = pending.length;
     const eta = (left * delayMs) / 3600_000;
@@ -2804,6 +3452,7 @@ while (Date.now() < deadline) {
 
 save();
 console.log(`\ndone: ${cache.size} callsigns cached (${resolvedCount} resolved, ${unknownCount} unknown, ${abandonedCount} abandoned this run), ${pending.length} still pending`);
+console.log(`grid cursor at ${gridCursor}/${GRID.length} — the next run samples from there`);
 console.log(`written to ${OUT} — commit it`);
 ```
 
@@ -2836,7 +3485,7 @@ grep -n "await sleep(delayMs)" scripts/build-route-cache.mjs
 
 Se quella riga non compare nel ciclo principale, **non eseguire lo script**: manca il throttle e il risultato è un ban immediato.
 
-Expected: circa tre minuti di esecuzione e `server/data/route-cache.json` scritto. Con `delayMs` iniziale di 2000 ms, tre minuti devono produrre **al massimo ~90 lookup**: un `[sample]` iniziale e nessuna o al più una riga di avanzamento, che compare ogni 100 esiti. Se ne vedi molte di più il throttle non funziona: interrompi con Ctrl-C e attendi sei minuti prima di qualunque altra chiamata ad adsbdb.
+Expected: circa tre minuti di esecuzione e `server/data/route-cache.json` scritto. Il primo giro di campionamento prende ~40 s (20 tile a 1,5 s più la latenza) e restano ~140 s di lookup: con `delayMs` iniziale di 2000 ms sono **al massimo ~70**, con una riga `[sample] walked ...` e **nessuna** riga di avanzamento, perché la prima compare al centesimo esito. Se ne vedi molte di più il throttle non funziona: interrompi con Ctrl-C e attendi sei minuti prima di qualunque altra chiamata ad adsbdb.
 
 Se compare `[429]`, lo script deve **dormire 360 s in silenzio** e non emettere altre richieste: è il comportamento voluto.
 
@@ -2845,14 +3494,43 @@ Verificare la forma del file:
 ```bash
 python3 -c "
 import json
-r=json.load(open('server/data/route-cache.json'))
+d=json.load(open('server/data/route-cache.json'))
+r=d['records']
 print('voci:', len(r))
 print('con rotta:', sum(1 for x in r if x['route']))
+print('cursore griglia:', d['gridCursor'], 'di 546')
 print('esempio:', next((x for x in r if x['route']), None))
 "
 ```
 
-La corsa lunga vera (`npm run build:routes -- --hours 8`) la lancia l'utente quando vuole, ed è ripartibile. Il piano non la richiede per proseguire: il server funziona anche con una cache parziale, semplicemente con meno aerei blu.
+Il file è `{ gridCursor, records }`, non un array nudo: il cursore della rotazione sulla griglia vive nello stesso file delle risposte, perché è l'unica cosa che fa sì che l'esecuzione successiva campioni tile **nuove**.
+
+**Verificare che il cursore sopravviva davvero al riavvio.** Senza questa prova il difetto resta invisibile: lo script sembra funzionare benissimo mentre ricampiona per sempre le stesse prime tile.
+
+```bash
+grep -n "JSON.stringify({ gridCursor, records }" scripts/build-route-cache.mjs
+```
+
+Se quella riga non compare, il cursore non viene scritto: fermati e correggi lo script prima di proseguire.
+
+```bash
+# Due corse brevissime di fila: ciascuna fa un solo giro di campionamento.
+# Costano ~40 fetch verso adsb.lol in tutto, alla solita spaziatura di 1,5 s.
+RUN1=$(npm run build:routes -- --hours 0.01 2>&1 | grep '\[sample\] walked')
+CUR1=$(python3 -c "import json;print(json.load(open('server/data/route-cache.json'))['gridCursor'])")
+RUN2=$(npm run build:routes -- --hours 0.01 2>&1 | grep '\[sample\] walked')
+CUR2=$(python3 -c "import json;print(json.load(open('server/data/route-cache.json'))['gridCursor'])")
+echo "giro 1: $RUN1"
+echo "giro 2: $RUN2"
+echo "cursore: $CUR1 -> $CUR2"
+[ "$CUR1" != "$CUR2" ] && echo "OK: il cursore avanza fra un'esecuzione e l'altra" || echo "FALLITO: il cursore non e' persistito, le tile oltre la 240esima non entrerebbero mai nella cache"
+```
+
+Expected: le due righe `[sample] walked ... from <tile>` nominano **tile di partenza diverse** e il cursore cresce, per esempio `20 -> 40`. Se nominano la stessa tile, il cursore non sopravvive al riavvio: è esattamente il difetto che questa verifica esiste per vedere.
+
+**L'aritmetica della corsa lunga, da tenere a mente.** Un giro sono 20 tile e il cancello ne lascia partire uno ogni 20 minuti: ~58 tile l'ora, quindi le 546 della griglia sono 28 giri, cioè **~9,3 ore**. Le quattro ore di default coprono **240 tile su 546**. Il lato lookup è ancora più lento: a 2000 ms per richiesta sono ~1800 lookup l'ora, quindi i 5.900–12.500 callsign di un singolo snapshot valgono da soli 3–7 ore di interrogazioni. Il file resta piccolo: un record risolto è ~243 byte di JSON minificato e uno sconosciuto ~35, quindi 12.000 callsign stanno in **~1,8 MB**.
+
+La corsa lunga vera (`npm run build:routes -- --hours 10`) la lancia l'utente quando vuole, ed è ripartibile in entrambe le metà: riprende i callsign già risolti e riprende il giro della griglia da dove si era fermato. Dieci ore e non otto perché 546 tile sono ~9,3 ore di campionamento; con `--hours 8` il giro si ferma intorno alla tile 480 e la corsa successiva riparte da lì. Il piano non la richiede per proseguire: il server funziona anche con una cache parziale, semplicemente con meno aerei blu.
 
 - [ ] **Step 4: Scrivere il test che fallisce per `isComplete`**
 
@@ -2970,7 +3648,12 @@ Caricare il seed all'avvio, prima di `app.listen`:
 const seedPath = resolve(process.cwd(), 'server/data/route-cache.json');
 if (existsSync(seedPath)) {
   try {
-    routes.seed(JSON.parse(readFileSync(seedPath, 'utf8')));
+    // The file is `{ gridCursor, records }`: the cursor belongs to the
+    // offline sampler, the records to the resolver. The bare array is the
+    // pre-cursor shape and is still accepted — a cache built by an older run
+    // is hours of adsbdb lookups and a reader must not throw it away.
+    const parsed = JSON.parse(readFileSync(seedPath, 'utf8'));
+    routes.seed(Array.isArray(parsed) ? parsed : (parsed.records ?? []));
     app.log.info({ callsigns: routes.stats().resolved + routes.stats().unknown }, 'route cache seeded');
   } catch (e) {
     app.log.warn({ err: e instanceof Error ? e.message : String(e) }, 'route cache unreadable — starting cold');
@@ -2984,7 +3667,7 @@ In `tsconfig.server.json`, aggiungere all'`include` il percorso `"src/data/compl
 
 - [ ] **Step 9: Arricchire e marcare dentro `refreshNextTiles`**
 
-**Dopo la guardia `if (!anySuccess) return;` e dopo `fleet.prune(...)`, prima di `feed.put(...)`.** L'arricchimento gira una volta per ciclo, non una per tile: `result` vive dentro il ciclo delle tile e qui non è visibile.
+**Dopo la guardia `if (!anySuccess) return;` e dopo `fleet.prune(...)`, prima di `const payloadAircraft = fleet.snapshot(MAX_PAYLOAD_AIRCRAFT)`** — cioè prima che il corpo venga serializzato, perché `JSON.stringify` fotografa i record così come sono in quel momento. L'arricchimento gira una volta per ciclo, non una per tile: `result` vive dentro il ciclo delle tile e qui non è visibile.
 
 ```ts
     const world = fleet.snapshot();
@@ -3014,6 +3697,14 @@ In `tsconfig.server.json`, aggiungere all'`include` il percorso `"src/data/compl
 ```
 
 Senza il secondo ciclo `isComplete` resterebbe codice morto: `noUnusedLocals` non segnala una funzione esportata mai importata, e nulla avviserebbe che metà del deliverable non è stata consegnata.
+
+**Poi correggere il commento che questo step rende falso.** In `src/types.ts` il campo `route` porta `// filled by the server; null until Task 6`, ma è questo step a popolarlo: il Task 6 non riempie nulla, cancella soltanto il lookup falso lato client. Sostituire la riga con:
+
+```ts
+  route: FlightRouteLite | null;      // filled by the server (Task 5) from the pre-built cache; null = adsbdb has no route for this callsign
+```
+
+Il `null` non significa più «non ancora implementato» ma «interrogato e sconosciuto», che è la stessa semantica del `null` in `SeedRecord` e la ragione per cui `isComplete` può fidarsi del campo.
 
 - [ ] **Step 10: Avviare il pump e pubblicare lo stato su `/health`**
 
@@ -3090,7 +3781,7 @@ print('esempio:', {k:comp[0][k] for k in ('callsign','registration','modelCode',
 - [ ] **Step 13: Commit**
 
 ```bash
-git add scripts/build-route-cache.mjs server/data/route-cache.json src/data/completeness.ts tests/unit/data/completeness.test.ts server/index.ts tsconfig.server.json package.json
+git add scripts/build-route-cache.mjs server/data/route-cache.json src/data/completeness.ts tests/unit/data/completeness.test.ts server/index.ts src/types.ts tsconfig.server.json package.json
 git commit -m "feat(server): pre-built route cache, wiring and completeness
 
 /api/states now carries a real route and a 'complete' flag, and /health
@@ -3100,8 +3791,10 @@ The cache is built offline by scripts/build-route-cache.mjs rather than
 at runtime: a snapshot holds 5900-12500 distinct callsigns depending on
 the hour, and adsbdb bans at a few requests per second, so filling it
 takes hours. The script samples the feed over time, backs off hard on
-429, and is resumable. The runtime pump only absorbs callsigns the seed
-does not cover, at one lookup every 10 s.
+429, and is resumable in both halves: the answers AND the position in the
+546-tile sampling rotation live in the cache file, so a resumed run
+samples tiles the previous one never reached. The runtime pump only
+absorbs callsigns the seed does not cover, at one lookup every 10 s.
 
 This static file is NOT a return to openflights-routes.json. That one was
 wrong by construction — list[0] returned a route unrelated to the flight.
@@ -3284,15 +3977,19 @@ L'ultimo anello della catena che ha prodotto il globo vuoto.
 - Modify: `src/state/aircraftStore.ts`, `src/data/bootstrap.ts`, `src/data/aircraftStream.ts`
 - Modify: `src/globe/geoHelpers.ts`, `src/globe/scene.ts`, `src/ui/AppShell.tsx` — è `AppShell.tsx` a chiamare `mountScene` e `bootstrapData`, non `src/App.tsx`, che si limita a renderizzare `<AppShell />`
 - Rename: `src/data/openSkyClient.ts` → `src/data/statesClient.ts` (e il suo test)
-- Modify: `tests/unit/state/stores.test.ts`, `tests/unit/data/aircraftStream.test.ts`
+- Modify: `src/ui/HudCounter.tsx` — il flag `stale` che il Task 3 mette nel corpo della risposta si ferma qui o non serve a niente
+- Modify: `tests/unit/state/stores.test.ts`, `tests/unit/data/aircraftStream.test.ts`, `tests/unit/data/statesClient.test.ts`, `tests/unit/globe/geoHelpers.test.ts`
+- Create: `tests/component/HudCounter.test.tsx` — `vitest.config.ts` include già `tests/component/**/*.test.{ts,tsx}`, l'ambiente è jsdom e `@testing-library/react` è già una devDependency: non serve attrezzatura nuova
 
 **Interfaces:**
 - Consumes: `makeAircraftRaw` dal piano precedente
-- Produces: `vec3ToLatLon(v: Vector3): { lat, lon }`; `SceneHandle.viewCentre(): ViewCentre`; `fetchStates(bbox?, signal?, view?)`; `StreamOptions.getViewCentre?`; `bootstrapData(getViewCentre?)`. `useAircraftStore` guadagna `feedFetchedAt: number` (sostituisce `fetchedAt`) e `feedAgeSeconds(): number`; `updateBatch(raws, batchFetchedAtUnix)` prende due argomenti e **sostituisce** la flotta anziché fonderla; `removeStale` viene **rimosso**; `StreamOptions.onBatch(aircraft, fetchedAt)` prende due argomenti; `fetchStates` si sposta in `src/data/statesClient.ts` con la stessa firma.
+- Produces: `vec3ToLatLon(v: Vector3): { lat, lon }`; `visibleCapRadiusNm(cameraDistance: number, fovDeg: number): number`; `SceneHandle.viewCentre(): ViewCentre`; `fetchStates(bbox?, signal?, view?)`; `StreamOptions.getViewCentre?`; `bootstrapData(getViewCentre?)`. `useAircraftStore` guadagna `feedFetchedAt: number` (sostituisce `fetchedAt`), `feedStale: boolean` e `feedAgeSeconds(): number`; `updateBatch(raws, batchFetchedAtUnix, stale?)` prende tre argomenti e **sostituisce** la flotta anziché fonderla; `removeStale` viene **rimosso**; `FetchResult` guadagna `stale: boolean`; `StreamOptions.onBatch(aircraft, fetchedAt, stale)` prende tre argomenti; `fetchStates` si sposta in `src/data/statesClient.ts`.
 
-**Il server è l'unica autorità su chi è in volo.** La v1 misurava la staleness lato client contro l'orologio locale, e con un feed congelato cancellava l'intera flotta. La correzione ovvia sarebbe misurarla contro il timestamp del batch — ma con il feed a tile anche quella sarebbe sbagliata: uno sweep completo richiede fra circa 10 minuti al tetto di una richiesta al secondo che il poller impone, e il server dimensiona la propria finestra di ritenzione su quel periodo osservato; una finestra client di 120 s cancellerebbe quasi tutta la flotta appena ricevuta. Il globo tornerebbe quasi vuoto, in forma più mite ma per la stessa ragione.
+**Il server è l'unica autorità su chi è in volo.** La v1 misurava la staleness lato client contro l'orologio locale, e con un feed congelato cancellava l'intera flotta. La correzione ovvia sarebbe misurarla contro il timestamp del batch — ma con il feed a tile anche quella sarebbe sbagliata: uno sweep completo richiede fra 820 e 1 000 s, cioè 14-17 minuti, al tetto di una richiesta ogni 1,5 s che il poller impone, e il server dimensiona la propria finestra di ritenzione su quel periodo osservato; una finestra client di 120 s cancellerebbe quasi tutta la flotta appena ricevuta. Il globo tornerebbe quasi vuoto, in forma più mite ma per la stessa ragione.
 
 Qui la finestra client sparisce del tutto: il payload del server **è** il mondo, il server fa già `prune`, e il client si limita a sincronizzarsi con ciò che riceve. Due autorità sulla stessa decisione sono una di troppo, e sono destinate a divergere.
+
+**Il flag `stale` deve arrivare fino allo schermo.** Il Task 3 lo sposta nel corpo della risposta, e lo Step 10 dichiara perché: «`statesClient.ts` legge solo `res.json()`, e un header non lo vedrebbe mai». Se poi il client lo butta via, quello spostamento non compra niente e il presidio manca comunque. Il feed della v1 è rimasto congelato 25 giorni proprio perché nessuno strato ha mai *detto* che era congelato: il server serviva uno snapshot vecchio, il client lo disegnava come traffico vivo. Qui il client **dichiara invece di svuotare** — `fetchStates` legge `stale` dal corpo, lo stream lo passa a `onBatch`, lo store lo conserva in `feedStale`, la HUD lo scrive accanto al conteggio. Quattro strati che avrebbero potuto tacere, e nessuno dei quattro tace.
 
 **Tre file importano ciò che questo task rinomina.** Il `git mv` rompe `src/data/aircraftStream.ts`, `tests/unit/data/statesClient.test.ts` **e** `tests/unit/data/aircraftStream.test.ts`, che fa `spyOn` sul modulo. Dimenticare il terzo impedisce alla suite di caricarsi.
 
@@ -3303,7 +4000,12 @@ Sostituire l'intero blocco `describe('aircraftStore', ...)` esistente con il seg
 ```ts
 describe('aircraftStore', () => {
   beforeEach(() =>
-    useAircraftStore.setState({ aircraft: new Map(), feedFetchedAt: 0, fetchStatus: 'idle' })
+    useAircraftStore.setState({
+      aircraft: new Map(),
+      feedFetchedAt: 0,
+      feedStale: false,
+      fetchStatus: 'idle',
+    })
   );
 
   it('updateBatch replaces aircraft by icao24', () => {
@@ -3330,15 +4032,16 @@ describe('aircraftStore', () => {
     expect(useAircraftStore.getState().aircraft.get('a1')?.trail).toEqual([]);
   });
 
-  it('KEEPS an aircraft whose last fix is ten minutes old', () => {
-    // A full sweep takes ~10 minutes at the poller's request ceiling,
-    // and the server sizes its retention on that. A client-side window of
-    // 120 s would delete most of the fleet the server just sent — the v1 empty
-    // globe all over again, in a milder form.
+  it('KEEPS an aircraft whose last fix is older than a full sweep', () => {
+    // A full sweep takes 820-1000 s — 14-17 minutes — at the poller's ceiling
+    // of one tile every 1.5 s, and the server sizes its retention on that, so
+    // a fix 1200 s old is ordinary rather than exceptional. A client-side
+    // window of 120 s would delete most of the fleet the server just sent —
+    // the v1 empty globe all over again, in a milder form.
     const store = useAircraftStore.getState();
     const batchAt = 1_716_163_200;
     store.updateBatch(
-      [makeAircraftRaw({ icao24: 'a', lastContact: batchAt }), makeAircraftRaw({ icao24: 'old', lastContact: batchAt - 600 })],
+      [makeAircraftRaw({ icao24: 'a', lastContact: batchAt }), makeAircraftRaw({ icao24: 'old', lastContact: batchAt - 1_200 })],
       batchAt
     );
     expect(useAircraftStore.getState().aircraft.size).toBe(2);
@@ -3370,13 +4073,30 @@ describe('aircraftStore', () => {
     store.updateBatch([makeAircraftRaw({ icao24: 'a', lastContact: batchAt })], batchAt);
     expect(useAircraftStore.getState().feedAgeSeconds()).toBeGreaterThanOrEqual(45);
   });
+
+  it('keeps the stale flag the server put in the payload', () => {
+    // The server moved this flag into the body because fetchStates reads only
+    // res.json(). If the store drops it on the floor, the move bought nothing
+    // and the guard against a silent outage is still missing.
+    const store = useAircraftStore.getState();
+    store.updateBatch([makeAircraftRaw({ icao24: 'a' })], 100, true);
+    expect(useAircraftStore.getState().feedStale).toBe(true);
+  });
+
+  it('clears the stale flag as soon as a fresh batch arrives', () => {
+    // A warning that cannot switch itself off is a warning nobody reads.
+    const store = useAircraftStore.getState();
+    store.updateBatch([makeAircraftRaw({ icao24: 'a' })], 100, true);
+    store.updateBatch([makeAircraftRaw({ icao24: 'a' })], 160, false);
+    expect(useAircraftStore.getState().feedStale).toBe(false);
+  });
 });
 ```
 
 - [ ] **Step 2: Eseguire il test e verificare che fallisca**
 
 Run: `npx vitest run tests/unit/state/stores.test.ts`
-Expected: FAIL — `updateBatch` accetta un solo argomento, `feedFetchedAt` e `feedAgeSeconds` non esistono
+Expected: FAIL — `updateBatch` accetta un solo argomento, `feedFetchedAt`, `feedStale` e `feedAgeSeconds` non esistono
 
 - [ ] **Step 3: Riscrivere `src/state/aircraftStore.ts`**
 
@@ -3390,16 +4110,24 @@ interface AircraftState {
   aircraft: Map<string, Aircraft>;
   /** Unix seconds of the batch currently held — NOT the local clock. */
   feedFetchedAt: number;
+  /**
+   * What the SERVER said about the batch currently held: true means it was
+   * served from cache past its freshness window. The client shows it rather
+   * than acting on it — see the HUD. The v1 outage stayed invisible for 25
+   * days because no layer ever said the feed had stopped.
+   */
+  feedStale: boolean;
   fetchStatus: FetchStatus;
   setFetchStatus: (s: FetchStatus) => void;
   /** Replaces the fleet with what the server reports, preserving trails. */
-  updateBatch: (raws: AircraftRaw[], batchFetchedAtUnix: number) => void;
+  updateBatch: (raws: AircraftRaw[], batchFetchedAtUnix: number, stale?: boolean) => void;
   feedAgeSeconds: () => number;
 }
 
 export const useAircraftStore = create<AircraftState>((set, get) => ({
   aircraft: new Map(),
   feedFetchedAt: 0,
+  feedStale: false,
   fetchStatus: 'idle',
 
   setFetchStatus: (s) => set({ fetchStatus: s }),
@@ -3413,11 +4141,12 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
    * every aircraft look infinitely stale and the whole fleet was deleted —
    * the last link in the chain that emptied the globe. Measuring against the
    * batch timestamp would have been better but still wrong here: a full
-   * sweep takes ~10 minutes at the poller's request ceiling and the
-   * server sizes its own retention on that observed period, so any short
-   * client window would delete most of a legitimately assembled fleet.
+   * sweep takes 820-1000 s — 14-17 minutes — at the poller's ceiling of one
+   * tile every 1.5 s and the server sizes its own retention on that observed
+   * period, so any short client window would delete most of a legitimately
+   * assembled fleet.
    */
-  updateBatch: (raws, batchFetchedAtUnix) =>
+  updateBatch: (raws, batchFetchedAtUnix, stale = false) =>
     set((state) => {
       const next = new Map<string, Aircraft>();
       for (const r of raws) {
@@ -3436,7 +4165,7 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
         next.set(r.icao24, { ...r, trail });
       }
       // Aircraft absent from the payload are gone: the server already pruned.
-      return { aircraft: next, feedFetchedAt: batchFetchedAtUnix };
+      return { aircraft: next, feedFetchedAt: batchFetchedAtUnix, feedStale: stale };
     }),
 
   feedAgeSeconds: () => {
@@ -3476,21 +4205,38 @@ grep -rn "openSkyClient" src/ tests/ || echo "nessun riferimento residuo"
 In `src/data/aircraftStream.ts`, cambiare la firma in `StreamOptions`:
 
 ```ts
-  onBatch: (aircraft: AircraftRaw[], fetchedAt: Date) => void;
+  /**
+   * @param fetchedAt when the SERVER assembled this batch.
+   * @param stale what the server said about its own payload: true when it
+   *   served a cached body past its freshness window. Passed on rather than
+   *   acted on — the client declares, it does not empty the globe.
+   */
+  onBatch: (aircraft: AircraftRaw[], fetchedAt: Date, stale: boolean) => void;
 ```
 
-e in `tick`, sostituire `opts.onBatch(result.aircraft);` con `opts.onBatch(result.aircraft, result.fetchedAt);`.
+e in `tick`, sostituire `opts.onBatch(result.aircraft);` con `opts.onBatch(result.aircraft, result.fetchedAt, result.stale);`.
 
-- [ ] **Step 7: Adeguare l'asserzione di `aircraftStream.test.ts` al secondo argomento**
+- [ ] **Step 7: Adeguare `aircraftStream.test.ts` ai nuovi argomenti**
 
-`toHaveBeenCalledWith` verifica la lista **completa** degli argomenti, quindi **tre** asserzioni di questo file si rompono: una su `onBatch`, che passa da uno a due argomenti, e due su `fetchStates`, che passa da uno a tre con lo Step 9. Correggerle tutte:
+`toHaveBeenCalledWith` verifica la lista **completa** degli argomenti, quindi **tre** asserzioni di questo file si rompono: una su `onBatch`, che passa da uno a tre argomenti, e due su `fetchStates`, che passa da uno a tre con lo Step 9. Si rompe anche il doppio di `fetchStates` nel `beforeEach`, e prima ancora non compila: `FetchResult` ha ora un campo `stale` obbligatorio, e senza quello `result.stale` arriverebbe `undefined` all'asserzione. Correggere tutto:
+
+Nel `beforeEach`:
+
+```ts
+    vi.spyOn(client, 'fetchStates').mockResolvedValue({
+      fetchedAt: new Date(),
+      stale: false,
+      aircraft: [makeAircraftRaw({ icao24: 'a1', callsign: 'BAW274', lastContact: 0 })],
+    });
+```
 
 Nel test `calls fetchStates immediately on start`:
 
 ```ts
     expect(onBatch).toHaveBeenCalledWith(
       expect.arrayContaining([expect.objectContaining({ icao24: 'a1' })]),
-      expect.any(Date)
+      expect.any(Date),
+      false
     );
 ```
 
@@ -3513,7 +4259,7 @@ Senza queste due ultime correzioni lo Step 11 non può passare: la suite si cari
 Sostituire il callback `onBatch` con:
 
 ```ts
-    onBatch: (raws, fetchedAt) => {
+    onBatch: (raws, fetchedAt, stale) => {
       const batchUnix = Math.floor(fetchedAt.getTime() / 1000);
       const enriched: Aircraft[] = raws.map((r) => {
         const resolved = resolveFlight(r);
@@ -3521,16 +4267,90 @@ Sostituire il callback `onBatch` con:
         if (resolved) ac.resolved = resolved;
         return ac;
       });
-      useAircraftStore.getState().updateBatch(enriched, batchUnix);
+      // The server says whether what it just served is stale; carrying that
+      // word to the store is what lets the HUD say it out loud instead of
+      // drawing old positions as if they were current.
+      useAircraftStore.getState().updateBatch(enriched, batchUnix, stale);
       useAircraftStore.getState().setFetchStatus('idle');
     },
 ```
+
+- [ ] **Step 8a: Scrivere il test del raggio visibile**
+
+Il raggio che il client manda decide quali tile saltano la coda, e nessun test lo guardava: il valore spariva dentro un clamp del server e la revisione precedente ha potuto spedire un calcolo che non poteva produrre un numero operativo (vedi lo Step 9). Prima la misura, poi il codice.
+
+In `tests/unit/globe/geoHelpers.test.ts`, estendere l'import già in cima al file:
+
+```ts
+import {
+  latLonToVec3,
+  latLonAltToVec3,
+  altitudeToOffset,
+  visibleCapRadiusNm,
+  GLOBE_RADIUS,
+} from '@/globe/geoHelpers';
+```
+
+e aggiungere in fondo:
+
+```ts
+describe('visibleCapRadiusNm', () => {
+  // The orbit controls in src/globe/scene.ts hold the camera between 3,0 and
+  // 10,0 globe radii, with a 38 degree vertical FOV. Those two distances are
+  // the ends of the only range the server can ever be told about.
+  it('is limited by the frustum when the camera is close in', () => {
+    // Zoomed all the way in the globe overflows the viewport, so the edge of
+    // the screen decides what is visible, not the horizon — which alone
+    // would claim 3 602 NM here.
+    expect(visibleCapRadiusNm(3.0, 38)).toBeGreaterThan(1200);
+    expect(visibleCapRadiusNm(3.0, 38)).toBeLessThan(1400);
+  });
+
+  it('is limited by the horizon once the whole globe fits in the view', () => {
+    expect(visibleCapRadiusNm(10.0, 38)).toBeGreaterThan(4800);
+    expect(visibleCapRadiusNm(10.0, 38)).toBeLessThan(4950);
+  });
+
+  it('grows with distance across the whole zoom range', () => {
+    const at = [3.0, 4.0, 5.0, 7.0, 10.0].map((d) => visibleCapRadiusNm(d, 38));
+    for (let i = 1; i < at.length; i++) expect(at[i]!).toBeGreaterThan(at[i - 1]!);
+  });
+
+  it('stays under the ceiling the server enforces, at every zoom level', () => {
+    // The assertion the previous revision could not have passed. With the
+    // horizon-only formula the SMALLEST value the camera could produce was
+    // 3 602 NM against a server ceiling of 2 000 NM, so every request arrived
+    // clamped to exactly 2 000 and the zoom level never reached the server at
+    // all. MAX_VIEW_RADIUS_NM is now 5 000, taken from the far end of this
+    // very range, and nothing here reaches it.
+    for (const d of [3.0, 5.0, 10.0]) expect(visibleCapRadiusNm(d, 38)).toBeLessThan(5000);
+  });
+
+  it('never reports more than the horizon, however wide the lens', () => {
+    // A lens wide enough to contain the whole globe still cannot see past
+    // the horizon, so beyond that width the FOV stops mattering.
+    expect(visibleCapRadiusNm(3.0, 170)).toBe(visibleCapRadiusNm(3.0, 120));
+    expect(visibleCapRadiusNm(3.0, 170)).toBeGreaterThan(3500);
+    expect(visibleCapRadiusNm(3.0, 170)).toBeLessThan(3700);
+  });
+
+  it('survives a camera at or inside the surface', () => {
+    // The orbit controls forbid it; a division by zero in a feed path is
+    // worth one line of guard anyway.
+    expect(Number.isFinite(visibleCapRadiusNm(GLOBE_RADIUS, 38))).toBe(true);
+    expect(Number.isFinite(visibleCapRadiusNm(0, 38))).toBe(true);
+  });
+});
+```
+
+Run: `npx vitest run tests/unit/globe/geoHelpers.test.ts`
+Expected: FAIL — `visibleCapRadiusNm` non esiste ancora.
 
 - [ ] **Step 9: Completare il lato client della priorità di viewport**
 
 Senza questo il blocco `lat`/`lon`/`radius` del Task 3 è **codice morto**: il client oggi costruisce solo query bbox e non ne passa nemmeno una. La promessa "la regione inquadrata è fresca" non sarebbe mantenuta.
 
-Aggiungere a `src/globe/geoHelpers.ts` l'inversa della proiezione già presente:
+Aggiungere a `src/globe/geoHelpers.ts` l'inversa della proiezione già presente e il raggio della calotta che si sta davvero guardando:
 
 ```ts
 /**
@@ -3544,15 +4364,62 @@ export function vec3ToLatLon(v: Vector3): { lat: number; lon: number } {
   const lon = (Math.atan2(v.x, v.z) * 180) / Math.PI;
   return { lat, lon };
 }
+
+/** Earth radius in NM: a cap half-angle in radians IS an arc length. */
+const NM_PER_RADIAN = 3440.065;
+
+/**
+ * Radius, in NM along the surface, of the piece of globe actually on screen.
+ *
+ * Two limits, and the smaller one wins:
+ *
+ *  - the horizon. From `cameraDistance` nothing past acos(R/d) is visible,
+ *    whatever lens you put on.
+ *  - the frustum. Zoomed in, the globe overflows the viewport and the edge
+ *    of the screen cuts the cap long before the horizon does.
+ *
+ * An earlier revision used the horizon alone, and the result was dead
+ * arithmetic. The orbit controls in scene.ts hold the camera between 3,0 and
+ * 10,0 globe radii, so that formula could only ever return between 3 602 and
+ * 4 886 NM — and the server clamped every request to 2 000 NM. The camera
+ * could not produce a number BELOW the clamp, so the server saw exactly
+ * 2 000 at every zoom level: a half-angle computed, serialised, sent and
+ * discarded, presented in the plan as if it carried the zoom level. With the
+ * frustum term the near end is 1 299 NM and the value moves with the zoom,
+ * which is the whole point of sending it.
+ *
+ * `fovDeg` is three.js's VERTICAL field of view, and the vertical half-angle
+ * is the narrow one on a landscape viewport: this returns the cap that is
+ * certainly on screen rather than the one that spills past the top and
+ * bottom edges. Under-reaching costs priority on a tile at the very edge of
+ * the view; over-reaching spends a priority slot — half of each poller batch
+ * — on a tile nobody can see.
+ */
+export function visibleCapRadiusNm(cameraDistance: number, fovDeg: number): number {
+  const d = Math.max(cameraDistance, GLOBE_RADIUS + 1e-6);
+  const horizonRad = Math.acos(Math.min(1, GLOBE_RADIUS / d));
+  const halfFovRad = ((fovDeg / 2) * Math.PI) / 180;
+  // Does the edge ray of the frustum reach the sphere at all? When it misses,
+  // the whole globe sits inside the view and only the horizon limits the cap.
+  const disc = GLOBE_RADIUS ** 2 - (d * Math.sin(halfFovRad)) ** 2;
+  let capRad = horizonRad;
+  if (disc > 0) {
+    const t = d * Math.cos(halfFovRad) - Math.sqrt(disc);
+    const across = Math.sin(halfFovRad) * t;
+    const along = d - Math.cos(halfFovRad) * t;
+    capRad = Math.min(horizonRad, Math.atan2(across, along));
+  }
+  return Math.round(capRad * NM_PER_RADIAN);
+}
 ```
 
 In `src/globe/scene.ts`, **per prima cosa estendere l'import**, che oggi porta solo una funzione:
 
 ```ts
-import { latLonAltToVec3, vec3ToLatLon, GLOBE_RADIUS } from './geoHelpers';
+import { latLonAltToVec3, vec3ToLatLon, visibleCapRadiusNm } from './geoHelpers';
 ```
 
-Senza questa riga il frammento sotto non compila: `TS2304: Cannot find name 'vec3ToLatLon'`.
+Senza questa riga il frammento sotto non compila: `TS2304: Cannot find name 'vec3ToLatLon'`. `GLOBE_RADIUS` **non** va importato qui: l'aritmetica della calotta vive ora dentro `visibleCapRadiusNm`, e un import inutilizzato è un errore con `noUnusedLocals`.
 
 Poi estendere `SceneHandle` perché il resto dell'applicazione possa sapere cosa si sta guardando — oggi espone solo `dispose`:
 
@@ -3574,19 +4441,34 @@ e nell'oggetto restituito da `mountScene`:
 ```ts
     viewCentre: () => {
       // The camera always looks at the origin, so the point under it is the
-      // normalised camera direction. The visible cap half-angle follows from
-      // how far out the camera sits: close in, you see a small disc.
+      // normalised camera direction. The radius is what the lens actually
+      // shows — horizon AND frustum. With the horizon alone this returned
+      // between 3 602 and 4 886 NM across the entire zoom range, every value
+      // above the server's ceiling, so the server saw one constant and the
+      // zoom level never travelled.
       const { lat, lon } = vec3ToLatLon(camera.position);
-      const d = camera.position.length();
-      const ratio = Math.min(1, GLOBE_RADIUS / Math.max(d, GLOBE_RADIUS + 1e-6));
-      const halfAngleRad = Math.acos(ratio);
-      return { lat, lon, radiusNm: Math.round(halfAngleRad * 3440.065) };
+      return {
+        lat,
+        lon,
+        radiusNm: visibleCapRadiusNm(camera.position.length(), camera.fov),
+      };
     },
 ```
 
-In `src/data/statesClient.ts`, accettare il punto osservato:
+In `src/data/statesClient.ts`, dichiarare la freschezza nel risultato e accettare il punto osservato:
 
 ```ts
+export interface FetchResult {
+  fetchedAt: Date;
+  /**
+   * What the server said about the body it just sent: true when it served a
+   * cached payload past its freshness window. It travels in the BODY because
+   * this function reads only res.json() — see Task 3, Step 10.
+   */
+  stale: boolean;
+  aircraft: AircraftRaw[];
+}
+
 export interface ViewQuery {
   lat: number;
   lon: number;
@@ -3607,8 +4489,8 @@ export async function fetchStates(
   }
   if (view) {
     // Tells the server which tiles to refresh first. A full sweep takes
-    // ~10 minutes, so without this the region on screen would be as stale
-    // as the far side of the planet.
+    // 820-1000 s — 14-17 minutes — so without this the region on screen
+    // would be as stale as the far side of the planet.
     params.set('lat', view.lat.toFixed(3));
     params.set('lon', view.lon.toFixed(3));
     params.set('radius', String(view.radiusNm));
@@ -3616,8 +4498,19 @@ export async function fetchStates(
   const qs = params.toString();
   const res = await fetch(qs ? `${ENDPOINT}?${qs}` : ENDPOINT, { signal });
   if (!res.ok) throw new Error(`Air View proxy: HTTP ${res.status}`);
-  const data = (await res.json()) as { fetchedAt: string; aircraft: AircraftRaw[] };
-  return { fetchedAt: new Date(data.fetchedAt), aircraft: data.aircraft };
+  const data = (await res.json()) as {
+    fetchedAt: string;
+    stale?: boolean;
+    aircraft: AircraftRaw[];
+  };
+  // Optional on the wire and defaulted to fresh: a server that predates the
+  // flag must not make every batch look stale. Present and true is the only
+  // thing that raises the warning, so the warning means something.
+  return {
+    fetchedAt: new Date(data.fetchedAt),
+    stale: data.stale === true,
+    aircraft: data.aircraft,
+  };
 }
 ```
 
@@ -3662,6 +4555,104 @@ con
 
 Deve essere una closure, non un valore già calcolato: lo stream interroga `getViewCentre` a ogni poll, e passare `handle.viewCentre()` congelerebbe per sempre l'inquadratura del mount — la priorità seguirebbe una camera che non si muove più.
 
+- [ ] **Step 9a: Blindare la lettura del flag `stale`**
+
+Il lettore è già scritto — sta nel frammento di `fetchStates` dello Step 9 — ma era già stato scritto una volta e poi tolto, perché niente lo pretendeva. In `tests/unit/data/statesClient.test.ts` (il file rinominato allo Step 5), dentro il `describe('fetchStates', ...)` esistente:
+
+```ts
+  it('reads the stale flag out of the body', async () => {
+    // The server puts it in the body precisely because this function reads
+    // only res.json(). If nobody reads it, that choice bought nothing.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ fetchedAt: '2026-05-20T00:00:00Z', stale: true, aircraft: [] }),
+      })
+    );
+    expect((await fetchStates()).stale).toBe(true);
+  });
+
+  it('treats a missing stale field as fresh, not as stale', async () => {
+    // A server that predates the flag must not paint every batch as old.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ fetchedAt: '2026-05-20T00:00:00Z', aircraft: [] }),
+      })
+    );
+    expect((await fetchStates()).stale).toBe(false);
+  });
+```
+
+Run: `npx vitest run tests/unit/data/statesClient.test.ts`
+Expected: PASS, 5 test. Qui il verde arriva prima del rosso, perché l'implementazione sta nello Step 9: per controllare che questi due test siano vivi e non decorativi, togliere `stale: data.stale === true` dal ritorno di `fetchStates` e verificare che diventino rossi, poi rimetterlo.
+
+- [ ] **Step 9b: Scrivere il test della HUD**
+
+Creare `tests/component/HudCounter.test.tsx`. `vitest.config.ts` include già `tests/component/**/*.test.{ts,tsx}`, l'ambiente è jsdom e `@testing-library/jest-dom/vitest` è già caricato da `tests/setup.ts`: non serve configurazione nuova.
+
+```tsx
+import { describe, it, expect, beforeEach } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import { HudCounter } from '@/ui/HudCounter';
+import { useAircraftStore } from '@/state/aircraftStore';
+
+describe('HudCounter', () => {
+  beforeEach(() =>
+    useAircraftStore.setState({
+      aircraft: new Map(),
+      feedFetchedAt: 0,
+      feedStale: false,
+      fetchStatus: 'idle',
+    })
+  );
+
+  it('says nothing about freshness while the feed is fresh', () => {
+    render(<HudCounter />);
+    expect(screen.queryByText(/feed stale/)).toBeNull();
+  });
+
+  it('declares a stale feed instead of drawing old positions as current', () => {
+    // The last link of the chain this plan exists to break. The v1 feed was
+    // frozen for 25 days and the globe never said so: the server served a
+    // cached snapshot, the client drew it like live traffic, and the only
+    // way to notice was to know an aircraft that had landed.
+    useAircraftStore.setState({ feedStale: true });
+    render(<HudCounter />);
+    expect(screen.getByText(/feed stale/)).toBeInTheDocument();
+  });
+});
+```
+
+Run: `npx vitest run tests/component/HudCounter.test.tsx`
+Expected: FAIL — la HUD non dice nulla della freschezza.
+
+- [ ] **Step 9c: Far dire alla HUD quello che il server ha dichiarato**
+
+In `src/ui/HudCounter.tsx`, accanto alle due letture dello store già presenti:
+
+```tsx
+  const stale = useAircraftStore((s) => s.feedStale);
+```
+
+e dentro il `<div className="hud">`, dopo il blocco `status === 'error'`:
+
+```tsx
+      {stale && (
+        <span className="hud__status" aria-label="Feed stale, showing last known positions">
+          {' '}
+          · feed stale · last known positions
+        </span>
+      )}
+```
+
+Riusa `.hud__status`, che esiste già in `src/ui/styles.css`: nessun foglio di stile da toccare, e il trattamento resta quello di «signal interrupted», che è un avviso dello stesso genere — una condizione del feed, non un dato di volo. Il contenitore ha già `role="status"` e `aria-live="polite"`, quindi la comparsa viene annunciata.
+
+Run: `npx vitest run tests/component/HudCounter.test.tsx`
+Expected: PASS, 2 test.
+
 - [ ] **Step 10: Verificare che la priorità arrivi davvero al server**
 
 ```bash
@@ -3677,6 +4668,19 @@ curl -s localhost:3000/health | python3 -c "import json,sys; print('prioritised:
 
 Expected: un valore maggiore di zero. Poi, con il frontend in esecuzione (`npm run dev:full`), aprire il browser, ruotare il globo e controllare nel pannello di rete che le richieste a `/api/states` portino `lat`, `lon` e `radius`. Se non li portano, il collegamento camera→richiesta non è stato fatto e la freschezza della regione inquadrata non esiste.
 
+**E controllare che il `radius` cambi con lo zoom**, perché per una revisione intera non è cambiato: avvicinarsi e allontanarsi con la rotella e confrontare due richieste. Il valore deve muoversi fra circa **1 300 NM** (limite vicino dei controlli d'orbita) e circa **4 900 NM** (limite lontano). Se è sempre lo stesso numero, o se è sempre 2 000 lato server, `viewCentre()` sta ancora misurando l'orizzonte invece della calotta inquadrata.
+
+La prova che il numero **cambia qualcosa** si prende dove la griglia è rada. Il Pacifico centrale non ha tile entro 1 300 NM e ne ha 181 entro 4 886 (misurato su `buildTileGrid()`, 546 tile). Attendere che `prioritised` sia tornato a 0, poi:
+
+```bash
+curl -s "localhost:3000/api/states?lat=0&lon=-160&radius=1299" > /dev/null
+curl -s localhost:3000/health | python3 -c "import json,sys; print('zoom vicino, Pacifico:', json.load(sys.stdin)['tiles']['prioritised'])"
+curl -s "localhost:3000/api/states?lat=0&lon=-160&radius=4886" > /dev/null
+curl -s localhost:3000/health | python3 -c "import json,sys; print('zoom lontano, Pacifico:', json.load(sys.stdin)['tiles']['prioritised'])"
+```
+
+Expected: **0** dopo la prima coppia — zoomati sul Pacifico non c'è niente di visibile da anticipare, e i turni prioritari restano alla rotazione — e un valore **maggiore di zero** (fino a 6) dopo la seconda, dove quelle tile sono davvero sullo schermo. Se i due numeri sono uguali il raggio non sta decidendo nulla, ed è esattamente lo stato da cui veniamo.
+
 - [ ] **Step 11: Verificare entrambi i programmi e l'intera suite**
 
 ```bash
@@ -3690,7 +4694,7 @@ Expected: build pulita, tutti i test verdi. Se la suite non si carica affatto, u
 ```bash
 # The rename is already staged by the git mv in Step 5: only the new paths
 # can be named here.
-git add src/state/aircraftStore.ts src/data/aircraftStream.ts src/data/bootstrap.ts src/data/statesClient.ts src/globe/geoHelpers.ts src/globe/scene.ts src/ui/AppShell.tsx tests/unit/state/stores.test.ts tests/unit/data/aircraftStream.test.ts tests/unit/data/statesClient.test.ts
+git add src/state/aircraftStore.ts src/data/aircraftStream.ts src/data/bootstrap.ts src/data/statesClient.ts src/globe/geoHelpers.ts src/globe/scene.ts src/ui/AppShell.tsx src/ui/HudCounter.tsx tests/unit/state/stores.test.ts tests/unit/data/aircraftStream.test.ts tests/unit/data/statesClient.test.ts tests/unit/globe/geoHelpers.test.ts tests/component/HudCounter.test.tsx
 git commit -m "fix(state): stop deleting the fleet when the feed stops
 
 removeStale compared lastContact against the local clock, so a frozen
@@ -3699,10 +4703,23 @@ dropped — the last link in the chain that emptied the globe.
 
 It is deleted rather than fixed. Measuring against the batch timestamp
 would still have been wrong under the tiled feed: a full sweep takes
-~10 minutes at the poller's request ceiling and the server sizes its
-retention on that, so a 120 s client window would have deleted most of a
+820-1000 s at the poller's ceiling of one tile every 1.5 s and the server
+sizes its retention on that, so a 120 s client window would have deleted most of a
 legitimately assembled fleet. The server already prunes; the client now mirrors the payload
 instead of applying a second, independent rule that is bound to drift.
+
+The client declares instead. The server already marks a payload it served
+past its freshness window; that flag now travels the whole way to the HUD —
+fetchStates reads it out of the body, the stream passes it on, the store
+keeps it, the counter prints it. The v1 outage lasted 25 days because no
+layer ever said the feed had stopped.
+
+Also makes the camera's visible radius a number that means something.
+viewCentre() measured the horizon, which between the orbit controls' limits
+is never below 3 602 NM against a server ceiling of 2 000 NM, so every
+request arrived clamped to the same constant whatever the zoom. It now
+measures the frustum as well, and the ceiling is taken from the far end of
+the range the camera can actually produce.
 
 Renames openSkyClient to statesClient: it talks to our own proxy, not to
 OpenSky, and has since the adsb.lol switch.
@@ -3754,7 +4771,19 @@ if (!res.ok) {
   process.exit(1);
 }
 const data = await res.json();
-const ac = data.aircraft ?? [];
+const ac = Array.isArray(data.aircraft) ? data.aircraft : [];
+if (!Array.isArray(data.aircraft)) fail(`payload has no aircraft array (${JSON.stringify(data.aircraft)}) — /api/states is not answering with the feed shape`);
+
+// Every coverage gate below divides by ac.length, and on an empty fleet
+// that is 0/0 = NaN. NaN fails NO comparison: `NaN < 0.8` is false, so the
+// registration gate printed `NaN%` and PASSED on exactly the dead feed this
+// script exists to condemn. ratio() yields null instead of NaN, and every
+// caller treats null as a failure rather than as a pass.
+const ratio = (n, d) => (Number.isFinite(n) && Number.isFinite(d) && d > 0 ? n / d : null);
+const pct = (n, d) => {
+  const r = ratio(n, d);
+  return r === null ? 'n/a' : `${(100 * r).toFixed(1)}%`;
+};
 
 pass(`source: ${data.source}`);
 pass(`aircraft: ${ac.length}`);
@@ -3762,35 +4791,111 @@ if (health.tiles) console.log(`tiles: ${JSON.stringify(health.tiles)}`);
 if (health.fleet) console.log(`fleet: ${JSON.stringify(health.fleet)}`);
 console.log(`x-feed-stale: ${res.headers.get('x-feed-stale')}`);
 
+// The payload is not a function of what you are looking at: this endpoint
+// serves the whole accumulated fleet and ignores the bbox on purpose, so its
+// size follows the retention window. Measured here rather than assumed.
+if (!health.payload) {
+  fail('/health does not report payload size — the body can only be guessed at from outside');
+} else {
+  const p = health.payload;
+  const ratio = p.gzipBytes ? p.bytes / p.gzipBytes : 0;
+  console.log(`payload: ${p.aircraft} aircraft, ${(p.bytes / 1e6).toFixed(2)} MB raw, ${(p.gzipBytes / 1e6).toFixed(2)} MB gzip, ${(p.bytes / Math.max(p.aircraft, 1)).toFixed(0)} B/aircraft`);
+  if (p.bytes > 10_000_000) fail(`payload is ${(p.bytes / 1e6).toFixed(1)} MB — lower MAX_RETENTION_S, or MAX_PAYLOAD_AIRCRAFT if the window is already at the floor`);
+  else pass(`payload under the 10 MB ceiling`);
+  if (p.gzipBytes === 0) fail('payload was never compressed — every client would pay the full body');
+  else if (ratio < 5) fail(`compression only ${ratio.toFixed(1)}x — is the raw body being served under a gzip header?`);
+  else pass(`compression ${ratio.toFixed(1)}x`);
+  if (p.capped) fail(`payload capped at ${p.aircraft} of ${p.maxAircraft}: the fleet outgrew the ceiling and the world served is partial`);
+  else pass('payload not capped');
+}
+
 // The fleet fills in tile by tile: a server that has just started has
 // legitimately seen only part of the world. Below a few hundred after a
 // full sweep, something is wrong.
 if (ac.length < 300) fail(`only ${ac.length} aircraft — has a full sweep completed? tiles: ${JSON.stringify(health.tiles)}`);
 
-// Dormancy is expected over ocean, but if nearly everything went dormant the
-// grid or the provider is broken rather than the ocean being empty.
-if (health.tiles && health.tiles.productive < 20) {
-  fail(`only ${health.tiles.productive} productive tiles of ${health.tiles.total} — the grid or the source is broken`);
-} else if (health.tiles) {
-  pass(`${health.tiles.productive} productive tiles, ${health.tiles.dormant} dormant`);
+// Dormancy is expected over ocean, but the dormant counter alone CANNOT see
+// the failure this gate claims to catch: productive is tiles.length minus
+// the dormant set, and a tile joins that set only through
+// scheduler.record(tileId, 0), which runCycle calls on its success branch.
+// If every fetch fails nothing is recorded, productive stays at its maximum,
+// and the gate reports a world in perfect health while not one aircraft
+// arrives. So the tile counters are cross-checked against the three signals
+// that do move when the upstream dies: the age of the feed, the last error
+// the poller saw, and the size of the fleet.
+const tiles = health.tiles;
+if (!tiles || !Number.isFinite(tiles.productive) || !Number.isFinite(tiles.total)) {
+  fail(`/health carries no usable tile stats (${JSON.stringify(tiles)}) — the scheduler is not wired into /health`);
+} else {
+  if (tiles.productive < 20) fail(`only ${tiles.productive} productive tiles of ${tiles.total} — the grid or the source is broken`);
+  else pass(`${tiles.productive} productive tiles, ${tiles.dormant} dormant`);
+
+  // After three full sweeps every ocean-edge tile has come back empty three
+  // times and must be dormant (dormantAfterEmptySweeps defaults to 3). Zero
+  // dormant tiles after three sweeps means no sweep result was ever
+  // recorded, which is what a wholly failing upstream looks like from here.
+  if (tiles.sweepsCompleted >= 3 && tiles.dormant === 0) {
+    fail(`${tiles.sweepsCompleted} sweeps completed and not one dormant tile — tiles are recorded only on success, so this is the shape of an upstream failing every fetch`);
+  } else if (!(tiles.sweepsCompleted >= 3)) {
+    console.log(`note: ${tiles.sweepsCompleted} sweeps completed — the dormancy cross-check needs three (~41 min of polling)`);
+  }
+
+  if (tiles.suspendedUntil) fail(`tile polling suspended until ${tiles.suspendedUntil} — the tile sources rate-limited us`);
+}
+
+// Liveness, read without going through any tile counter.
+if (!Number.isFinite(health.feedAgeSeconds)) {
+  fail(`/health reports feedAgeSeconds ${JSON.stringify(health.feedAgeSeconds)} — no cycle has ever landed a payload`);
+} else if (health.feedAgeSeconds > 180) {
+  fail(`/health feed is ${health.feedAgeSeconds}s old — a cycle is ~13 s, so the poller is running and nothing is landing`);
+} else {
+  pass(`/health feed age: ${health.feedAgeSeconds}s`);
+}
+
+if (!Number.isFinite(health.fleet?.size) || health.fleet.size === 0) {
+  fail(`fleet holds ${JSON.stringify(health.fleet?.size)} aircraft — whatever the tile counters say, nothing is being absorbed`);
+} else {
+  pass(`fleet holds ${health.fleet.size} aircraft`);
+}
+
+// lastError is cleared by the next successful cycle and a cycle is ~13 s, so
+// an error standing next to a fresh feed is one tile that failed and
+// recovered. Standing next to a stale feed it is the diagnosis.
+if (health.lastError && Number.isFinite(health.feedAgeSeconds) && health.feedAgeSeconds <= 60) {
+  console.log(`note: last tile error "${health.lastError}" (${health.lastErrorCode ?? 'no code'}), but a cycle landed ${health.feedAgeSeconds}s ago`);
+} else if (health.lastError) {
+  fail(`tiles are failing: ${health.lastError} (${health.lastErrorCode ?? 'no code'})`);
+} else {
+  pass('no outstanding tile error');
 }
 
 const ageS = (Date.now() - new Date(data.fetchedAt).getTime()) / 1000;
-if (ageS > 600) fail(`fetchedAt is ${Math.round(ageS)}s old — the feed is not live`);
-else pass(`feed age: ${Math.round(ageS)}s`);
+// Same NaN trap as the coverage gates: a missing or unparsable fetchedAt
+// makes ageS NaN and `NaN > 600` is false, so a payload with no timestamp at
+// all printed `feed age: NaNs` and counted as a pass.
+if (!Number.isFinite(ageS)) {
+  fail(`fetchedAt is missing or unparsable (${JSON.stringify(data.fetchedAt)}) — the payload carries no feed timestamp`);
+} else if (ageS > 600) {
+  fail(`fetchedAt is ${Math.round(ageS)}s old — the feed is not live`);
+} else {
+  pass(`feed age: ${Math.round(ageS)}s`);
+}
 
 // A timestamp far in the past or future means a seconds/milliseconds mixup
 // in an adapter — the kind of bug unit tests with hand-made mocks miss.
-if (ageS < -60 || ageS > 86_400) fail(`fetchedAt is implausible (${Math.round(ageS)}s) — check the epoch units in the source adapter`);
+if (Number.isFinite(ageS) && (ageS < -60 || ageS > 86_400)) fail(`fetchedAt is implausible (${Math.round(ageS)}s) — check the epoch units in the source adapter`);
 
 const withReg = ac.filter((a) => a.registration).length;
 const withModel = ac.filter((a) => a.modelCode).length;
-pass(`registration: ${(100 * withReg / ac.length).toFixed(1)}%`);
-pass(`model: ${(100 * withModel / ac.length).toFixed(1)}%`);
-if (withReg / ac.length < 0.8) fail('registration coverage below 80% — the adapter may be dropping it');
+console.log(`registration: ${withReg} of ${ac.length} (${pct(withReg, ac.length)})`);
+console.log(`model: ${withModel} of ${ac.length} (${pct(withModel, ac.length)})`);
+const regRatio = ratio(withReg, ac.length);
+if (regRatio === null) fail('registration coverage is undefined because the fleet is empty — undefined is not 80%');
+else if (regRatio < 0.8) fail(`registration coverage ${pct(withReg, ac.length)} is below 80% — the adapter may be dropping it`);
+else pass(`registration coverage ${pct(withReg, ac.length)}`);
 
 const withRoute = ac.filter((a) => a.route).length;
-console.log(`route: ${withRoute} of ${ac.length} (${(100 * withRoute / ac.length).toFixed(1)}%) — grows as the resolver cache fills`);
+console.log(`route: ${withRoute} of ${ac.length} (${pct(withRoute, ac.length)}) — grows as the resolver cache fills`);
 if (health.routes) console.log(`resolver: ${JSON.stringify(health.routes)}`);
 
 // The completeness flag must actually reach the payload: isComplete() being
@@ -3799,8 +4904,9 @@ if (!('stale' in data)) fail('payload has no "stale" field — the freshness fla
 else pass(`stale flag in body: ${data.stale}`);
 
 const complete = ac.filter((a) => a.complete === true).length;
-if (ac.some((a) => a.complete === undefined)) fail('payload has no "complete" field — isComplete() is not wired into the response');
-else pass(`complete: ${complete} of ${ac.length} (${(100 * complete / ac.length).toFixed(1)}%)`);
+if (ac.length === 0) fail('no aircraft at all — the "complete" flag cannot be checked, and an unchecked flag is not a passing one');
+else if (ac.some((a) => a.complete === undefined)) fail('payload has no "complete" field — isComplete() is not wired into the response');
+else pass(`complete: ${complete} of ${ac.length} (${pct(complete, ac.length)})`);
 if (withRoute > 0 && complete === 0) fail('routes are attached but no aircraft is marked complete — check isComplete()');
 
 // The route subsystem dying silently is the failure mode this script exists
@@ -3811,7 +4917,10 @@ if (health.routes?.suspendedUntil) fail(`resolver suspended until ${health.route
 else pass('resolver not rate-limited');
 
 const seeded = (health.routes?.resolved ?? 0) + (health.routes?.unknown ?? 0);
-if (seeded === 0) fail('resolver knows no callsign at all — is server/data/route-cache.json present and readable?');
+// `=== 0` is the wrong test for the same reason as everywhere else here: a
+// /health answering with a non-number makes the sum NaN, and NaN === 0 is
+// false, so a missing or malformed resolver block would pass.
+if (!Number.isFinite(seeded) || seeded === 0) fail(`resolver knows no callsign at all (${JSON.stringify(seeded)}) — is server/data/route-cache.json present and readable?`);
 else pass(`resolver knows ${seeded} callsigns`);
 
 if (health.routes?.lastError) console.log(`resolver lastError: ${health.routes.lastError}`);
@@ -3858,6 +4967,8 @@ npm run verify:feed
 
 Expected: `VERIFICATION PASSED`, migliaia di aerei, età del feed plausibile, copertura registrazione sopra l'80%, nessun gruppo di rotte sospetto. Ripetendo dopo qualche minuto, la percentuale `route` deve essere cresciuta.
 
+Su un server appena avviato alcune righe sono note informative e non fallimenti: il controllo incrociato sulla dormienza richiede tre spazzate (~41 minuti di polling) e fino ad allora stampa `note: N sweeps completed`. Al contrario, una flotta vuota non può più produrre `VERIFICATION PASSED`: tutti i cancelli di copertura dividono per il numero di aerei e trattano lo 0/0 come fallimento, invece di stampare `NaN%` e passare. Per vederlo senza rompere nulla, fermare il server e rilanciare `npm run verify:feed`: deve stampare `VERIFICATION FAILED`.
+
 - [ ] **Step 4: Commit**
 
 ```bash
@@ -3868,6 +4979,14 @@ Checks the full chain against the real upstream APIs rather than test
 doubles: health status code, live feed age, epoch-unit plausibility,
 adapter field coverage, and an explicit assertion that no cluster of
 flights shares one route — the shape of the v1 fabrication.
+
+Every numeric gate is NaN-proof. An empty fleet makes each coverage ratio
+0/0, and NaN fails no comparison, so `NaN < 0.8` used to let the
+registration gate pass on exactly the feed this script exists to condemn.
+Liveness is read from the feed age, the outstanding tile error and the
+fleet size as well as from the tile counters, because a tile is recorded
+only on success: when every fetch fails, the dormancy counters report
+perfect health.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
@@ -3921,7 +5040,7 @@ Il tiling introdotto qui era previsto per il Piano 2: il vincolo dei 250 NM lo h
 
 ## Nota sul risultato atteso
 
-Con questi vincoli il globo ha due velocità, ed è bene saperlo prima di guardarlo: **la regione inquadrata è fresca**, perché le sue tile hanno priorità; **il resto del pianeta è un contesto che si aggiorna in ~10 minuti**. Non è un compromesso elegante, è il massimo che adsb.lol concede a 29 secondi per tile e 250 NM di raggio. Il dead reckoning del Piano 2 renderà continuo il movimento di ciò che si guarda; la vista globale resterà, per natura, un colpo d'occhio e non un cronometro.
+Con questi vincoli il globo ha due velocità, ed è bene saperlo prima di guardarlo: **la regione inquadrata è fresca**, perché le sue tile hanno priorità; **il resto del pianeta è un contesto che si aggiorna in 820-1 000 s, cioè 14-17 minuti**. Non è un compromesso elegante, è il massimo che la cortesia verso adsb.lol concede: 546 tile, una richiesta ogni 1,5 s e 250 NM di raggio. Il dead reckoning del Piano 2 renderà continuo il movimento di ciò che si guarda; la vista globale resterà, per natura, un colpo d'occhio e non un cronometro.
 
 ## Difetti del settimo preflight corretti
 
@@ -3954,7 +5073,7 @@ Con questi vincoli il globo ha due velocità, ed è bene saperlo prima di guarda
 
 | # | Difetto | Evidenza | Correzione |
 |---|---|---|---|
-| 43 | **Critico.** Il poller emetteva 8 richieste **simultanee** con `Promise.all`: la media rispettava il tetto di 1 req/s, il pattern istantaneo no. adsb.lol ha risposto 429, il selector ha ritentato la raffica su adsb.fi che ha risposto 429 anch'essa, e il feed è morto | Piano applicato a una copia e server avviato: 8 tile loggate nello stesso millisecondo a 0,28 s / 8,22 s / 16,23 s, poi a 24,36 s `adsb-lol: HTTP 429 \| adsb-fi: HTTP 429` su ogni tile, e da lì in poi entrambe in cooldown. 26 fetch riuscite in totale; flotta congelata a 251 aerei. Il rate misurato era 1,07 tile/s — **dentro** il tetto | Fetch **strettamente sequenziali**, una ogni 1,5 s, mai in parallelo. Il 429 diventa stato di prima classe anche per le tile: sospensione di 5 minuti durante la quale non parte nulla, esposta su `/health`. Lo sweep passa a ~10 minuti. I Global Constraints ora vincolano il **pattern**, non la media |
+| 43 | **Critico.** Il poller emetteva 8 richieste **simultanee** con `Promise.all`: la media rispettava il tetto di 1 req/s, il pattern istantaneo no. adsb.lol ha risposto 429, il selector ha ritentato la raffica su adsb.fi che ha risposto 429 anch'essa, e il feed è morto | Piano applicato a una copia e server avviato: 8 tile loggate nello stesso millisecondo a 0,28 s / 8,22 s / 16,23 s, poi a 24,36 s `adsb-lol: HTTP 429 \| adsb-fi: HTTP 429` su ogni tile, e da lì in poi entrambe in cooldown. 26 fetch riuscite in totale; flotta congelata a 251 aerei. Il rate misurato era 1,07 tile/s — **dentro** il tetto | Fetch **strettamente sequenziali**, una ogni 1,5 s, mai in parallelo. Il 429 diventa stato di prima classe anche per le tile: sospensione di 5 minuti durante la quale non parte nulla, esposta su `/health`. Lo sweep passa a 820-1 000 s (14-17 minuti). I Global Constraints ora vincolano il **pattern**, non la media |
 | 44 | **Critico.** Il Task 1 era già interamente implementato e committato: ogni suo step chiedeva di sostituire testo identico a quello già presente, e il gate TDD non poteva vedere il rosso che pretendeva. Un esecutore fedele si sarebbe bloccato, o avrebbe rotto il codice apposta | `maxRadiusNm: 250` già in entrambi gli adattatori, commenti già byte-per-byte, test già `toBe(250)`, commit con messaggio identico già presente | Il Task 1 diventa una nota di stato con la sola verifica (`build:all` + suite) e il rimando ai commit che l'hanno realizzato |
 | 45 | `next()` poteva restituire la stessa tile due volte nello stesso batch — una dalla coda prioritaria e una dalla rotazione — e il chiamante fetcha ogni voce: due richieste identiche contro un provider che punisce le raffiche | Lettura del ciclo di rotazione, che non escludeva le tile già in `out` | Deduplica esplicita e test che la verifica (Task 2) |
 | 46 | Nel Task 6 l'ordine era invertito: implementazione allo Step 1, test allo Step 2, e lo Step 3 pretendeva un fallimento impossibile. Lo stesso difetto del Task 1, ma interno al piano | Lettura degli step | Ordine TDD ripristinato: test, rosso, implementazione (Task 6) |
