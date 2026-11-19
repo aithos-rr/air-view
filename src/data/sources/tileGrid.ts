@@ -12,7 +12,7 @@ export interface Tile {
 /**
  * Bounding boxes where terrestrial ADS-B receivers actually exist.
  *
- * The planet would need ~1060 tiles of this radius; these regions need ~413,
+ * The planet would need ~1400 tiles of this radius; these regions need 546,
  * and the rest is open ocean where no volunteer receiver listens. This is a
  * statement about where the data comes from, not about where aircraft fly:
  * measured on a live snapshot, the North Atlantic held 0.1% of traffic and
@@ -33,46 +33,56 @@ const REGIONS: Array<[string, number, number, number, number]> = [
 
 const NM_PER_DEGREE_LAT = 60;
 /**
- * 1.4 leaves overlap between neighbouring circles: measured against this very
- * grid, the worst point enclosed between centres on both axes — the far corner
- * of a cell — is 227.9 NM from the nearest centre, inside the 230 NM radius.
- * So the spacing covers the *interior* of every box, with 2 NM to spare.
- *
- * KNOWN GAP, not covered: the loops below stop at the last centre that still
- * satisfies `<= latMax` / `<= lonMax`, so the final row and column fall up to
- * one step short of the declared edge and the strip beyond them is never
- * queried. Sampled at 1 degree over the ten boxes, 276 of 12883 points — 2.1%
- * of the declared area — lie further than 230 NM from the nearest centre of
- * the whole grid. The worst holes are 387 NM at -20,33 (southern-africa) and
- * 363 NM at -10,179 (oceania), and it is not all ocean: Maputo (-25.920,
- * 32.573) sits 279 NM from its nearest centre, Harbin 270 NM, Cape Breton
- * 316 NM — inside a declared box and outside every tile.
- *
- * Both figures are measured against the nearest centre of the WHOLE grid,
- * which is how coverage actually works: the poller fetches every tile, so a
- * tile covers a point whatever bounding box it came from. Measuring each point
- * only against the centres of its own region inflates the gap to 2.97%, all of
- * the difference falling where two boxes overlap. Both numbers are asserted by
- * tests/unit/data/sources/tileGrid.test.ts, so neither can drift unnoticed.
- *
- * Deliberately left as is: widening the loops changes the tile count, and 413
- * is the acceptance criterion of Step 5 of the plan and the figure quoted
- * throughout it (sweep duration, retention window). That is a plan-level
- * decision, not something to patch here.
+ * 1.4 leaves overlap between neighbouring circles: the far corner of a cell
+ * sits at sqrt(2) * 0.7 * 230 = 227.7 NM from the nearest centre, inside the
+ * 230 NM radius. There is ~2 NM of margin, so this is not a figure to round
+ * off — raising it to 1.6 opens holes the tests below catch.
  */
 const STEP_FACTOR = 1.4;
 
+/**
+ * Centres on a lattice that INCLUDES both edges of every box.
+ *
+ * The step is a ceiling, not an increment: each box is divided into the
+ * fewest whole steps that stay under it, so a row always ends exactly on
+ * lonMax and a column exactly on latMax. An earlier revision incremented by
+ * the raw step and stopped at the last centre still <= the edge, which left
+ * two kinds of hole:
+ *
+ *  - a strip along the far edge of every box, up to a full step wide. Maputo,
+ *    Harbin and Cape Breton all sat inside a declared box and outside every
+ *    tile.
+ *  - a staircase between rows. The longitude step depends on latitude, so
+ *    adjacent rows ran out at different longitudes: (19 N, 89.75 E) in the
+ *    Bay of Bengal, enclosed between centres on both axes, was 308 NM from
+ *    the nearest centre of the whole grid.
+ *
+ * Both are gone: sampled at 0.1 degrees, all 1 224 760 points of the ten
+ * boxes lie within 230 NM of a centre, the worst at 218.0 NM. The price is
+ * 546 tiles instead of 413 (+32%); the extra ones are mostly edge strips over
+ * water, which the scheduler marks dormant after three empty sweeps.
+ */
 export function buildTileGrid(): Tile[] {
   const tiles: Tile[] = [];
-  const stepLat = (TILE_RADIUS_NM * STEP_FACTOR) / NM_PER_DEGREE_LAT;
+  const maxStepLat = (TILE_RADIUS_NM * STEP_FACTOR) / NM_PER_DEGREE_LAT;
 
   for (const [region, latMin, latMax, lonMin, lonMax] of REGIONS) {
-    for (let lat = latMin; lat <= latMax; lat += stepLat) {
+    const rows = Math.max(1, Math.ceil((latMax - latMin) / maxStepLat));
+    const stepLat = (latMax - latMin) / rows;
+
+    for (let i = 0; i <= rows; i++) {
+      const lat = latMin + i * stepLat;
       // Meridians converge towards the poles: widen the longitude step.
       const nmPerDegreeLon = NM_PER_DEGREE_LAT * Math.max(0.2, Math.cos((lat * Math.PI) / 180));
-      const stepLon = (TILE_RADIUS_NM * STEP_FACTOR) / nmPerDegreeLon;
-      for (let lon = lonMin; lon <= lonMax; lon += stepLon) {
-        const centre = { lat: Math.round(lat * 1000) / 1000, lon: Math.round(lon * 1000) / 1000 };
+      const maxStepLon = (TILE_RADIUS_NM * STEP_FACTOR) / nmPerDegreeLon;
+      const cols = Math.max(1, Math.ceil((lonMax - lonMin) / maxStepLon));
+      const stepLon = (lonMax - lonMin) / cols;
+
+      for (let j = 0; j <= cols; j++) {
+        const centre = {
+          lat: Math.round(lat * 1000) / 1000,
+          lon: Math.round((lonMin + j * stepLon) * 1000) / 1000,
+        };
         tiles.push({ id: `${region}:${centre.lat}:${centre.lon}`, region, centre });
       }
     }
@@ -148,7 +158,7 @@ const DEFAULT_MIN_REFRESH_MS = 60_000;
  * tiles every 30 s while the poller serves 8 every 31-55 s, so the rotation
  * never advances, sweeps stay at zero, dormancy never engages, and prune()
  * deletes the rest of the world. Simulated on this very code: 8 rotation
- * tiles out of 413 in two hours.
+ * tiles out of 413 in two hours — the grid had 413 tiles then, 546 now.
  */
 const ROTATION_SHARE = 0.5;
 
@@ -169,7 +179,11 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
   const emptyStreak = new Map<string, number>();
   const dormant = new Set<string>();
   const byId = new Map(tiles.map((t) => [t.id, t]));
-  /** Insertion order matters: the newest request is served first. */
+  /**
+   * Camera requests, oldest at the front. next() takes from the BACK and the
+   * cap drops from the front, so the newest request is both served first and
+   * the last to be discarded: an old entry describes a camera that has moved.
+   */
   const priority: string[] = [];
   const lastServedAt = new Map<string, number>();
   let cursor = 0;
@@ -195,7 +209,7 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
       // the fleet decays into the region on screen.
       const priorityQuota = Math.max(1, Math.floor(count * (1 - ROTATION_SHARE)));
       while (out.length < priorityQuota && priority.length > 0) {
-        const id = priority.shift()!;
+        const id = priority.pop()!;
         const tile = byId.get(id);
         if (tile) {
           out.push(tile);

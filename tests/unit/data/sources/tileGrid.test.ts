@@ -32,47 +32,16 @@ describe('buildTileGrid', () => {
     }
   });
 
-  it('leaves no hole in the interior: every cell corner is inside the radius', () => {
-    // What STEP_FACTOR is for. The worst-covered point enclosed between
-    // centres on both axes is the far corner of a cell, so probe exactly
-    // those: for each pair of adjacent rows and each pair of adjacent
-    // centres on the lower row, the midpoint of the four. Measured against
-    // the nearest centre of the WHOLE grid, because the poller fetches every
-    // tile regardless of region — a tile covers a point whatever bbox it
-    // came from.
-    const grid = buildTileGrid();
-    let worst = 0;
-    for (const region of new Set(grid.map((t) => t.region))) {
-      const own = grid.filter((t) => t.region === region);
-      const lats = [...new Set(own.map((t) => t.centre.lat))].sort((a, b) => a - b);
-      for (let i = 0; i + 1 < lats.length; i++) {
-        const lons = own
-          .filter((t) => t.centre.lat === lats[i])
-          .map((t) => t.centre.lon)
-          .sort((a, b) => a - b);
-        const lat = (lats[i]! + lats[i + 1]!) / 2;
-        for (let j = 0; j + 1 < lons.length; j++) {
-          const p = { lat, lon: (lons[j]! + lons[j + 1]!) / 2 };
-          worst = Math.max(worst, Math.min(...grid.map((t) => haversineNm(p, t.centre))));
-        }
-      }
-    }
-    // 227.9 NM, inside the 230 NM radius — the margin is 2 NM, so this is
-    // not a figure to round off: raising STEP_FACTOR opens interior holes.
-    expect(worst).toBeLessThan(TILE_RADIUS_NM);
-    expect(worst).toBeCloseTo(227.9, 1);
-  });
-
-  it('leaves exactly the known edge strip of each box uncovered', () => {
-    // The loops stop at the last centre satisfying <= latMax / <= lonMax, so
-    // the final row and column fall short of the declared edge. This test
-    // does not bless that gap — it measures it, so the figure quoted in the
-    // source comment and in Step 5 of the plan (where extending the grid is
-    // an open decision, because it would change the "exactly 413" count) is
-    // one the suite enforces instead of one somebody typed.
+  it('covers EVERY point of every declared box, edges included', () => {
+    // The whole purpose of the grid. An earlier revision incremented by the
+    // raw step and stopped at the last centre still inside the edge, which
+    // left 276 of 12 883 sampled points — 2.1% of the declared area — beyond
+    // 230 NM from any centre, with holes up to 387 NM.
     //
-    // Same metric as the comment: sampled at 1 degree over the ten declared
-    // boxes, distance to the nearest centre of the whole grid, ANY region.
+    // Sampled at half a degree (~30 NM), finer than any hole the lattice can
+    // produce: the margin is 230 - 216 = 14 NM. Distance is to the nearest
+    // centre of the WHOLE grid, which is how coverage works — the poller
+    // fetches every tile, so a tile covers a point whatever box it came from.
     const boxes: Array<[number, number, number, number]> = [
       [25, 60, -130, -60], // north-america
       [35, 62, -11, 32], // europe
@@ -88,28 +57,49 @@ describe('buildTileGrid', () => {
     const grid = buildTileGrid();
     let sampled = 0;
     let uncovered = 0;
+    let worst = 0;
     for (const [latMin, latMax, lonMin, lonMax] of boxes) {
-      for (let lat = latMin; lat <= latMax; lat++) {
-        for (let lon = lonMin; lon <= lonMax; lon++) {
+      for (let lat = latMin; lat <= latMax + 1e-9; lat += 0.5) {
+        for (let lon = lonMin; lon <= lonMax + 1e-9; lon += 0.5) {
           sampled++;
-          const nearest = Math.min(...grid.map((t) => haversineNm({ lat, lon }, t.centre)));
+          let nearest = Infinity;
+          for (const t of grid) {
+            const d = haversineNm({ lat, lon }, t.centre);
+            if (d < nearest) nearest = d;
+          }
           if (nearest > TILE_RADIUS_NM) uncovered++;
+          if (nearest > worst) worst = nearest;
         }
       }
     }
-    expect(sampled).toBe(12883);
-    expect(uncovered).toBe(276); // 2.1% of the declared area
+    expect(sampled).toBe(50112);
+    expect(uncovered).toBe(0);
+    // 216.25 NM of 230: ~14 NM of margin, so the spacing has nothing to give.
+    // Raising STEP_FACTOR to 1.6 pushes this past the radius and fails here.
+    expect(worst).toBeLessThan(TILE_RADIUS_NM);
+    expect(worst).toBeCloseTo(216.25, 1);
   });
 
-  it('names the cities that fall in the uncovered strip', () => {
-    // Not all ocean, which is why the gap is a plan-level decision and not a
-    // footnote: these three sit inside a declared box and outside every tile.
+  it('builds 546 tiles — the figure every rate and retention budget is derived from', () => {
+    // A sweep is 546 sequential fetches spaced >= 1.5 s, so this number sets
+    // the floor on how stale the far side of the world may be. It is quoted
+    // in the plan; if it moves, those figures have to move with it.
+    const grid = buildTileGrid();
+    expect(grid.length).toBe(546);
+    expect(new Set(grid.map((t) => t.id)).size).toBe(546);
+  });
+
+  it('covers the four places that used to fall outside every tile', () => {
+    // Three cities in the old edge strip, plus the Bay of Bengal point that
+    // sat in the staircase between two rows of the india box: enclosed
+    // between centres on both axes and still 308 NM from the nearest one.
     const grid = buildTileGrid();
     const nearest = (p: { lat: number; lon: number }): number =>
       Math.min(...grid.map((t) => haversineNm(p, t.centre)));
-    expect(nearest({ lat: -25.92, lon: 32.573 })).toBeCloseTo(279.1, 1); // Maputo
-    expect(nearest({ lat: 45.623, lon: 126.25 })).toBeCloseTo(270.4, 1); // Harbin
-    expect(nearest({ lat: 46.161, lon: -60.048 })).toBeCloseTo(316.4, 1); // Cape Breton
+    expect(nearest({ lat: -25.92, lon: 32.573 })).toBeLessThan(TILE_RADIUS_NM); // Maputo
+    expect(nearest({ lat: 45.623, lon: 126.25 })).toBeLessThan(TILE_RADIUS_NM); // Harbin
+    expect(nearest({ lat: 46.161, lon: -60.048 })).toBeLessThan(TILE_RADIUS_NM); // Cape Breton
+    expect(nearest({ lat: 19, lon: 89.75 })).toBeLessThan(TILE_RADIUS_NM); // Bay of Bengal
   });
 });
 
@@ -341,6 +331,103 @@ describe('createTileScheduler', () => {
     let seen = new Set<string>();
     for (let i = 0; i < 10; i++) for (const t of s.next(3)) seen.add(t.id);
     expect(seen.size).toBe(3); // all eventually retried
+  });
+
+  it('serves the NEWEST camera request first', () => {
+    // An older entry describes a camera that has already moved on. Serving it
+    // first refreshes where the viewer WAS before where they are now — the
+    // exact delay viewport priority exists to remove. The queue therefore
+    // grows at the back and is served from the back.
+    const s = createTileScheduler(tiles3());
+    s.prioritise(['a']);
+    s.prioritise(['c']);
+    expect(s.next(1)[0]!.id).toBe('c');
+    expect(s.next(1)[0]!.id).toBe('a');
+  });
+
+  it('drops the OLDEST entry when a moving camera overflows the queue', () => {
+    // The cap and the service order must agree: the newest request is both
+    // the first served and the last discarded. Asserting only the queue
+    // LENGTH leaves which end is dropped free to invert.
+    const many = Array.from({ length: 6 }, (_, i) => ({
+      id: `t${i}`, region: 'r', centre: { lat: i, lon: 0 },
+    }));
+    const s = createTileScheduler(many, { maxPriorityQueue: 3 });
+    s.prioritise(many.map((t) => t.id));
+    expect(s.stats().prioritised).toBe(3);
+    expect([s.next(2)[0]!.id, s.next(2)[0]!.id, s.next(2)[0]!.id]).toEqual(['t5', 't4', 't3']);
+  });
+
+  it('stamps a tile served by the ROTATION, not just one served by priority', () => {
+    // Both paths spend the same budget against a provider that answers 429 to
+    // bursts. Without the stamp on the rotation path, the next camera update
+    // re-queues a tile fetched a second ago — a duplicate HTTP request.
+    let clock = 1_000_000;
+    const s = createTileScheduler(tiles3(), { minRefreshMs: 60_000, now: () => clock });
+    const served = s.next(3).map((t) => t.id);
+    expect(s.stats().rotationServed).toBe(3);
+    clock += 1_000;
+    s.prioritise(served);
+    expect(s.stats().prioritised).toBe(0);
+    clock += 60_000;
+    s.prioritise(served);
+    expect(s.stats().prioritised).toBe(3);
+  });
+
+  it('ignores a tile already waiting in the queue', () => {
+    // Two camera updates overlapping the same tile must not put it in one
+    // batch twice. The sibling test above cannot see this: its setup queues
+    // 'a' once, so the duplicate never has a chance to form.
+    const s = createTileScheduler(tiles3(), { minRefreshMs: 0 });
+    s.prioritise(['a']);
+    s.prioritise(['a']);
+    expect(s.stats().prioritised).toBe(1);
+    expect(s.next(4).filter((t) => t.id === 'a').length).toBe(1);
+  });
+
+  it('runs on the queue cap and freshness window production actually gets', () => {
+    // Task 3 builds the scheduler with no options, so the defaults ARE the
+    // production values — and these two are the literal fix for the
+    // starvation defect (unbounded queue, re-queued on every poll). Every
+    // other scheduler test passes its options explicitly, which leaves the
+    // defaults free to be reverted with the suite still green.
+    const many = Array.from({ length: 40 }, (_, i) => ({
+      id: `t${i}`, region: 'r', centre: { lat: i, lon: 0 },
+    }));
+    let clock = 1_000_000;
+    const s = createTileScheduler(many, { now: () => clock });
+
+    s.prioritise(many.map((t) => t.id));
+    expect(s.stats().prioritised).toBe(12); // maxPriorityQueue
+
+    const served = s.next(2)[0]!.id;
+    expect(served).toBe('t39');
+    s.prioritise([served]);
+    expect(s.stats().prioritised).toBe(11); // 60 s freshness: not re-queued
+    clock += 60_001;
+    s.prioritise([served]);
+    expect(s.stats().prioritised).toBe(12);
+  });
+
+  it('goes dormant on the THIRD empty sweep by default, not the second', () => {
+    const s = createTileScheduler(tiles3());
+    for (let i = 0; i < 2; i++) for (const t of s.next(3)) s.record(t.id, 0);
+    expect(s.stats().dormant).toBe(0);
+    for (const t of s.next(3)) s.record(t.id, 0);
+    expect(s.stats().dormant).toBe(3);
+  });
+
+  it('retries a dormant tile on every twentieth sweep by default', () => {
+    const s = createTileScheduler(tiles3());
+    for (let i = 0; i < 3; i++) for (const t of s.next(3)) s.record(t.id, 0);
+    expect(s.stats().dormant).toBe(3);
+    const resumedAtSweep: number[] = [];
+    for (let poll = 0; poll < 30; poll++) {
+      const got = s.next(3);
+      if (got.length > 0) resumedAtSweep.push(s.stats().sweepsCompleted);
+      for (const t of got) s.record(t.id, 0);
+    }
+    expect(resumedAtSweep).toEqual([20, 40, 60]);
   });
 
   it('wakes a dormant tile that produces again', () => {

@@ -161,7 +161,8 @@ describe('createTileScheduler', () => {
   it('NEVER lets priority starve the rotation', () => {
     // Simulated on this code: with an unbounded priority queue a single
     // viewer asking for 12 tiles every 30 s left the rotation at 8 tiles out
-    // of 413 in two hours, sweeps at zero, and prune() deleting the world.
+    // of 413 in two hours (the grid had 413 tiles then; it has 546 now),
+    // sweeps at zero, and prune() deleting the world.
     const many = Array.from({ length: 40 }, (_, i) => ({
       id: `t${i}`, region: 'r', centre: { lat: i, lon: 0 },
     }));
@@ -296,7 +297,7 @@ export interface Tile {
 /**
  * Bounding boxes where terrestrial ADS-B receivers actually exist.
  *
- * The planet would need ~1060 tiles of this radius; these regions need ~413,
+ * The planet would need ~1400 tiles of this radius; these regions need 546,
  * and the rest is open ocean where no volunteer receiver listens. This is a
  * statement about where the data comes from, not about where aircraft fly:
  * measured on a live snapshot, the North Atlantic held 0.1% of traffic and
@@ -405,7 +406,7 @@ const DEFAULT_MIN_REFRESH_MS = 60_000;
  * tiles every 30 s while the poller serves 8 every 31-55 s, so the rotation
  * never advances, sweeps stay at zero, dormancy never engages, and prune()
  * deletes the rest of the world. Simulated on this very code: 8 rotation
- * tiles out of 413 in two hours.
+ * tiles out of 413 in two hours — the grid had 413 tiles then, 546 now.
  */
 const ROTATION_SHARE = 0.5;
 
@@ -541,16 +542,18 @@ EOF
 npx tsx probe-grid.mts && rm probe-grid.mts
 ```
 
-Expected: **esattamente 413 tile**, con questa distribuzione (la funzione è deterministica, quindi il confronto è esatto):
+Expected: **esattamente 546 tile**, con questa distribuzione (la funzione è deterministica, quindi il confronto è esatto):
 
 ```
-oceania 77 | north-america 71 | south-america 69 | southeast-asia 41
-east-asia 39 | europe 35 | india 26 | north-africa 26 | gulf 20 | southern-africa 9
+oceania 98 | north-america 87 | south-america 87 | southeast-asia 54 | east-asia 51
+europe 47 | north-africa 39 | india 37 | gulf 30 | southern-africa 16
 ```
 
 Le regioni più numerose sono quelle con le bounding box più larghe, non quelle con più traffico: `europe` è sesta con 35 tile ed è corretto così. **Non** interrogare adsb.lol in questo passo: la griglia si verifica senza rete.
 
-> **Questione aperta, da decidere a livello di piano (non nel Task 2).** I cicli di `buildTileGrid` si fermano all'ultimo centro che soddisfa `<= latMax` / `<= lonMax`: l'ultima riga e l'ultima colonna cadono fino a uno step prima del bordo dichiarato, e la striscia oltre non è interrogata da nessuna tile. La spaziatura in sé è corretta — il punto peggiore racchiuso fra centri su entrambi gli assi dista 227,9 NM, dentro i 230 NM di raggio — il difetto è solo il bordo. Campionando a 1 grado le dieci bounding box, **276 punti su 12883 (2,1%)** dell'area dichiarata restano oltre 230 NM dal centro più vicino dell'**intera** griglia: buchi fino a 387 NM a -20,33 (`southern-africa`) e 363 NM a -10,179 (`oceania`); e non è solo oceano: Maputo (-25,920, 32,573) a 279 NM, Harbin a 270 NM, Cape Breton a 316 NM stanno dentro la bbox e fuori da ogni tile, quindi non verranno mai fetchati. (La metrica è la distanza dal centro più vicino di *tutta* la griglia, che è come funziona la copertura: il poller fetcha ogni tile e una tile copre il punto a prescindere dalla regione. Misurando ogni punto contro i soli centri della propria regione il buco risulterebbe 2,97%, ma 107 di quei punti sono in realtà coperti da una tile di una bbox adiacente.) Entrambe le cifre sono asserite da `tests/unit/data/sources/tileGrid.test.ts`. Estendere i cicli oltre il bordo cambia il numero di tile e quindi il criterio «esattamente 413» di questo Step e le cifre derivate (durata dello sweep, finestra di ritenzione). Va deciso qui, non correggendo la griglia in silenzio.
+> **Questione chiusa il 2026-11-19 — la griglia copre ora l'intera area dichiarata.** La revisione precedente incrementava per step grezzo e si fermava all'ultimo centro ancora dentro il bordo, il che lasciava due famiglie di buco. (1) Una striscia lungo il bordo di ogni box, larga fino a uno step intero: 276 punti su 12883 campionati a 1 grado — il 2,1% dell'area dichiarata — oltre 230 NM da qualunque centro, con buchi fino a 387 NM; e non era solo oceano, perché Maputo (279 NM), Harbin (270 NM) e Cape Breton (316 NM) stavano dentro una bbox e fuori da ogni tile. (2) Una scalinata fra righe: lo step in longitudine dipende dalla latitudine, quindi righe contigue finivano a longitudini diverse, e (19 N, 89,75 E) nel Golfo del Bengala — racchiuso fra centri su **entrambi** gli assi, cioè nell'«interno» che il commento dichiarava coperto con 2 NM di margine — distava **308 NM** dal centro più vicino dell'intera griglia.
+>
+> La correzione tratta lo step come un **tetto, non un incremento**: ogni box è diviso nel minor numero di passi interi che restano sotto quel tetto, quindi una riga finisce esattamente su `lonMax` e una colonna esattamente su `latMax`. Misurato sul codice vero, campionando a 0,1 grado: **1 224 760 punti su 1 224 760 entro 230 NM**, il peggiore a 218,0 NM. Maputo passa da 279 a 59,9 NM, Cape Breton da 316 a 69,7 NM, Harbin da 270 a 137,9 NM, il Golfo del Bengala da 308 a 33,2 NM. Il prezzo è **546 tile invece di 413 (+32%)**, e le aggiunte sono in gran parte strisce di bordo sull'acqua, che lo scheduler marca dormienti dopo tre spazzate vuote. Tutte le cifre derivate da 413 — durata dello sweep, finestra di ritenzione, `MIN_RETENTION_S` — sono state aggiornate in questo piano. La copertura è asserita a 0,5 gradi (50 112 punti, zero scoperti) da `tests/unit/data/sources/tileGrid.test.ts`, e `STEP_FACTOR = 1.6` la fa fallire.
 
 - [ ] **Step 6: Verificare ENTRAMBI i programmi e committare**
 
@@ -560,8 +563,8 @@ git add src/data/sources/tileGrid.ts tests/unit/data/sources/tileGrid.test.ts
 git commit -m "feat(data): adaptive tile grid for a feed without a global endpoint
 
 adsb.lol caps every request at 250 NM and no global endpoint survives, so
-the feed is now assembled from ~413 tiles over the regions where ADS-B
-receivers exist. The planet would need ~1060, and the difference is open
+the feed is now assembled from 546 tiles over the regions where ADS-B
+receivers exist. The planet would need ~1400, and the difference is open
 ocean nobody listens to.
 
 The scheduler learns: a tile that comes back empty for several sweeps goes
@@ -971,11 +974,13 @@ const WORLD_KEY = 'world';
 /**
  * Floor and ceiling for the derived retention window.
  *
- * The floor is deliberately below twice the nominal sweep (~413 s): set
+ * The floor is one nominal sweep and a half (546 tiles x 1.5 s = 819 s),
+ * so a tile always comes round before the window expires, and still below
+ * twice that sweep: set
  * higher, it would win in every normal regime and the derivation would be
  * inert — a constant wearing the costume of a measurement.
  */
-const MIN_RETENTION_S = 600;
+const MIN_RETENTION_S = 1_200;
 const MAX_RETENTION_S = 7_200;
 
 let observedSweepSeconds = 0;
@@ -995,7 +1000,7 @@ const pollerStartedMs = Date.now();
 // against it. The feed was dead from second 24.
 //
 // So tiles are fetched STRICTLY ONE AT A TIME, spaced by a fixed interval.
-// 413 tiles at one every 1.5 s is a sweep of about 10 minutes.
+// 546 tiles at one every 1.5 s is a sweep of about 13.7 minutes.
 const TILE_INTERVAL_MS = 1_500;
 /** Tiles taken from the scheduler per cycle; they are fetched sequentially. */
 const TILES_PER_CYCLE = 8;
@@ -1265,7 +1270,7 @@ print('OK: la finestra copre lo sweep' if win >= sweep else 'ROTTO: prune cancel
 "
 ```
 
-Expected: `observedSweepSeconds` si assesta attorno a **600-700 s** (circa 10-11 minuti), che è ciò che una tile ogni 1,5 s impone su 413 tile — sale se adsb.lol torna alle latenze di decine di secondi osservate in passato, perché la latenza si somma alla spaziatura. `fleet.maxAgeSeconds` deve essere **almeno** pari allo sweep osservato. Se la finestra fosse più corta dello sweep, `prune` cancellerebbe ogni aereo prima che la sua tile torni, e la flotta sarebbe una macchia rotante su una frazione della griglia invece del mondo.
+Expected: `observedSweepSeconds` si assesta attorno a **820-900 s** (circa 14-15 minuti), che è ciò che una tile ogni 1,5 s impone su 546 tile — sale se adsb.lol torna alle latenze di decine di secondi osservate in passato, perché la latenza si somma alla spaziatura. `fleet.maxAgeSeconds` deve essere **almeno** pari allo sweep osservato. Se la finestra fosse più corta dello sweep, `prune` cancellerebbe ogni aereo prima che la sua tile torni, e la flotta sarebbe una macchia rotante su una frazione della griglia invece del mondo.
 
 Verificare infine la priorità del viewport:
 
@@ -3235,3 +3240,5 @@ Con questi vincoli il globo ha due velocità, ed è bene saperlo prima di guarda
 | 44 | **Critico.** Il Task 1 era già interamente implementato e committato: ogni suo step chiedeva di sostituire testo identico a quello già presente, e il gate TDD non poteva vedere il rosso che pretendeva. Un esecutore fedele si sarebbe bloccato, o avrebbe rotto il codice apposta | `maxRadiusNm: 250` già in entrambi gli adattatori, commenti già byte-per-byte, test già `toBe(250)`, commit con messaggio identico già presente | Il Task 1 diventa una nota di stato con la sola verifica (`build:all` + suite) e il rimando ai commit che l'hanno realizzato |
 | 45 | `next()` poteva restituire la stessa tile due volte nello stesso batch — una dalla coda prioritaria e una dalla rotazione — e il chiamante fetcha ogni voce: due richieste identiche contro un provider che punisce le raffiche | Lettura del ciclo di rotazione, che non escludeva le tile già in `out` | Deduplica esplicita e test che la verifica (Task 2) |
 | 46 | Nel Task 6 l'ordine era invertito: implementazione allo Step 1, test allo Step 2, e lo Step 3 pretendeva un fallimento impossibile. Lo stesso difetto del Task 1, ma interno al piano | Lettura degli step | Ordine TDD ripristinato: test, rosso, implementazione (Task 6) |
+| 47 | **Critico.** `buildTileGrid` lasciava scoperto il 2,1% dell'area dichiarata, e il commento sorgente sosteneva il contrario per la parte interna («copre l'interno di ogni box, con 2 NM di margine»). Due famiglie di buco: la striscia oltre l'ultimo centro di ogni riga e colonna, e una **scalinata fra righe contigue**, perché lo step in longitudine dipende dalla latitudine e righe vicine finivano a longitudini diverse. Il test che pretendeva di dimostrare la copertura interna campionava solo il punto medio fra longitudini adiacenti **della riga inferiore**, quindi non visitava mai la scalinata: un'asserzione verde che non provava la tesi attribuitale | Sul codice vero: (19 N, 89,75 E) nel Golfo del Bengala, racchiuso fra centri su entrambi gli assi, **308,3 NM** dal centro più vicino dell'intera griglia, contro i 227,9 NM asseriti come caso peggiore. Maputo 279 NM, Harbin 270 NM, Cape Breton 316 NM, tutte dentro una bbox e fuori da ogni tile | Lo step diventa un **tetto anziché un incremento**: ogni box è diviso nel minor numero di passi interi che restano sotto il tetto, quindi righe e colonne finiscono esattamente sul bordo dichiarato. Misurato a 0,1 grado: **1 224 760 punti su 1 224 760 entro 230 NM**, peggiore 218,0 NM. 546 tile invece di 413, e tutte le cifre derivate aggiornate. Il test ora scandisce 50 112 punti e pretende **zero** scoperti (Task 2) |
+| 48 | Quattro comportamenti dello scheduler erano descritti solo dai commenti: mutandoli la suite restava verde. Il commento diceva «la richiesta più recente è servita per prima» mentre `next()` prelevava con `shift()`, cioè la **più vecchia** — con la camera in movimento si rinfrescava la posizione precedente prima di quella inquadrata, il ritardo che la priorità da viewport esiste per eliminare. E i quattro default — i valori che la produzione usa davvero, perché il Task 3 costruisce lo scheduler senza opzioni — non erano esercitati da nessun test: `maxPriorityQueue` e `minRefreshMs` sono la correzione letterale del difetto #38 e potevano essere annullati senza un rosso | Mutation testing sul file del repo, baseline verde: `shift`→`pop` nel cap, rimozione di `lastServedAt.set()` nel ramo di rotazione, rimozione del dedupe `priority.includes(id)`, e i quattro default portati a valori distruttivi — **tutti e sette i mutanti sopravvivevano** | `next()` preleva con `pop()`: il più recente è ora sia il primo servito sia l'ultimo scartato. Sette test nuovi, ognuno verificato per mutazione: dieci mutanti su dieci muoiono (Task 2) |
