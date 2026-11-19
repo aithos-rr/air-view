@@ -39,6 +39,7 @@ adsb.lol ha cambiato policy due volte in due mesi. Lo User-Agent resta (regola d
 - **Ogni richiesta HTTP uscente porta lo `USER_AGENT` del progetto.**
 - **Parsimonia verso i servizi gratuiti.** adsbdb banna a pochi req/s e le richieste durante la penalità la rinnovano: mai oltre 1 richiesta ogni 1,5 s, e dopo un 429 silenzio totale per almeno 6 minuti. Verso adsb.lol: una richiesta alla volta, spaziata di almeno 1,5 s. Misurato dal vivo: raffiche di 8 richieste simultanee, pur restando a 1,07 req/s di media, hanno prodotto HTTP 429 dopo 26 fetch e ucciso il feed. Non è la media che conta, è il pattern.
 - **Mai `git push`, `git checkout main`, `git merge` verso main.** Il deploy è una decisione dell'utente.
+- **Mai `git add -A` né `git add .`.** Questo working tree ha quattro percorsi non tracciati e non ignorati — `.claude/` (1,5 MB di skill locali: in `.gitignore` c'è solo `.claude/settings.local.json`), `.agents/` (536 KB), `mockups/` (40 KB) e `skills-lock.json`, 106 file in tutto — che finirebbero in un commit del branch di prodotto mescolati alle modifiche del task. Ogni commit elenca i file del proprio task uno per uno, come fa il Task 2 Step 6.
 - Nessun dato inventato: un campo sconosciuto è `null`.
 - Messaggi di commit in inglese.
 
@@ -61,7 +62,11 @@ Expected: entrambi gli adattatori dichiarano `maxRadiusNm: 250`, build pulita su
 
 ---
 
-### Task 2: Griglia di tile adattiva
+### Task 2: GIÀ COMPLETATO — NON RIESEGUIRE: griglia di tile adattiva
+
+Questo task è **già implementato e committato** sul branch `v2-design` dai commit `ad2743d`, `430039d`, `69c9302`, `641c9d0` e `8ae051c`. I blocchi di codice e di test qui sotto sono una **fotografia del codice committato** — risincronizzati verbatim il 2026-11-19 con `src/data/sources/tileGrid.ts` e `tests/unit/data/sources/tileGrid.test.ts` — non istruzioni da applicare.
+
+**Non rieseguire gli step originali**: lo Step 1 chiederebbe di creare un file che esiste già, lo Step 2 si aspetta un rosso che non può più esserci, e riscrivere lo Step 3 sopra il file vero reintrodurrebbe difetti già chiusi. Per verificare lo stato basta `npm run build:all && npm test -- --run`.
 
 **Files:**
 - Create: `src/data/sources/tileGrid.ts`
@@ -69,7 +74,7 @@ Expected: entrambi gli adattatori dichiarano `maxRadiusNm: 250`, build pulita su
 
 **Interfaces:**
 - Consumes: `GeoPoint` dal Task 1 del piano precedente
-- Produces: `TILE_RADIUS_NM: number`; `buildTileGrid(): Tile[]` con `Tile = { id: string; region: string; centre: GeoPoint }`; `tilesNear(grid: Tile[], centre: GeoPoint, radiusNm: number): Tile[]`; `createTileScheduler(tiles: Tile[], opts?: SchedulerOptions): TileScheduler` con `TileScheduler.next(count: number): Tile[]`, `prioritise(tileIds: string[]): void`, `record(tileId: string, aircraftCount: number): void`, `stats(): { total: number; productive: number; dormant: number; sweepsCompleted: number; prioritised: number }`. `SchedulerOptions = { dormantAfterEmptySweeps?: number; dormantRetryEvery?: number }`.
+- Produces: `TILE_RADIUS_NM: number`; `buildTileGrid(): Tile[]` con `Tile = { id: string; region: string; centre: GeoPoint }`; `tilesNear(grid: Tile[], centre: GeoPoint, radiusNm: number): Tile[]`; `createTileScheduler(tiles: Tile[], opts?: SchedulerOptions): TileScheduler` con `TileScheduler.next(count: number): Tile[]`, `prioritise(tileIds: string[]): void`, `record(tileId: string, aircraftCount: number): void`, `stats(): { total: number; productive: number; dormant: number; sweepsCompleted: number; prioritised: number; rotationServed: number }`. `SchedulerOptions = { dormantAfterEmptySweeps?: number; dormantRetryEvery?: number; maxPriorityQueue?: number; minRefreshMs?: number; now?: () => number }`. `rotationServed` conta le sole tile servite dalla rotazione, non quelle prioritarie: il Task 3 Step 9 ci deriva la finestra di ritenzione e lo Step 14 ci misura il rate, e contare anche le tile del viewport — rifetchate di continuo — farebbe sembrare la spazzata molto più veloce di com'è.
 
 **Perché adattiva.** La griglia copre riquadri geografici, ma molte tile cadono su oceano aperto dove nessun ricevitore esiste. Misurato dal vivo: una tile sugli Stati Uniti centrali restituisce **660 aerei**, una sul Pacifico orientale **zero**. Interrogare indefinitamente le tile vuote sprecherebbe la gran parte del budget di richieste verso un servizio gratuito. Lo scheduler impara: dopo alcuni passaggi a vuoto una tile diventa dormiente e viene ritentata di rado, perché la copertura ADS-B cambia nel tempo e una tile morta oggi può rianimarsi domani.
 
@@ -111,6 +116,76 @@ describe('buildTileGrid', () => {
       expect(t.centre.lon).toBeLessThanOrEqual(180);
     }
   });
+
+  it('covers EVERY point of every declared box, edges included', () => {
+    // The whole purpose of the grid. An earlier revision incremented by the
+    // raw step and stopped at the last centre still inside the edge, which
+    // left 276 of 12 883 sampled points — 2.1% of the declared area — beyond
+    // 230 NM from any centre, with holes up to 387 NM.
+    //
+    // Sampled at half a degree (~30 NM), finer than any hole the lattice can
+    // produce: the margin is 230 - 216 = 14 NM. Distance is to the nearest
+    // centre of the WHOLE grid, which is how coverage works — the poller
+    // fetches every tile, so a tile covers a point whatever box it came from.
+    const boxes: Array<[number, number, number, number]> = [
+      [25, 60, -130, -60], // north-america
+      [35, 62, -11, 32], // europe
+      [20, 46, 100, 146], // east-asia
+      [-10, 22, 95, 128], // southeast-asia
+      [6, 33, 68, 90], // india
+      [12, 32, 34, 60], // gulf
+      [-45, -10, 113, 179], // oceania
+      [-35, 12, -75, -35], // south-america
+      [-35, -20, 16, 33], // southern-africa
+      [28, 42, -9, 45], // north-africa
+    ];
+    const grid = buildTileGrid();
+    let sampled = 0;
+    let uncovered = 0;
+    let worst = 0;
+    for (const [latMin, latMax, lonMin, lonMax] of boxes) {
+      for (let lat = latMin; lat <= latMax + 1e-9; lat += 0.5) {
+        for (let lon = lonMin; lon <= lonMax + 1e-9; lon += 0.5) {
+          sampled++;
+          let nearest = Infinity;
+          for (const t of grid) {
+            const d = haversineNm({ lat, lon }, t.centre);
+            if (d < nearest) nearest = d;
+          }
+          if (nearest > TILE_RADIUS_NM) uncovered++;
+          if (nearest > worst) worst = nearest;
+        }
+      }
+    }
+    expect(sampled).toBe(50112);
+    expect(uncovered).toBe(0);
+    // 216.25 NM of 230: ~14 NM of margin, so the spacing has nothing to give.
+    // Raising STEP_FACTOR to 1.6 pushes this past the radius and fails here.
+    expect(worst).toBeLessThan(TILE_RADIUS_NM);
+    expect(worst).toBeCloseTo(216.25, 1);
+  });
+
+  it('builds 546 tiles — the figure every rate and retention budget is derived from', () => {
+    // A sweep is 546 sequential fetches spaced >= 1.5 s, so this number sets
+    // the floor on how stale the far side of the world may be. It is quoted
+    // in the plan; if it moves, those figures have to move with it.
+    const grid = buildTileGrid();
+    expect(grid.length).toBe(546);
+    expect(new Set(grid.map((t) => t.id)).size).toBe(546);
+  });
+
+  it('covers the four places that used to fall outside every tile', () => {
+    // Three cities in the old edge strip, plus the Bay of Bengal point that
+    // sat in the staircase between two rows of the india box: enclosed
+    // between centres on both axes and still 308 NM from the nearest one.
+    const grid = buildTileGrid();
+    const nearest = (p: { lat: number; lon: number }): number =>
+      Math.min(...grid.map((t) => haversineNm(p, t.centre)));
+    expect(nearest({ lat: -25.92, lon: 32.573 })).toBeLessThan(TILE_RADIUS_NM); // Maputo
+    expect(nearest({ lat: 45.623, lon: 126.25 })).toBeLessThan(TILE_RADIUS_NM); // Harbin
+    expect(nearest({ lat: 46.161, lon: -60.048 })).toBeLessThan(TILE_RADIUS_NM); // Cape Breton
+    expect(nearest({ lat: 19, lon: 89.75 })).toBeLessThan(TILE_RADIUS_NM); // Bay of Bengal
+  });
 });
 
 const tiles3 = () => [
@@ -119,13 +194,60 @@ const tiles3 = () => [
   { id: 'c', region: 'r', centre: { lat: 2, lon: 2 } },
 ];
 
+/**
+ * Great-circle distance, written out independently of the source so the
+ * ordering assertions cannot be satisfied by a shared bug.
+ */
+function haversineNm(a: { lat: number; lon: number }, b: { lat: number; lon: number }): number {
+  const toRad = (d: number): number => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * 3440.065 * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
 describe('tilesNear', () => {
   it('returns the tiles whose centre falls within the radius', () => {
     const grid = buildTileGrid();
-    const near = tilesNear(grid, { lat: 50, lon: 8 }, 400);
+    const radiusNm = 400;
+    const camera = { lat: 50, lon: 8 };
+    const near = tilesNear(grid, camera, radiusNm);
     expect(near.length).toBeGreaterThan(0);
     expect(near.length).toBeLessThan(grid.length);
     expect(near.every((t) => t.region === 'europe')).toBe(true);
+
+    // The radius is the whole point of the function: the provider refuses
+    // anything beyond 250 NM, so a tile returned from outside the asked-for
+    // radius is a request that comes back empty or rejected. Both halves are
+    // asserted against the test's own haversine — nothing inside may be
+    // missing, nothing outside may be present.
+    const returned = new Set(near.map((t) => t.id));
+    for (const t of grid) {
+      const inside = haversineNm(camera, t.centre) <= radiusNm;
+      expect(returned.has(t.id)).toBe(inside);
+    }
+  });
+
+  it('cuts the radius at the right distance in real nautical miles', () => {
+    // Ordering is scale-free: a distance function off by a constant factor
+    // sorts identically and would pass every other test here. The cut does
+    // not. One degree of latitude is 60 NM by definition, so these two tiles
+    // sit at 228 NM and 240 NM from the camera: with a 230 NM radius the
+    // first is in and the second is out, and no rescaling of the source's
+    // distance can satisfy both. Load-bearing because 250 NM is the
+    // provider's hard ceiling — a 13% underestimate would ask for tiles
+    // 264 NM away and get nothing back.
+    const camera = { lat: 0, lon: 0 };
+    const grid = [
+      { id: 'in', region: 'r', centre: { lat: 3.8, lon: 0 } }, // 228 NM
+      { id: 'out', region: 'r', centre: { lat: 4.0, lon: 0 } }, // 240 NM
+    ];
+    expect(haversineNm(camera, grid[0]!.centre)).toBeCloseTo(228, 0);
+    expect(haversineNm(camera, grid[1]!.centre)).toBeCloseTo(240, 0);
+
+    expect(tilesNear(grid, camera, TILE_RADIUS_NM).map((t) => t.id)).toEqual(['in']);
   });
 
   it('returns nothing over an uncovered ocean', () => {
@@ -133,8 +255,42 @@ describe('tilesNear', () => {
   });
 
   it('orders the nearest tile first', () => {
-    const near = tilesNear(buildTileGrid(), { lat: 50, lon: 8 }, 800);
+    // Load-bearing, not cosmetic: the server prioritises only the first six
+    // tiles of this list. If the order reversed, it would refresh the
+    // farthest tiles inside the radius and leave the region under the camera
+    // as stale as the far side of the planet — the exact failure this
+    // mechanism exists to prevent.
+    const camera = { lat: 50, lon: 8 };
+    const grid = buildTileGrid();
+    const near = tilesNear(grid, camera, 800);
     expect(near.length).toBeGreaterThan(1);
+
+    const distances = near.map((t) => haversineNm(camera, t.centre));
+    for (let i = 1; i < distances.length; i++) {
+      expect(distances[i]!).toBeGreaterThanOrEqual(distances[i - 1]!);
+    }
+    // The head of the list is the nearest tile of the whole grid, not merely
+    // the nearest of some arbitrary subset that happened to come out first.
+    const nearestOfGrid = Math.min(...grid.map((t) => haversineNm(camera, t.centre)));
+    expect(distances[0]!).toBeCloseTo(nearestOfGrid, 6);
+  });
+
+  it('puts the six tiles the server prioritises nearest the camera', () => {
+    // Task 3 calls prioritise(tilesNear(...).slice(0, 6)): those six must be
+    // the six nearest, or the priority queue refreshes the wrong region.
+    const camera = { lat: 50, lon: 8 };
+    const grid = buildTileGrid();
+    const near = tilesNear(grid, camera, 600);
+    expect(near.length).toBeGreaterThan(6);
+
+    const allSorted = grid
+      .map((t) => haversineNm(camera, t.centre))
+      .sort((a, b) => a - b)
+      .slice(0, 6);
+    const head = near.slice(0, 6).map((t) => haversineNm(camera, t.centre));
+    expect(head).toEqual(allSorted);
+    // And they are genuinely close by, not a spread across the radius.
+    expect(head[5]!).toBeLessThan(500);
   });
 });
 
@@ -161,8 +317,7 @@ describe('createTileScheduler', () => {
   it('NEVER lets priority starve the rotation', () => {
     // Simulated on this code: with an unbounded priority queue a single
     // viewer asking for 12 tiles every 30 s left the rotation at 8 tiles out
-    // of 413 in two hours (the grid had 413 tiles then; it has 546 now),
-    // sweeps at zero, and prune() deleting the world.
+    // of 413 in two hours, sweeps at zero, and prune() deleting the world.
     const many = Array.from({ length: 40 }, (_, i) => ({
       id: `t${i}`, region: 'r', centre: { lat: i, lon: 0 },
     }));
@@ -171,6 +326,20 @@ describe('createTileScheduler', () => {
     const served = s.next(8);
     expect(served.length).toBe(8);
     expect(s.stats().rotationServed).toBeGreaterThanOrEqual(4); // half the batch
+  });
+
+  it('gives the rotation its share even when the batch is ONE tile', () => {
+    // A batch of one is the natural shape under a limit of one request every
+    // 1.5 s, and a share cannot be split inside it: floor(1 * 0.5) is 0, and
+    // the old max(1, ...) floor handed every single-tile batch to the
+    // viewport for ever. The share is spread across batches instead.
+    const many = Array.from({ length: 40 }, (_, i) => ({
+      id: `t${i}`, region: 'r', centre: { lat: i, lon: 0 },
+    }));
+    const s = createTileScheduler(many, { minRefreshMs: 0 });
+    s.prioritise(many.slice(0, 12).map((t) => t.id));
+    for (let poll = 0; poll < 12; poll++) s.next(1);
+    expect(s.stats().rotationServed).toBe(6); // half of twelve single-tile polls
   });
 
   it('never returns the same tile twice in one batch', () => {
@@ -263,6 +432,105 @@ describe('createTileScheduler', () => {
     expect(seen.size).toBe(3); // all eventually retried
   });
 
+  it('serves the NEWEST camera request first', () => {
+    // An older entry describes a camera that has already moved on. Serving it
+    // first refreshes where the viewer WAS before where they are now — the
+    // exact delay viewport priority exists to remove. The queue therefore
+    // grows at the back and is served from the back.
+    const s = createTileScheduler(tiles3());
+    s.prioritise(['a']);
+    s.prioritise(['c']);
+    // Batches of two: one tile of each goes to the viewport, so two batches
+    // drain the queue and the ORDER is what is under test here.
+    expect(s.next(2)[0]!.id).toBe('c');
+    expect(s.next(2)[0]!.id).toBe('a');
+  });
+
+  it('drops the OLDEST entry when a moving camera overflows the queue', () => {
+    // The cap and the service order must agree: the newest request is both
+    // the first served and the last discarded. Asserting only the queue
+    // LENGTH leaves which end is dropped free to invert.
+    const many = Array.from({ length: 6 }, (_, i) => ({
+      id: `t${i}`, region: 'r', centre: { lat: i, lon: 0 },
+    }));
+    const s = createTileScheduler(many, { maxPriorityQueue: 3 });
+    s.prioritise(many.map((t) => t.id));
+    expect(s.stats().prioritised).toBe(3);
+    expect([s.next(2)[0]!.id, s.next(2)[0]!.id, s.next(2)[0]!.id]).toEqual(['t5', 't4', 't3']);
+  });
+
+  it('stamps a tile served by the ROTATION, not just one served by priority', () => {
+    // Both paths spend the same budget against a provider that answers 429 to
+    // bursts. Without the stamp on the rotation path, the next camera update
+    // re-queues a tile fetched a second ago — a duplicate HTTP request.
+    let clock = 1_000_000;
+    const s = createTileScheduler(tiles3(), { minRefreshMs: 60_000, now: () => clock });
+    const served = s.next(3).map((t) => t.id);
+    expect(s.stats().rotationServed).toBe(3);
+    clock += 1_000;
+    s.prioritise(served);
+    expect(s.stats().prioritised).toBe(0);
+    clock += 60_000;
+    s.prioritise(served);
+    expect(s.stats().prioritised).toBe(3);
+  });
+
+  it('ignores a tile already waiting in the queue', () => {
+    // Two camera updates overlapping the same tile must not put it in one
+    // batch twice. The sibling test above cannot see this: its setup queues
+    // 'a' once, so the duplicate never has a chance to form.
+    const s = createTileScheduler(tiles3(), { minRefreshMs: 0 });
+    s.prioritise(['a']);
+    s.prioritise(['a']);
+    expect(s.stats().prioritised).toBe(1);
+    expect(s.next(4).filter((t) => t.id === 'a').length).toBe(1);
+  });
+
+  it('runs on the queue cap and freshness window production actually gets', () => {
+    // Task 3 builds the scheduler with no options, so the defaults ARE the
+    // production values — and these two are the literal fix for the
+    // starvation defect (unbounded queue, re-queued on every poll). Every
+    // other scheduler test passes its options explicitly, which leaves the
+    // defaults free to be reverted with the suite still green.
+    const many = Array.from({ length: 40 }, (_, i) => ({
+      id: `t${i}`, region: 'r', centre: { lat: i, lon: 0 },
+    }));
+    let clock = 1_000_000;
+    const s = createTileScheduler(many, { now: () => clock });
+
+    s.prioritise(many.map((t) => t.id));
+    expect(s.stats().prioritised).toBe(12); // maxPriorityQueue
+
+    const served = s.next(2)[0]!.id;
+    expect(served).toBe('t39');
+    s.prioritise([served]);
+    expect(s.stats().prioritised).toBe(11); // 60 s freshness: not re-queued
+    clock += 60_001;
+    s.prioritise([served]);
+    expect(s.stats().prioritised).toBe(12);
+  });
+
+  it('goes dormant on the THIRD empty sweep by default, not the second', () => {
+    const s = createTileScheduler(tiles3());
+    for (let i = 0; i < 2; i++) for (const t of s.next(3)) s.record(t.id, 0);
+    expect(s.stats().dormant).toBe(0);
+    for (const t of s.next(3)) s.record(t.id, 0);
+    expect(s.stats().dormant).toBe(3);
+  });
+
+  it('retries a dormant tile on every twentieth sweep by default', () => {
+    const s = createTileScheduler(tiles3());
+    for (let i = 0; i < 3; i++) for (const t of s.next(3)) s.record(t.id, 0);
+    expect(s.stats().dormant).toBe(3);
+    const resumedAtSweep: number[] = [];
+    for (let poll = 0; poll < 30; poll++) {
+      const got = s.next(3);
+      if (got.length > 0) resumedAtSweep.push(s.stats().sweepsCompleted);
+      for (const t of got) s.record(t.id, 0);
+    }
+    expect(resumedAtSweep).toEqual([20, 40, 60]);
+  });
+
   it('wakes a dormant tile that produces again', () => {
     const s = createTileScheduler(tiles3(), { dormantAfterEmptySweeps: 1, dormantRetryEvery: 1 });
     for (const t of s.next(3)) s.record(t.id, 0);
@@ -317,20 +585,57 @@ const REGIONS: Array<[string, number, number, number, number]> = [
 ];
 
 const NM_PER_DEGREE_LAT = 60;
-/** 1.4 leaves overlap between neighbouring circles, so no gap is left uncovered. */
+/**
+ * 1.4 leaves overlap between neighbouring circles: the far corner of a cell
+ * sits at sqrt(2) * 0.7 * 230 = 227.7 NM from the nearest centre, inside the
+ * 230 NM radius. There is ~2 NM of margin, so this is not a figure to round
+ * off — raising it to 1.6 opens holes the tests below catch.
+ */
 const STEP_FACTOR = 1.4;
 
+/**
+ * Centres on a lattice that INCLUDES both edges of every box.
+ *
+ * The step is a ceiling, not an increment: each box is divided into the
+ * fewest whole steps that stay under it, so a row always ends exactly on
+ * lonMax and a column exactly on latMax. An earlier revision incremented by
+ * the raw step and stopped at the last centre still <= the edge, which left
+ * two kinds of hole:
+ *
+ *  - a strip along the far edge of every box, up to a full step wide. Maputo,
+ *    Harbin and Cape Breton all sat inside a declared box and outside every
+ *    tile.
+ *  - a staircase between rows. The longitude step depends on latitude, so
+ *    adjacent rows ran out at different longitudes: (19 N, 89.75 E) in the
+ *    Bay of Bengal, enclosed between centres on both axes, was 308 NM from
+ *    the nearest centre of the whole grid.
+ *
+ * Both are gone: sampled at 0.1 degrees, all 1 224 760 points of the ten
+ * boxes lie within 230 NM of a centre, the worst at 218.0 NM. The price is
+ * 546 tiles instead of 413 (+32%); the extra ones are mostly edge strips over
+ * water, which the scheduler marks dormant after three empty sweeps.
+ */
 export function buildTileGrid(): Tile[] {
   const tiles: Tile[] = [];
-  const stepLat = (TILE_RADIUS_NM * STEP_FACTOR) / NM_PER_DEGREE_LAT;
+  const maxStepLat = (TILE_RADIUS_NM * STEP_FACTOR) / NM_PER_DEGREE_LAT;
 
   for (const [region, latMin, latMax, lonMin, lonMax] of REGIONS) {
-    for (let lat = latMin; lat <= latMax; lat += stepLat) {
+    const rows = Math.max(1, Math.ceil((latMax - latMin) / maxStepLat));
+    const stepLat = (latMax - latMin) / rows;
+
+    for (let i = 0; i <= rows; i++) {
+      const lat = latMin + i * stepLat;
       // Meridians converge towards the poles: widen the longitude step.
       const nmPerDegreeLon = NM_PER_DEGREE_LAT * Math.max(0.2, Math.cos((lat * Math.PI) / 180));
-      const stepLon = (TILE_RADIUS_NM * STEP_FACTOR) / nmPerDegreeLon;
-      for (let lon = lonMin; lon <= lonMax; lon += stepLon) {
-        const centre = { lat: Math.round(lat * 1000) / 1000, lon: Math.round(lon * 1000) / 1000 };
+      const maxStepLon = (TILE_RADIUS_NM * STEP_FACTOR) / nmPerDegreeLon;
+      const cols = Math.max(1, Math.ceil((lonMax - lonMin) / maxStepLon));
+      const stepLon = (lonMax - lonMin) / cols;
+
+      for (let j = 0; j <= cols; j++) {
+        const centre = {
+          lat: Math.round(lat * 1000) / 1000,
+          lon: Math.round((lonMin + j * stepLon) * 1000) / 1000,
+        };
         tiles.push({ id: `${region}:${centre.lat}:${centre.lon}`, region, centre });
       }
     }
@@ -427,12 +732,26 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
   const emptyStreak = new Map<string, number>();
   const dormant = new Set<string>();
   const byId = new Map(tiles.map((t) => [t.id, t]));
-  /** Insertion order matters: the newest request is served first. */
+  /**
+   * Camera requests, oldest at the front. next() takes from the BACK and the
+   * cap drops from the front, so the newest request is both served first and
+   * the last to be discarded: an old entry describes a camera that has moved.
+   */
   const priority: string[] = [];
   const lastServedAt = new Map<string, number>();
   let cursor = 0;
   let sweeps = 0;
   let rotationServed = 0;
+  /**
+   * The rotation's share cannot be split inside a batch of ONE — and a batch
+   * of one is the natural shape under a limit of one request every 1.5 s.
+   * `Math.floor(1 * 0.5)` is 0, and the `max(1, ...)` floor then handed the
+   * whole batch to the viewport for ever: rotationServed stayed at zero, the
+   * exact starvation ROTATION_SHARE exists to prevent. So the share is spread
+   * ACROSS batches instead — it accrues here and is spent a whole tile at a
+   * time, which makes a one-tile poller alternate.
+   */
+  let priorityCredit = 0;
 
   function isDue(tile: Tile): boolean {
     if (!dormant.has(tile.id)) return true;
@@ -451,15 +770,20 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
       // But only up to a share of the batch — the rest belongs to the
       // rotation, or the globe outside the viewport is never refreshed and
       // the fleet decays into the region on screen.
-      const priorityQuota = Math.max(1, Math.floor(count * (1 - ROTATION_SHARE)));
+      // Credit accrues only when there is something to spend it on, or an
+      // idle queue would bank enough to swallow a later batch whole.
+      if (priority.length > 0) priorityCredit += count * (1 - ROTATION_SHARE);
+      const priorityQuota = Math.min(count, Math.max(0, Math.ceil(priorityCredit)));
       while (out.length < priorityQuota && priority.length > 0) {
-        const id = priority.shift()!;
+        const id = priority.pop()!;
         const tile = byId.get(id);
         if (tile) {
           out.push(tile);
           lastServedAt.set(id, now());
         }
       }
+
+      priorityCredit -= out.length; // only what the queue actually spent
 
       // A tile already taken from the priority queue must not be handed out
       // again by the rotation in the same batch: the caller fetches each
@@ -526,7 +850,7 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
 - [x] **Step 4: Eseguire il test e verificare che passi**
 
 Run: `npx vitest run tests/unit/data/sources/tileGrid.test.ts`
-Expected: PASS, 21 test
+Expected: PASS, 34 test
 
 - [x] **Step 5: Verificare la griglia reale senza fare volume**
 
@@ -549,7 +873,7 @@ oceania 98 | north-america 87 | south-america 87 | southeast-asia 54 | east-asia
 europe 47 | north-africa 39 | india 37 | gulf 30 | southern-africa 16
 ```
 
-Le regioni più numerose sono quelle con le bounding box più larghe, non quelle con più traffico: `europe` è sesta con 35 tile ed è corretto così. **Non** interrogare adsb.lol in questo passo: la griglia si verifica senza rete.
+Le regioni più numerose sono quelle con le bounding box più larghe, non quelle con più traffico: `europe` è sesta con 47 tile ed è corretto così. **Non** interrogare adsb.lol in questo passo: la griglia si verifica senza rete.
 
 > **Questione chiusa il 2026-11-19 — la griglia copre ora l'intera area dichiarata.** La revisione precedente incrementava per step grezzo e si fermava all'ultimo centro ancora dentro il bordo, il che lasciava due famiglie di buco. (1) Una striscia lungo il bordo di ogni box, larga fino a uno step intero: 276 punti su 12883 campionati a 1 grado — il 2,1% dell'area dichiarata — oltre 230 NM da qualunque centro, con buchi fino a 387 NM; e non era solo oceano, perché Maputo (279 NM), Harbin (270 NM) e Cape Breton (316 NM) stavano dentro una bbox e fuori da ogni tile. (2) Una scalinata fra righe: lo step in longitudine dipende dalla latitudine, quindi righe contigue finivano a longitudini diverse, e (19 N, 89,75 E) nel Golfo del Bengala — racchiuso fra centri su **entrambi** gli assi, cioè nell'«interno» che il commento dichiarava coperto con 2 NM di margine — distava **308 NM** dal centro più vicino dell'intera griglia.
 >
@@ -583,13 +907,18 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 Il cambiamento concettuale di questo piano. Con un endpoint globale il server poteva sostituire l'intero payload a ogni fetch; con le tile **nessuna richiesta restituisce il mondo**, quindi il server deve mantenere una flotta cumulativa che le tile aggiornano a pezzi e da cui gli aerei scompaiono per scadenza.
 
 **Files:**
-- Create: `server/fleet.ts`, `server/feedState.ts`
-- Modify: `server/index.ts`
-- Test: `tests/unit/server/fleet.test.ts`, `tests/unit/server/feedState.test.ts`
+- Create: `server/fleet.ts`, `server/feedState.ts`, `server/errorChain.ts`
+- Modify: `server/index.ts`, `src/data/sources/selector.ts`
+- Test: `tests/unit/server/fleet.test.ts`, `tests/unit/server/feedState.test.ts`, `tests/unit/server/errorChain.test.ts`
 
 **Interfaces:**
-- Consumes: `TileScheduler`, `buildTileGrid`, `TILE_RADIUS_NM` dal Task 2; `SourceSelector` dal codice esistente
-- Produces: `createFleet(opts?: FleetOptions): Fleet` con `Fleet.absorb(aircraft: AircraftRaw[], atUnix: number): number`, `Fleet.snapshot(): AircraftRaw[]`, `Fleet.prune(nowUnix: number): number`, `Fleet.size(): number`; `FleetOptions = { maxAgeSeconds?: number }`. `createFeedState(opts?: FeedStateOptions): FeedState` come nel piano precedente, con `FeedHealth.status: 'starting' | 'ok' | 'degraded'`.
+- Consumes: `TileScheduler`, `buildTileGrid`, `TILE_RADIUS_NM` dal Task 2; `SourceSelector` e `UpstreamHttpError` (`status`, `retryAfterSeconds`) dal Task 1
+- Produces: `createFleet(opts?: FleetOptions): Fleet` con `Fleet.absorb(aircraft: AircraftRaw[], atUnix: number): number`, `Fleet.snapshot(): AircraftRaw[]`, `Fleet.prune(nowUnix: number): number`, `Fleet.size(): number`, `Fleet.setMaxAgeSeconds(seconds: number): void`, `Fleet.maxAgeSeconds(): number`; `FleetOptions = { maxAgeSeconds?: number }`. `createFeedState(opts?: FeedStateOptions): FeedState` come nel piano precedente, con `FeedHealth.status: 'starting' | 'ok' | 'degraded'`.
+
+**Semantica di `lastContact` dentro la flotta.** Dal commit 8ae051c `AircraftRaw.lastContact` è `number | null`, e `null` significa «​il provider non ha detto quanto è vecchio questo fix», non «​è fresco». Il Task 7 e il Task 8 poggiano su questa semantica, perciò è dichiarata qui e non solo nel codice.
+
+- **La flotta invecchia su `absorbedAt`, non su `lastContact`.** Ogni record è tenuto insieme all'istante `atUnix` in cui lo abbiamo assorbito, e `prune(nowUnix)` confronta quello. Due ragioni. La finestra di ritenzione misura la cadenza della *nostra* spazzata — quanto passa prima che una tile torni — che è una proprietà del poller e non dell'orologio del provider. E con `lastContact` nullable l'unico modo type-safe di scrivere il vecchio confronto, cioè saltare ciò che non si può confrontare, renderebbe immortale un aereo di staleness ignota. Ne segue che l'appartenenza alla flotta non dipende da timestamp altrui, coerentemente con il principio che il Task 7 enuncia: «il server è l'unica autorità su chi è in volo».
+- **In `absorb` vince il record in arrivo ogni volta che le due età non sono confrontabili.** Se entrambi i `lastContact` sono non-null vince il più recente, com'era già. Se uno dei due è `null` le età non sono ordinabili, e vince il record in arrivo perché è l'informazione fetchata più di recente che abbiamo. Attenzione: `prev.lastContact !== r.lastContact` **non** restringe il null, perché sono entrambi nullable — il confronto va scritto con due controlli espliciti.
 
 - [ ] **Step 1: Scrivere il test della flotta**
 
@@ -600,7 +929,7 @@ import { describe, it, expect } from 'vitest';
 import { createFleet } from '../../../server/fleet';
 import type { AircraftRaw } from '../../../src/types';
 
-function ac(icao: string, lastContact: number, lat = 10): AircraftRaw {
+function ac(icao: string, lastContact: number | null, lat = 10): AircraftRaw {
   return {
     icao24: icao, callsign: 'TST1', longitude: 10, latitude: lat,
     baroAltitudeFt: 30000, velocityKt: 400, headingDeg: 90, onGround: false,
@@ -641,9 +970,13 @@ describe('createFleet', () => {
     expect(f.absorb([ac('a', 100)], 100)).toBe(0); // same timestamp, no change
   });
 
-  it('prunes aircraft not seen within the age window', () => {
+  it('prunes aircraft no tile has reported within the age window', () => {
+    // Ageing is on the moment WE absorbed a record, so two aircraft taken
+    // in by the same batch always age together: 'old' has to arrive in an
+    // earlier sweep or this asserts nothing.
     const f = createFleet({ maxAgeSeconds: 600 });
-    f.absorb([ac('old', 1000), ac('fresh', 1500)], 1500);
+    f.absorb([ac('old', 1000)], 1000);
+    f.absorb([ac('fresh', 1500)], 1500);
     const removed = f.prune(1700);
     expect(removed).toBe(1);
     expect(f.snapshot().map((a) => a.icao24)).toEqual(['fresh']);
@@ -654,6 +987,39 @@ describe('createFleet', () => {
     f.absorb([ac('a', 1000), ac('b', 1100)], 1100);
     expect(f.prune(1200)).toBe(0);
     expect(f.size()).toBe(2);
+  });
+
+  it('absorbs a record whose staleness the provider never stated', () => {
+    // null is "the provider did not say how old this fix is", not "fresh":
+    // an aircraft we cannot date is still an aircraft a tile reported.
+    const f = createFleet();
+    f.absorb([ac('a', null)], 100);
+    expect(f.snapshot().map((x) => x.icao24)).toEqual(['a']);
+    expect(f.snapshot()[0]!.lastContact).toBeNull();
+  });
+
+  it('prunes an undatable record too — it is not immortal', () => {
+    // Ageing on lastContact would have to skip what it cannot compare, and
+    // a record of unknown staleness would then never leave the fleet.
+    const f = createFleet({ maxAgeSeconds: 600 });
+    f.absorb([ac('a', null)], 1000);
+    expect(f.prune(1500)).toBe(0);
+    expect(f.prune(1700)).toBe(1);
+    expect(f.size()).toBe(0);
+  });
+
+  it('lets the incoming record win whenever the two ages are not comparable', () => {
+    // Either side unknown means no ordering exists, so the tie goes to the
+    // batch we fetched last rather than to whatever is already in the map.
+    const f = createFleet();
+    f.absorb([ac('a', null, 10)], 100);
+    expect(f.absorb([ac('a', 150, 20)], 150)).toBe(1);
+    expect(f.snapshot()[0]!.lastContact).toBe(150);
+    expect(f.snapshot()[0]!.latitude).toBe(20);
+
+    f.absorb([ac('b', 150, 10)], 150);
+    expect(f.absorb([ac('b', null, 30)], 200)).toBe(1);
+    expect(f.snapshot().find((x) => x.icao24 === 'b')!.latitude).toBe(30);
   });
 
   it('starts empty', () => {
@@ -687,12 +1053,17 @@ Expected: FAIL — modulo inesistente
 import type { AircraftRaw } from '../src/types.js';
 
 export interface FleetOptions {
-  /** An aircraft not seen again within this window is dropped. */
+  /** An aircraft no tile has reported again within this window is dropped. */
   maxAgeSeconds?: number;
 }
 
 export interface Fleet {
-  /** @returns how many records this batch created or updated. */
+  /**
+   * @param atUnix when WE fetched this batch. It is stored next to each
+   *   record and is the clock prune() ages on, so fleet membership never
+   *   depends on the provider's own timestamps.
+   * @returns how many records this batch created or updated.
+   */
   absorb(aircraft: AircraftRaw[], atUnix: number): number;
   snapshot(): AircraftRaw[];
   /** @returns how many records were removed. */
@@ -719,32 +1090,52 @@ const DEFAULT_MAX_AGE_SECONDS = 900;
  *
  * Tiles overlap by design, so the same aircraft arrives more than once per
  * sweep — sometimes with an older fix. A staler record never overwrites a
- * fresher one.
+ * fresher one; when either side's age is unknown, the record we just
+ * fetched wins.
  */
 export function createFleet(opts: FleetOptions = {}): Fleet {
   let maxAgeSeconds = opts.maxAgeSeconds ?? DEFAULT_MAX_AGE_SECONDS;
-  const byIcao = new Map<string, AircraftRaw>();
+  // Each record is kept with the moment WE absorbed it. The provider does
+  // not supply that, and it is what the retention window is measured on.
+  const byIcao = new Map<string, { record: AircraftRaw; absorbedAt: number }>();
 
   return {
-    absorb(aircraft, _atUnix) {
+    absorb(aircraft, atUnix) {
       let changed = 0;
       for (const ac of aircraft) {
         const prev = byIcao.get(ac.icao24);
-        if (prev && prev.lastContact >= ac.lastContact) continue;
-        byIcao.set(ac.icao24, ac);
+        // Since 8ae051c lastContact is `number | null`, where null means
+        // "the provider did not say how stale this fix is" — not "fresh".
+        // Two known ages can be ordered and the older one is dropped; as
+        // soon as one side is unknown they cannot be, and the tie goes to
+        // the batch we just fetched, the later information we hold. Both
+        // null checks are needed: a `!==` between two nullable fields does
+        // not narrow either of them.
+        const prevIsNewer =
+          prev !== undefined &&
+          prev.record.lastContact !== null &&
+          ac.lastContact !== null &&
+          prev.record.lastContact >= ac.lastContact;
+        if (prevIsNewer) continue;
+        byIcao.set(ac.icao24, { record: ac, absorbedAt: atUnix });
         changed += 1;
       }
       return changed;
     },
 
     snapshot() {
-      return [...byIcao.values()];
+      return [...byIcao.values()].map((e) => e.record);
     },
 
     prune(nowUnix) {
       let removed = 0;
-      for (const [icao, ac] of byIcao) {
-        if (nowUnix - ac.lastContact > maxAgeSeconds) {
+      for (const [icao, entry] of byIcao) {
+        // Ageing is on absorbedAt, not on lastContact. The window measures
+        // the cadence of OUR sweep — how long before a tile comes round
+        // again — which is a property of the poller, not of the provider's
+        // clock. And an aircraft whose staleness the provider never stated
+        // would otherwise never age out at all.
+        if (nowUnix - entry.absorbedAt > maxAgeSeconds) {
           byIcao.delete(icao);
           removed += 1;
         }
@@ -770,7 +1161,7 @@ export function createFleet(opts: FleetOptions = {}): Fleet {
 - [ ] **Step 4: Eseguire il test e verificare che passi**
 
 Run: `npx vitest run tests/unit/server/fleet.test.ts`
-Expected: PASS, 7 test
+Expected: PASS, 11 test
 
 - [ ] **Step 5: Scrivere il test di `feedState`**
 
@@ -956,6 +1347,160 @@ export function createFeedState(opts: FeedStateOptions = {}): FeedState {
 Run: `npx vitest run tests/unit/server/feedState.test.ts`
 Expected: PASS, 8 test
 
+- [ ] **Step 8a: Scrivere il test della catena d'errore**
+
+Il difetto #51 lascia un'istruzione esplicita per questo task: il logging deve percorrere la catena `cause` fino alla radice, perche' il `code` di undici sta su `e.cause.cause`. Il Task 1 ha conservato `cause` sull'errore aggregato del selector proprio perche' qui lo si potesse leggere, e il Task 1 ha anche tipizzato `status` e `retryAfterSeconds` su `UpstreamHttpError`: il poller li legge invece di indovinarli da una regex sul messaggio.
+
+Creare `tests/unit/server/errorChain.test.ts`:
+
+```ts
+import { describe, it, expect } from 'vitest';
+import { rootCause, upstreamStatus } from '../../../server/errorChain';
+
+describe('rootCause', () => {
+  it('reads the code from the deepest link, not from the first', () => {
+    // The shape the Railway egress failure actually had: the selector wraps
+    // the adapter error, which wraps undici's, and only the innermost link
+    // carries the code. Reading e.cause alone logged causeCode: null.
+    const inner = Object.assign(new Error('getaddrinfo ENOTFOUND api.adsb.lol'), {
+      code: 'ENOTFOUND',
+    });
+    const middle = new Error('adsb-lol: fetch failed', { cause: inner });
+    const top = new Error('all usable ADS-B sources failed: adsb-lol: fetch failed', {
+      cause: middle,
+    });
+    expect(rootCause(top)).toEqual({
+      message: 'getaddrinfo ENOTFOUND api.adsb.lol',
+      code: 'ENOTFOUND',
+    });
+  });
+
+  it('falls back to the error itself when there is no cause', () => {
+    expect(rootCause(new Error('all ADS-B sources are in cooldown'))).toEqual({
+      message: 'all ADS-B sources are in cooldown',
+      code: null,
+    });
+  });
+
+  it('survives a non-Error throw', () => {
+    expect(rootCause('boom')).toEqual({ message: 'boom', code: null });
+  });
+
+  it('stops on a cause chain that loops back on itself', () => {
+    const a = new Error('a') as Error & { cause?: unknown };
+    const b = new Error('b', { cause: a });
+    a.cause = b;
+    expect(rootCause(b).message).toBe('a');
+  });
+});
+
+describe('upstreamStatus', () => {
+  it('finds the adapter status and Retry-After under the selector wrapper', () => {
+    const http = Object.assign(new Error('adsb-lol: HTTP 429 (retry after 90s)'), {
+      status: 429,
+      retryAfterSeconds: 90,
+      body: null,
+    });
+    const top = new Error('all usable ADS-B sources failed: adsb-lol: HTTP 429', {
+      cause: http,
+    });
+    expect(upstreamStatus(top)).toEqual({ status: 429, retryAfterSeconds: 90 });
+  });
+
+  it('reports null seconds when the server sent no Retry-After', () => {
+    const http = Object.assign(new Error('adsb-lol: HTTP 429'), {
+      status: 429,
+      retryAfterSeconds: null,
+      body: null,
+    });
+    expect(upstreamStatus(new Error('wrapped', { cause: http }))).toEqual({
+      status: 429,
+      retryAfterSeconds: null,
+    });
+  });
+
+  it('returns null when nothing in the chain is an HTTP failure', () => {
+    expect(upstreamStatus(new Error('no ADS-B source accepts a 10000 NM radius'))).toBeNull();
+  });
+});
+```
+
+- [ ] **Step 8b: Eseguire il test e verificare che fallisca**
+
+Run: `npx vitest run tests/unit/server/errorChain.test.ts`
+Expected: FAIL — modulo inesistente
+
+- [ ] **Step 8c: Creare `server/errorChain.ts`**
+
+```ts
+/**
+ * Readers for the error chain the poller actually receives.
+ *
+ * The selector throws an aggregate Error carrying the original failure as
+ * `cause`, and that failure is itself a wrapper: undici hangs the code an
+ * operator greps for — UND_ERR_CONNECT_TIMEOUT, ENOTFOUND — on
+ * `e.cause.cause`. The handler that read one level logged causeCode: null
+ * throughout the Railway egress outage, the one failure it existed for.
+ */
+
+export interface RootCause {
+  message: string;
+  /** undici's error code, when any link in the chain carried one. */
+  code: string | null;
+}
+
+/** Walks `.cause` to the deepest link, keeping the last message and code seen. */
+export function rootCause(e: unknown): RootCause {
+  let message = e instanceof Error ? e.message : String(e);
+  let code: string | null = null;
+  let current: unknown = e;
+  const seen = new Set<unknown>();
+  while (current !== null && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current); // a chain that loops back must not hang the logger
+    const link = current as { message?: unknown; code?: unknown; cause?: unknown };
+    if (typeof link.message === 'string' && link.message !== '') message = link.message;
+    if (typeof link.code === 'string' && link.code !== '') code = link.code;
+    current = link.cause ?? null;
+  }
+  return { message, code };
+}
+
+export interface UpstreamStatus {
+  status: number;
+  /** Seconds the server asked us to wait, or null when it did not say. */
+  retryAfterSeconds: number | null;
+}
+
+/**
+ * Finds the `UpstreamHttpError` the adapters throw, wherever the selector
+ * buried it. Without it the poller is left matching /\b429\b/ against a
+ * message, next to a `status` and a `Retry-After` the adapter already
+ * parsed and typed.
+ */
+export function upstreamStatus(e: unknown): UpstreamStatus | null {
+  let current: unknown = e;
+  const seen = new Set<unknown>();
+  while (current !== null && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
+    const link = current as { status?: unknown; retryAfterSeconds?: unknown; cause?: unknown };
+    if (typeof link.status === 'number') {
+      return {
+        status: link.status,
+        retryAfterSeconds:
+          typeof link.retryAfterSeconds === 'number' ? link.retryAfterSeconds : null,
+      };
+    }
+    current = link.cause ?? null;
+  }
+  return null;
+}
+```
+
+- [ ] **Step 8d: Eseguire il test e verificare che passi**
+
+Run: `npx vitest run tests/unit/server/errorChain.test.ts`
+Expected: PASS, 7 test
+
 - [ ] **Step 9: Riscrivere il ciclo di aggiornamento in `server/index.ts`**
 
 Rimuovere il blocco della cache artigianale (`const cache = new Map...`, `CACHE_TTL_MS`, `GLOBAL_KEY`, `bboxKey`) e `GLOBAL_SWEEP`. Aggiungere agli import e alle costanti:
@@ -963,6 +1508,7 @@ Rimuovere il blocco della cache artigianale (`const cache = new Map...`, `CACHE_
 ```ts
 import { createFeedState } from './feedState.js';
 import { createFleet } from './fleet.js';
+import { rootCause, upstreamStatus } from './errorChain.js';
 import { buildTileGrid, createTileScheduler, tilesNear, TILE_RADIUS_NM } from '../src/data/sources/tileGrid.js';
 
 const feed = createFeedState();
@@ -974,10 +1520,10 @@ const WORLD_KEY = 'world';
 /**
  * Floor and ceiling for the derived retention window.
  *
- * The floor is one nominal sweep and a half (546 tiles x 1.5 s = 819 s),
- * so a tile always comes round before the window expires, and still below
- * twice that sweep: set
- * higher, it would win in every normal regime and the derivation would be
+ * A nominal sweep is 546 tiles x 1.5 s = 819 s, so this 1200 s floor is
+ * about one and a half of them: a tile always comes round again well before
+ * the window expires. It stays under two nominal sweeps (1638 s) because
+ * above that it would win in every normal regime and the derivation would be
  * inert — a constant wearing the costume of a measurement.
  */
 const MIN_RETENTION_S = 1_200;
@@ -999,15 +1545,49 @@ const pollerStartedMs = Date.now();
 // answered 429 — and so did adsb.fi, because the selector retried the burst
 // against it. The feed was dead from second 24.
 //
-// So tiles are fetched STRICTLY ONE AT A TIME, spaced by a fixed interval.
+// So tiles are fetched STRICTLY ONE AT A TIME, spaced by a fixed interval
+// measured from the previous fetch — across cycle boundaries included.
 // 546 tiles at one every 1.5 s is a sweep of about 13.7 minutes.
 const TILE_INTERVAL_MS = 1_500;
 /** Tiles taken from the scheduler per cycle; they are fetched sequentially. */
 const TILES_PER_CYCLE = 8;
-/** Pause after a cycle, on top of the per-tile spacing. */
+/**
+ * Idle delay before the next cycle starts. It no longer paces requests —
+ * waitForTileSlot() does, counting from the last fetch of the PREVIOUS
+ * cycle — so this can only push requests further apart, never closer. It
+ * stays because a cycle that fetches nothing (suspended after a 429, or an
+ * empty batch) returns at once, and the loop would otherwise spin.
+ */
 const TILE_CYCLE_GAP_MS = 1_000;
-/** After a 429 from a tile fetch, stop asking entirely for this long. */
-const TILE_RATE_LIMIT_COOLDOWN_MS = 300_000;
+/**
+ * Suspension after a 429 that carried NO Retry-After. When the header is
+ * there it wins: httpError.ts has already parsed it into
+ * `retryAfterSeconds`, in seconds or as an HTTP-date, and a guess that
+ * undershoots a number the server stated is how the penalty gets renewed
+ * instead of served.
+ */
+const TILE_RATE_LIMIT_FALLBACK_COOLDOWN_MS = 300_000;
+/**
+ * Bounds on a Retry-After we did not write: 0 would make the suspension a
+ * no-op and the next cycle would renew the ban, while an HTTP-date far
+ * ahead would freeze the feed for hours.
+ */
+const MIN_RATE_LIMIT_COOLDOWN_MS = 60_000;
+const MAX_RATE_LIMIT_COOLDOWN_MS = 3_600_000;
+/**
+ * Deadline for one tile fetch. undici's headersTimeout is 300 s and the
+ * dispatcher above overrides only `connect`, so a single hung tile holds
+ * `cycleInFlight` — and with it the whole feed — for five minutes. 60 s
+ * rather than the 10 s used for the adsbdb lookups (defect #37): adsb.lol
+ * answered in 0.47 s median when last measured but took 52.8 s for one tile
+ * during the congested run, and aborting slow-but-healthy tiles would
+ * starve the fleet instead of protecting it.
+ */
+const TILE_FETCH_TIMEOUT_MS = 60_000;
+/** The adapters already take a `fetchImpl`, so the deadline is injected
+ *  here and no signature changes. */
+const fetchWithTileTimeout: typeof fetch = (input, init) =>
+  fetch(input, { ...init, signal: AbortSignal.timeout(TILE_FETCH_TIMEOUT_MS) });
 ```
 
 **Non esiste alcuna funzione di refresh da sostituire**: il server attuale fa il fetch inline dentro il gestore `/api/states`. Creare questa funzione **dopo** `await app.register(cors, ...)` — deve stare sotto la dichiarazione di `app`, perché il suo corpo chiama `app.log` — e rimuovere il fetch inline dal gestore, che viene riscritto allo Step 10.
@@ -1033,6 +1613,23 @@ async function refreshNextTiles(): Promise<void> {
 }
 
 let tilesSuspendedUntil = 0;
+/** When the last tile fetch was issued. Kept BETWEEN cycles on purpose. */
+let lastTileFetchAtMs = 0;
+/** The last tile failure as thrown: /health reads its chain, not a string. */
+let lastTileFailure: unknown = null;
+
+/**
+ * Waits until TILE_INTERVAL_MS has passed since the last fetch was issued.
+ *
+ * Spacing the tiles only inside a cycle left the boundary between two cycles
+ * TILE_CYCLE_GAP_MS apart — 1 s, under the declared floor of one request
+ * every 1.5 s. Same family as the burst that earned the 429: what gets
+ * punished is the instantaneous pattern, not the average.
+ */
+async function waitForTileSlot(): Promise<void> {
+  const waitMs = lastTileFetchAtMs + TILE_INTERVAL_MS - Date.now();
+  if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+}
 
 async function runCycle(): Promise<void> {
   if (Date.now() < tilesSuspendedUntil) return; // rate-limited: ask nothing
@@ -1045,13 +1642,16 @@ async function runCycle(): Promise<void> {
   // Sequential, spaced. NOT Promise.all: a burst of eight is what earned the
   // 429 that killed the feed in testing, even while the average was inside
   // the ceiling.
-  for (let i = 0; i < batch.length; i++) {
-    const tile = batch[i]!;
-    if (i > 0) await new Promise((r) => setTimeout(r, TILE_INTERVAL_MS));
+  for (const tile of batch) {
+    await waitForTileSlot();
     if (Date.now() < tilesSuspendedUntil) break;
 
+    // Stamped before the fetch, not after: the floor is on the interval
+    // between requests leaving this process, and a tile slower than the
+    // floor already spaces itself.
+    lastTileFetchAtMs = Date.now();
     try {
-      const result = await sources.fetchRegion(tile.centre, TILE_RADIUS_NM);
+      const result = await sources.fetchRegion(tile.centre, TILE_RADIUS_NM, fetchWithTileTimeout);
       fleet.absorb(result.aircraft, Math.floor(result.fetchedAt.getTime() / 1000));
       scheduler.record(tile.id, result.aircraft.length);
       anySuccess = true;
@@ -1060,16 +1660,39 @@ async function runCycle(): Promise<void> {
       // be verifiable rather than believed.
       app.log.info({ tile: tile.id, aircraft: result.aircraft.length }, 'tile fetched');
     } catch (e) {
+      // `msg` is the aggregate, which names every source tried; `root` is the
+      // bottom of the cause chain, where undici puts the code (defect #51).
       const msg = e instanceof Error ? e.message : String(e);
+      const root = rootCause(e);
+      lastTileFailure = e;
       feed.recordFailure(`${tile.id}: ${msg}`);
+
+      const http = upstreamStatus(e);
       // 429 is a first-class state here too, exactly as it is for adsbdb:
       // keep asking during the penalty and it is renewed rather than served.
-      if (/\b429\b/.test(msg)) {
-        tilesSuspendedUntil = Date.now() + TILE_RATE_LIMIT_COOLDOWN_MS;
-        app.log.error({ err: msg, tile: tile.id }, 'tile fetch rate-limited — suspending');
+      // The selector carries only the FIRST source's error as `cause`, so a
+      // 429 raised by the second one survives in the message alone — hence
+      // both checks.
+      if (http?.status === 429 || /\b429\b/.test(msg)) {
+        const retryAfterSeconds = http?.status === 429 ? http.retryAfterSeconds : null;
+        const waitMs =
+          retryAfterSeconds === null
+            ? TILE_RATE_LIMIT_FALLBACK_COOLDOWN_MS
+            : Math.min(
+                MAX_RATE_LIMIT_COOLDOWN_MS,
+                Math.max(MIN_RATE_LIMIT_COOLDOWN_MS, retryAfterSeconds * 1000)
+              );
+        tilesSuspendedUntil = Date.now() + waitMs;
+        app.log.error(
+          { err: msg, code: root.code, tile: tile.id, waitSeconds: Math.round(waitMs / 1000) },
+          'tile fetch rate-limited — suspending'
+        );
         break;
       }
-      app.log.warn({ err: msg, tile: tile.id }, 'tile fetch failed');
+      app.log.warn(
+        { err: msg, code: root.code, cause: root.message, tile: tile.id },
+        'tile fetch failed'
+      );
     }
   }
 
@@ -1149,6 +1772,9 @@ app.get('/api/states', async (req, reply) => {
   const health = feed.health();
   return reply.status(503).send({
     error: health.lastError ?? 'feed warming up',
+    // Same chain as /health: a blank globe is reported here first, and
+    // "fetch failed" with no ENOTFOUND under it carries no diagnosis.
+    code: health.lastError === null ? null : rootCause(lastTileFailure).code,
     status: health.status,
     feedAgeSeconds: health.feedAgeSeconds,
     fleetSize: fleet.size(),
@@ -1172,6 +1798,11 @@ app.get('/health', async (_req, reply) => {
     feedAgeSeconds: health.feedAgeSeconds,
     lastSuccessAt: health.lastSuccessAt,
     lastError: health.lastError,
+    // The code an operator greps for — UND_ERR_CONNECT_TIMEOUT, ENOTFOUND —
+    // sits at the bottom of the cause chain, not on the aggregate error the
+    // selector throws. Tied to lastError's lifecycle, so a cleared failure
+    // cannot leave a stale code behind.
+    lastErrorCode: health.lastError === null ? null : rootCause(lastTileFailure).code,
     fleet: { size: fleet.size(), maxAgeSeconds: fleet.maxAgeSeconds() },
     tiles: {
       ...scheduler.stats(),
@@ -1182,6 +1813,45 @@ app.get('/health', async (_req, reply) => {
 });
 ```
 
+- [ ] **Step 11b: Riscrivere i due commenti che il Task 3 rende falsi**
+
+Il difetto #27 e' esattamente questa classe: un commento che dichiara una causa di guasto non piu' vera manda fuori strada chi indaghera' il guasto successivo. Due blocchi lo diventano nell'istante in cui lo Step 9 atterra.
+
+In `server/index.ts`, il blocco sopra `const sources = createSourceSelector(...)` (oggi righe 34-41, quello che inizia con «Plan 1's single global sweep.» e finisce con «until then this endpoint is known broken.») descrive uno sweep globale che non esiste piu'. Sostituirlo per intero:
+
+```ts
+// The feed is assembled from tiles, not from one global sweep: adsb.lol and
+// adsb.fi both cap at 250 NM (verified live 2026-11-16) and no global
+// endpoint survives (/v2/all -> 400, /api/0/all -> 503). Plan 1's single
+// 10 000 NM request is what answered 502 in production without a single
+// upstream request ever leaving the process — the selector skipped every
+// source on radius. The poller below asks for one TILE_RADIUS_NM tile at a
+// time instead.
+const sources = createSourceSelector([adsbLolSource, adsbFiSource]);
+```
+
+In `src/data/sources/selector.ts`, il commento di `createSourceSelector` sostiene che l'unico chiamante chiede ancora uno sweep da 10 000 NM e che «until then this endpoint is known broken». Sostituire il paragrafo che va da «The radius check is not an optimisation.» a «until then this endpoint is known broken.» con:
+
+```ts
+ * The radius check is not an optimisation. Verified live 2026-11-17: BOTH
+ * providers cap at 250 NM — adsb.lol answers 403 "radius exceeds 250 NM"
+ * above it, adsb.fi answers 400. Asking either for more is a guaranteed
+ * failure that would open its breaker for nothing, and there is no third
+ * source to fall through to. The only caller now stays under that ceiling:
+ * server/index.ts polls one 230 NM tile at a time. The check is what caught
+ * Plan 1's single 10 000 NM sweep — every source skipped on radius, 502 to
+ * the client, not one upstream request — so it stays as the refusal that
+ * happens here rather than at the provider.
+```
+
+Poi verificare che nessuna delle due affermazioni smentite sia sopravvissuta altrove:
+
+```bash
+grep -rn "known broken\|10 000 NM sweep\|GLOBAL_SWEEP" server/ src/
+```
+
+Expected: nessuna occorrenza. Un commento che descrive un guasto ormai risolto costa piu' di nessun commento: e' il difetto #27, che questo piano ha gia' pagato una volta.
+
 - [ ] **Step 12: Avviare il poller dopo il listen**
 
 Nel blocco `try { await app.listen(...) }`, dopo la riga di log:
@@ -1190,8 +1860,10 @@ Nel blocco `try { await app.listen(...) }`, dopo la riga di log:
   // Self-rescheduling loop, NOT setInterval: a cycle can take minutes when
   // the upstream is slow, and a fixed timer would pile cycles on top of one
   // another until the request rate is unbounded.
-  // The per-tile spacing inside runCycle already sets the rate; this gap
-  // only separates one cycle from the next.
+  // waitForTileSlot() sets the rate, and it counts from the last fetch of
+  // the previous cycle, so this delay can only push requests further apart.
+  // It stays because a suspended or empty cycle returns at once and the
+  // loop would otherwise spin.
   const scheduleNextCycle = (): void => {
     const t = setTimeout(() => {
       void refreshNextTiles().finally(scheduleNextCycle);
@@ -1270,7 +1942,17 @@ print('OK: la finestra copre lo sweep' if win >= sweep else 'ROTTO: prune cancel
 "
 ```
 
-Expected: `observedSweepSeconds` si assesta attorno a **820-900 s** (circa 14-15 minuti), che è ciò che una tile ogni 1,5 s impone su 546 tile — sale se adsb.lol torna alle latenze di decine di secondi osservate in passato, perché la latenza si somma alla spaziatura. `fleet.maxAgeSeconds` deve essere **almeno** pari allo sweep osservato. Se la finestra fosse più corta dello sweep, `prune` cancellerebbe ogni aereo prima che la sua tile torni, e la flotta sarebbe una macchia rotante su una frazione della griglia invece del mondo.
+Expected: `observedSweepSeconds` si assesta fra **820 e 1 000 s** (14-17 minuti). Il calcolo, dalle costanti che risultano dopo la spaziatura fra cicli:
+
+- il pavimento e' una tile ogni 1,5 s misurata da `waitForTileSlot`, quindi 546 x 1,5 s = **819 s**. Alla latenza mediana di 0,47 s rimisurata nel difetto #41 ogni fetch entra dentro il proprio slot, quindi e' il pavimento a vincolare;
+- una tile piu' lenta del pavimento si paga per intero, perche' lo slot vale `max(1,5 s, latenza)`. Sulle sei latenze davvero misurate (0,28 / 0,40 / 0,55 / 2,35 / 0,24 / 1,97 s) lo slot medio e' 1,72 s, cioe' **~940 s**;
+- `TILE_CYCLE_GAP_MS` aggiunge al piu' 1 s per ciclo, e solo quando l'ultima tile del ciclo e' stata piu' lenta di 1,5 s: 546/8 ≈ 69 cicli, quindi **≤ 70 s**.
+
+La cifra di 820-900 s che questo piano dichiarava prima era irraggiungibile: con la spaziatura applicata solo `if (i > 0)` un ciclo costava 7 x 1,5 s + 8 x latenza + 1 s, cioe' **785 s a latenza zero** e ~1 040 s alla mediana misurata — un intervallo che l'arrivo in fondo non poteva centrare.
+
+`fleet.maxAgeSeconds` deve essere **almeno** pari allo sweep osservato: a 940 s la finestra derivata vale 1 880 s e lo copre. Se la finestra fosse piu' corta dello sweep, `prune` cancellerebbe ogni aereo prima che la sua tile torni, e la flotta sarebbe una macchia rotante su una frazione della griglia invece del mondo.
+
+Se adsb.lol tornasse alle latenze di decine di secondi osservate in passato lo sweep le seguirebbe (a 28,6 s mediani sono ~4,3 ore) e lo script stamperebbe `ROTTO`, perche' la finestra sbatte contro `MAX_RETENTION_S` = 7 200 s. In quel regime non e' un difetto dello script: e' il tetto che fa il suo mestiere — trattenere aerei per quattro ore e' memoria, non una flotta — ed e' il segnale che la griglia va ridotta o il feed accettato come parziale.
 
 Verificare infine la priorità del viewport:
 
@@ -1294,7 +1976,7 @@ Expected: `rotationServed` **cresce** fra le due letture e `prioritised` resta p
 - [ ] **Step 16: Commit**
 
 ```bash
-git add -A
+git add server/fleet.ts server/feedState.ts server/index.ts tests/unit/server/fleet.test.ts tests/unit/server/feedState.test.ts
 git commit -m "feat(server): cumulative fleet, tile poller and non-blocking health
 
 No single request returns the world any more, so the server keeps a fleet
@@ -1327,7 +2009,7 @@ Il primo: adsbdb risponde **404** per un callsign che non conosce, con corpo `{"
 
 Il secondo, scoperto eseguendo il server contro l'API reale: **adsbdb rate-limita duramente**. Circa 1.190 lookup a 4,8 richieste/s hanno prodotto `HTTP 429 {"response":"rate limited for 300 seconds"}`. Peggio: le richieste emesse *durante* la penalità la rinnovano. Un resolver che rimette in coda su ogni errore continuerebbe a sparare contro il muro e non guarirebbe mai da solo. Il 429 è quindi uno **stato di prima classe**: sospende il pump, con backoff esponenziale, e durante la sospensione non parte alcuna richiesta.
 
-Il terzo: un singolo snapshot contiene fra **5.900 e 12.500 callsign distinti** a seconda dell'ora, e l'insieme cumulativo nell'arco di una giornata è molto maggiore. A una cadenza rispettosa il primo riempimento richiede **ore**, non minuti. Per questo la cache non si costruisce a runtime ma viene **pre-costruita offline** dal Task 6 e caricata con `seed()`; a runtime il pump serve solo per i callsign nuovi, molto lentamente.
+Il terzo: un singolo snapshot contiene fra **5.900 e 12.500 callsign distinti** a seconda dell'ora, e l'insieme cumulativo nell'arco di una giornata è molto maggiore. A una cadenza rispettosa il primo riempimento richiede **ore**, non minuti. Per questo la cache non si costruisce a runtime ma viene **pre-costruita offline** dal Task 5 e caricata con `seed()`; a runtime il pump serve solo per i callsign nuovi, molto lentamente.
 
 - [ ] **Step 1: Scrivere il test che fallisce**
 
@@ -1878,7 +2560,7 @@ Cinque richieste soltanto: è l'unico passo che prova il ramo 404 contro l'API v
 - [ ] **Step 6: Commit**
 
 ```bash
-git add -A
+git add server/routeResolver.ts tests/unit/server/routeResolver.test.ts
 git commit -m "feat(server): route resolver with seeding and 429 backoff
 
 v1's routeLookup ignored the flight number and returned the airline's
@@ -1905,13 +2587,13 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Files:**
 - Create: `scripts/build-route-cache.mjs`
-- Create: `server/data/.gitkeep` (la cache vera viene generata ed è committata)
+- Create: `server/data/route-cache.json` — generato dallo Step 3 e committato. Nessuno step crea un `.gitkeep`: la cartella arriva con il file, e un `git add` di un percorso inesistente farebbe abortire il commit
 - Create: `src/data/completeness.ts`
 - Modify: `server/index.ts`, `tsconfig.server.json`, `package.json`
 - Test: `tests/unit/data/completeness.test.ts`
 
 **Interfaces:**
-- Consumes: `RouteResolver`, `SeedRecord`, `FlightRoute` dal Task 5; `FlightRouteLite` e `makeAircraftRaw` dal Task 1
+- Consumes: `RouteResolver`, `SeedRecord`, `FlightRoute` dal Task 4; `FlightRouteLite` e `makeAircraftRaw` dal piano precedente
 - Produces: `isComplete(ac: AircraftRaw): boolean`; `npm run build:routes`; il file `server/data/route-cache.json` con forma `SeedRecord[]`
 
 **Perché una cache pre-costruita e perché NON è un ritorno a `openflights-routes.json`.** Il file che il Task 6 elimina era sbagliato *per costruzione*: `list[0]` restituiva una rotta che non aveva alcun rapporto col volo richiesto. Questo file è verificato per costruzione: ogni voce è la risposta di adsbdb *per quello specifico callsign*. Al più invecchia — e i numeri di volo di linea sono stabili nel tempo, `BAW274` vola ogni giorno — mentre quello era falso il giorno stesso in cui è stato generato.
@@ -1921,34 +2603,38 @@ Lo script campiona il feed a intervalli nell'arco di ore, perché un singolo sna
 - [ ] **Step 1: Creare `scripts/build-route-cache.mjs`**
 
 ```js
-#!/usr/bin/env node
 // Builds server/data/route-cache.json by asking adsbdb about the callsigns
 // seen in the live feed. Runs for hours on purpose: adsbdb rate-limits hard
 // (~1190 lookups at 4.8 req/s earned a 300 s ban, and requests sent during
 // the penalty renew it). Resumable: re-reading the existing cache and
 // picking up where it stopped is the normal way to use it.
 //
-//   node scripts/build-route-cache.mjs            # default: 4 hours
-//   node scripts/build-route-cache.mjs --hours 8
+// Runs under tsx, never under bare node: the sampler imports the server's
+// tile grid, which is TypeScript, and node on its own answers
+// ERR_MODULE_NOT_FOUND to a .js specifier that resolves to a .ts.
+//
+//   npm run build:routes                 # default: 4 hours
+//   npm run build:routes -- --hours 8
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { buildTileGrid, TILE_RADIUS_NM } from '../src/data/sources/tileGrid.js';
 
 const UA = 'air-view/2.0 (+https://air-view-production.up.railway.app)';
 const OUT = 'server/data/route-cache.json';
 const CALLSIGN_RX = /^[A-Z]{3}[A-Z0-9]+$/;
-// No global endpoint exists: adsb.lol caps at 250 NM. The sampler walks the
-// same tile grid the server uses, so there is one definition to maintain.
-const TILE_RADIUS_NM = 230;
+// Radius and centres are imported, not copied. TILE_RADIUS_NM is the margin
+// under a provider ceiling that has moved twice in two months; a third copy
+// of it here would be the one nobody updates.
+const GRID = buildTileGrid();
 const TILES_URL = (lat, lon) => `https://api.adsb.lol/v2/lat/${lat}/lon/${lon}/dist/${TILE_RADIUS_NM}`;
-// A handful of dense tiles yields most distinct callsigns; measured live, a
-// central-US tile returns ~660 aircraft and an ocean tile returns zero.
-const SAMPLE_TILES = [
-  [40, -90], [37, -97], [34, -84], [41, -74], [33, -112],
-  [50, 8], [51, 0], [48, 2], [52, 13], [41, 12],
-  [35, 139], [31, 121], [25, 55], [13, 100], [1, 104],
-  [-33, 151], [-37, 145], [19, 72], [28, 77], [-23, -46],
-];
+// Tiles per sampling round, taken from the grid in rotation. The grid holds
+// 546 and the courtesy spacing is 1.5 s, so one full walk is ~14 minutes:
+// a round takes the next slice and the cursor carries over, so a long run
+// still covers the world. Unlike the server's poller this has no dormancy,
+// so the price of a single definition is the empty tiles, 1.5 s each.
+const TILES_PER_ROUND = 20;
+let gridCursor = 0;
 
 const hoursArg = process.argv.indexOf('--hours');
 const RUN_HOURS = hoursArg > -1 ? Number(process.argv[hoursArg + 1]) : 4;
@@ -1981,7 +2667,8 @@ function save() {
 
 async function sampleFeed() {
   const out = new Set();
-  for (const [lat, lon] of SAMPLE_TILES) {
+  for (let i = 0; i < TILES_PER_ROUND; i++) {
+    const { lat, lon } = GRID[gridCursor++ % GRID.length].centre;
     try {
       const res = await fetch(TILES_URL(lat, lon), {
         headers: { Accept: 'application/json', 'User-Agent': UA },
@@ -2125,8 +2812,10 @@ console.log(`written to ${OUT} — commit it`);
 Nel blocco `"scripts"`:
 
 ```json
-    "build:routes": "node scripts/build-route-cache.mjs",
+    "build:routes": "tsx scripts/build-route-cache.mjs",
 ```
+
+`tsx` e non `node`: lo script importa `buildTileGrid` e `TILE_RADIUS_NM` da `src/data/sources/tileGrid.ts`, e node da solo non risolve un `.ts` dietro un import `.js` (`ERR_MODULE_NOT_FOUND`). `tsx` è già una dipendenza del progetto, la stessa con cui gira `npm run server`.
 
 - [ ] **Step 3: Lanciare una corsa breve per verificare che funzioni**
 
@@ -2136,7 +2825,7 @@ Nel blocco `"scripts"`:
 pkill -f "tsx watch server/index.ts" || true
 curl -sf localhost:3000/health > /dev/null && echo "ATTENZIONE: un server risponde ancora su :3000 — fermalo prima di proseguire" || echo "nessun server locale attivo, procedo"
 mkdir -p server/data
-node scripts/build-route-cache.mjs --hours 0.05
+npm run build:routes -- --hours 0.05
 ```
 
 **Prima di lanciarlo, verificare che il throttle esista davvero.** È il punto in cui una stesura precedente sparava a 185 req/s mentre il proprio log dichiarava 0,67:
@@ -2401,7 +3090,7 @@ print('esempio:', {k:comp[0][k] for k in ('callsign','registration','modelCode',
 - [ ] **Step 13: Commit**
 
 ```bash
-git add -A
+git add scripts/build-route-cache.mjs server/data/route-cache.json src/data/completeness.ts tests/unit/data/completeness.test.ts server/index.ts tsconfig.server.json package.json
 git commit -m "feat(server): pre-built route cache, wiring and completeness
 
 /api/states now carries a real route and a 'complete' flag, and /health
@@ -2426,7 +3115,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ### Task 6: Rimuovere il lookup rotte falso
 
-Separato dal Task 6 perché un revisore potrebbe accettare le rotte vere e volere una discussione a parte sulla rimozione di 4,2 MB di dati statici.
+Separato dal Task 5 perché un revisore potrebbe accettare le rotte vere e volere una discussione a parte sulla rimozione di 4,2 MB di dati statici.
 
 **Files:**
 - Delete: `src/data/routeLookup.ts`, `public/data/openflights-routes.json`
@@ -2435,12 +3124,12 @@ Separato dal Task 6 perché un revisore potrebbe accettare le rotte vere e voler
 - Modify: `src/types.ts` (rimuove `Route`)
 
 **Interfaces:**
-- Consumes: `FlightRouteLite` dal piano precedente, `makeAircraftRaw` dal Task 1
+- Consumes: `FlightRouteLite` e `makeAircraftRaw` dal piano precedente
 - Produces: `resolveFlight(ac: AircraftRaw): ResolvedFlight | null` — prende l'aereo, non il solo callsign, perché la rotta arriva dal server dentro l'aereo.
 
 - [ ] **Step 1: Sostituire integralmente `tests/unit/data/resolveFlight.test.ts`**
 
-Il test viene **prima** dell'implementazione: invertire l'ordine renderebbe impossibile vedere il rosso, perché dopo la riscrittura del modulo il test nuovo passerebbe subito. Il contenuto è nello Step 2.
+Il test viene **prima** dell'implementazione: invertire l'ordine renderebbe impossibile vedere il rosso, perché dopo la riscrittura del modulo il test nuovo passerebbe subito. Il contenuto è nello Step 4.
 
 - [ ] **Step 2: Eseguire il test e verificare che fallisca**
 
@@ -2569,7 +3258,9 @@ Expected: nessun riferimento residuo, build pulita, test verdi
 - [ ] **Step 8: Commit**
 
 ```bash
-git add -A
+# The two deletions are already staged by the git rm in Step 6. Naming them
+# here would abort the commit: git add fails on a path it can no longer find.
+git add src/data/resolveFlight.ts tests/unit/data/resolveFlight.test.ts tests/unit/data/lookups.test.ts src/data/bootstrap.ts scripts/build-static-data.mjs src/types.ts
 git commit -m "refactor(data): delete the fabricated route lookup
 
 routeLookup returned list[0] for any flight number, so every BA flight
@@ -2591,12 +3282,12 @@ L'ultimo anello della catena che ha prodotto il globo vuoto.
 
 **Files:**
 - Modify: `src/state/aircraftStore.ts`, `src/data/bootstrap.ts`, `src/data/aircraftStream.ts`
-- Modify: `src/globe/geoHelpers.ts`, `src/globe/scene.ts`, e il punto in cui `mountScene` e `bootstrapData` vengono chiamati (cercarlo con `grep -rn "bootstrapData\|mountScene" src/`)
+- Modify: `src/globe/geoHelpers.ts`, `src/globe/scene.ts`, `src/ui/AppShell.tsx` — è `AppShell.tsx` a chiamare `mountScene` e `bootstrapData`, non `src/App.tsx`, che si limita a renderizzare `<AppShell />`
 - Rename: `src/data/openSkyClient.ts` → `src/data/statesClient.ts` (e il suo test)
 - Modify: `tests/unit/state/stores.test.ts`, `tests/unit/data/aircraftStream.test.ts`
 
 **Interfaces:**
-- Consumes: `makeAircraftRaw` dal Task 1
+- Consumes: `makeAircraftRaw` dal piano precedente
 - Produces: `vec3ToLatLon(v: Vector3): { lat, lon }`; `SceneHandle.viewCentre(): ViewCentre`; `fetchStates(bbox?, signal?, view?)`; `StreamOptions.getViewCentre?`; `bootstrapData(getViewCentre?)`. `useAircraftStore` guadagna `feedFetchedAt: number` (sostituisce `fetchedAt`) e `feedAgeSeconds(): number`; `updateBatch(raws, batchFetchedAtUnix)` prende due argomenti e **sostituisce** la flotta anziché fonderla; `removeStale` viene **rimosso**; `StreamOptions.onBatch(aircraft, fetchedAt)` prende due argomenti; `fetchStates` si sposta in `src/data/statesClient.ts` con la stessa firma.
 
 **Il server è l'unica autorità su chi è in volo.** La v1 misurava la staleness lato client contro l'orologio locale, e con un feed congelato cancellava l'intera flotta. La correzione ovvia sarebbe misurarla contro il timestamp del batch — ma con il feed a tile anche quella sarebbe sbagliata: uno sweep completo richiede fra circa 10 minuti al tetto di una richiesta al secondo che il poller impone, e il server dimensiona la propria finestra di ritenzione su quel periodo osservato; una finestra client di 120 s cancellerebbe quasi tutta la flotta appena ricevuta. Il globo tornerebbe quasi vuoto, in forma più mite ma per la stessa ragione.
@@ -2607,7 +3298,7 @@ Qui la finestra client sparisce del tutto: il payload del server **è** il mondo
 
 - [ ] **Step 1: Sostituire il blocco `describe('aircraftStore')` in `tests/unit/state/stores.test.ts`**
 
-Sostituire l'intero blocco `describe('aircraftStore', ...)` esistente con il seguente, lasciando invariati gli altri `describe` del file **e tutti gli import già in cima**. In particolare `makeAircraftRaw` è già importato: l'ha aggiunto il Task 1 Step 3. **Non ri-aggiungerlo**, sarebbe un identificatore duplicato.
+Sostituire l'intero blocco `describe('aircraftStore', ...)` esistente con il seguente, lasciando invariati gli altri `describe` del file **e tutti gli import già in cima**. In particolare `makeAircraftRaw` è già importato da `tests/helpers/aircraft.ts`, dove l'ha messo il piano precedente. **Non ri-aggiungerlo**, sarebbe un identificatore duplicato.
 
 ```ts
 describe('aircraftStore', () => {
@@ -2627,6 +3318,16 @@ describe('aircraftStore', () => {
     store.updateBatch([makeAircraftRaw({ icao24: 'a1', longitude: 0, latitude: 0, lastContact: 1 })], 1);
     store.updateBatch([makeAircraftRaw({ icao24: 'a1', longitude: 1, latitude: 1, lastContact: 2 })], 2);
     expect(useAircraftStore.getState().aircraft.get('a1')?.trail.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('leaves a position with no lastContact out of the trail', () => {
+    // An adapter leaves lastContact null when the provider did not report how
+    // stale the fix is. A point nobody timestamped cannot be ordered against
+    // the others, and a trail point has no room for a null t.
+    const store = useAircraftStore.getState();
+    store.updateBatch([makeAircraftRaw({ icao24: 'a1', longitude: 0, latitude: 0, lastContact: null })], 1);
+    store.updateBatch([makeAircraftRaw({ icao24: 'a1', longitude: 1, latitude: 1, lastContact: 2 })], 2);
+    expect(useAircraftStore.getState().aircraft.get('a1')?.trail).toEqual([]);
   });
 
   it('KEEPS an aircraft whose last fix is ten minutes old', () => {
@@ -2724,7 +3425,12 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
         const trail = prev?.trail ? [...prev.trail] : [];
         // Only real received positions enter the trail — never computed ones.
         if (prev && prev.longitude !== null && prev.latitude !== null && prev.lastContact !== r.lastContact) {
-          trail.push({ lon: prev.longitude, lat: prev.latitude, t: prev.lastContact });
+          // lastContact is null when the provider did not say how stale the fix
+          // is, and the comparison above does not rule that out: both sides are
+          // nullable. A point we cannot timestamp cannot be ordered in the trail.
+          if (prev.lastContact !== null) {
+            trail.push({ lon: prev.longitude, lat: prev.latitude, t: prev.lastContact });
+          }
           if (trail.length > TRAIL_MAX) trail.shift();
         }
         next.set(r.icao24, { ...r, trail });
@@ -2940,11 +3646,21 @@ export async function bootstrapData(getViewCentre?: () => ViewQuery | null): Pro
 
 e nelle opzioni dello stream: `getViewCentre,`.
 
-Infine, in `src/App.tsx` (o dove `mountScene` e `bootstrapData` vengono chiamati), collegare i due: passare `() => sceneHandle.viewCentre()` a `bootstrapData`. Individuare il punto con:
+Infine collegare i due in `src/ui/AppShell.tsx` — non in `src/App.tsx`, che si limita a renderizzare `<AppShell />` e non nomina né `mountScene` né `bootstrapData`. Nell'effect l'handle della scena è già nella variabile locale `handle`; sostituire
 
-```bash
-grep -rn "bootstrapData\|mountScene" src/
+```tsx
+    void bootstrapData().catch((e: unknown) => console.error('bootstrap:', e));
 ```
+
+con
+
+```tsx
+    void bootstrapData(() => handle.viewCentre()).catch((e: unknown) =>
+      console.error('bootstrap:', e)
+    );
+```
+
+Deve essere una closure, non un valore già calcolato: lo stream interroga `getViewCentre` a ogni poll, e passare `handle.viewCentre()` congelerebbe per sempre l'inquadratura del mount — la priorità seguirebbe una camera che non si muove più.
 
 - [ ] **Step 10: Verificare che la priorità arrivi davvero al server**
 
@@ -2972,7 +3688,9 @@ Expected: build pulita, tutti i test verdi. Se la suite non si carica affatto, u
 - [ ] **Step 12: Commit**
 
 ```bash
-git add -A
+# The rename is already staged by the git mv in Step 5: only the new paths
+# can be named here.
+git add src/state/aircraftStore.ts src/data/aircraftStream.ts src/data/bootstrap.ts src/data/statesClient.ts src/globe/geoHelpers.ts src/globe/scene.ts src/ui/AppShell.tsx tests/unit/state/stores.test.ts tests/unit/data/aircraftStream.test.ts tests/unit/data/statesClient.test.ts
 git commit -m "fix(state): stop deleting the fleet when the feed stops
 
 removeStale compared lastContact against the local clock, so a frozen
@@ -3143,7 +3861,7 @@ Expected: `VERIFICATION PASSED`, migliaia di aerei, età del feed plausibile, co
 - [ ] **Step 4: Commit**
 
 ```bash
-git add -A
+git add scripts/verify-feed.mjs package.json
 git commit -m "test: add end-to-end feed verification script
 
 Checks the full chain against the real upstream APIs rather than test
@@ -3173,7 +3891,7 @@ BASE_URL=https://air-view-production.up.railway.app npm run verify:feed
 |---|---|---|---|
 | 26 | **Critico.** Il presupposto dell'intero Piano 1 — uno sweep globale a 10 000 NM — è falso: adsb.lol impone un tetto di 250 NM. Il codice già committato risponde 502 in produzione, e il test unitario che avrebbe dovuto proteggerlo asseriva `>= 10_000` passando verde su mock | `dist=250 → 200`; `dist=251` e oltre → `403 "radius exceeds 250 NM"`. Nessun endpoint globale sopravvive: `/v2/all` → 400, `/api/0/all` → 503 | Tetto corretto a 250, griglia di ~413 tile sulle regioni con ricevitori, flotta cumulativa lato server (Task 1, 2, 3) |
 | 27 | **Critico.** La causa del guasto dichiarata nel codice e nel commit — lo User-Agent — non è più vera. Il commento avrebbe mandato fuori strada chiunque indagasse il prossimo guasto | `UA 'node'`, `'undici'`, `'curl'` e nessun UA → tutti 200 oggi; il 403 residuo è quello del raggio | Commento riscritto con entrambe le fasi datate; lo User-Agent resta per cortesia (Task 1) |
-| 28 | **Critico.** Lo script di pre-seed campionava il feed con lo stesso URL impossibile: `sampleFeed()` avrebbe sollevato 403 a ogni ciclo e la cache sarebbe rimasta vuota | Stesso URL, stesso 403 | Il campionamento percorre venti tile dense, con la stessa cadenza di cortesia (Task 5) |
+| 28 | **Critico.** Lo script di pre-seed campionava il feed con lo stesso URL impossibile: `sampleFeed()` avrebbe sollevato 403 a ogni ciclo e la cache sarebbe rimasta vuota | Stesso URL, stesso 403 | Il campionamento percorre a rotazione la griglia di tile del server, venti tile per giro, con la stessa cadenza di cortesia (Task 5) |
 | 29 | La rinuncia a un callsign dopo tre fallimenti non era permanente nello script: la guardia del ri-campionamento è `cache.has(cs)`, che non veniva mai scritta. Ogni venti minuti lo stesso callsign tornava in coda con il contatore azzerato — 72 richieste sprecate in otto ore per ciascuno | Riproduzione dei frammenti verbatim su quattro cicli: 12 richieste per un solo callsign permanentemente rotto | Il ramo di rinuncia scrive `cache.set(cs, null)`, che sopravvive anche al salvataggio e alla ripartenza (Task 5) |
 | 30 | Il cooldown del resolver era 300 s, ma la misura riportata dal piano stesso dice che il ban era ancora attivo a 300 s e si è sciolto dopo 330 s di silenzio | Incoerenza fra la costante e lo script offline, che già dormiva 360 s | Cooldown portato a 360 s, con il perché accanto alla costante (Task 4) |
 
