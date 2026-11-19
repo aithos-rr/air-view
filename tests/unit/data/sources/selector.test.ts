@@ -115,7 +115,12 @@ describe('createSourceSelector', () => {
     const lol = fakeSource('adsb-lol', 250, async () => emptyResult());
     const fi = fakeSource('adsb-fi', 250, async () => emptyResult());
     const selector = createSourceSelector([lol, fi]);
-    await expect(selector.fetchRegion({ lat: 0, lon: 0 }, 10_000)).rejects.toThrow(/radius/i);
+    // Assert the whole diagnostic payload, not just the word "radius": the
+    // point of this error is that whoever reads it learns which sources were
+    // skipped and why. A loose /radius/i match survives emptying the message.
+    await expect(selector.fetchRegion({ lat: 0, lon: 0 }, 10_000)).rejects.toThrow(
+      'no ADS-B source accepts a 10000 NM radius: adsb-lol (max 250 NM), adsb-fi (max 250 NM)'
+    );
     expect(lol.fetchRegion).not.toHaveBeenCalled();
     expect(fi.fetchRegion).not.toHaveBeenCalled();
   });

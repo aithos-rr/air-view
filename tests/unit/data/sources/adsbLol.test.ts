@@ -9,7 +9,7 @@ function mockOk(body: unknown) {
 describe('adsbLolSource', () => {
   it('sends the project User-Agent — the v1 outage was a missing UA', async () => {
     const fetchImpl = mockOk({ now: 1_716_163_200_000, ac: [] });
-    await adsbLolSource.fetchRegion({ lat: 0, lon: 0 }, 10_000, fetchImpl as unknown as typeof fetch);
+    await adsbLolSource.fetchRegion({ lat: 0, lon: 0 }, 250, fetchImpl as unknown as typeof fetch);
     const init = fetchImpl.mock.calls[0]![1] as RequestInit;
     expect((init.headers as Record<string, string>)['User-Agent']).toBe(USER_AGENT);
   });
@@ -36,7 +36,7 @@ describe('adsbLolSource', () => {
         r: 'G-ZBKA', t: 'B789',
       }],
     });
-    const res = await adsbLolSource.fetchRegion({ lat: 0, lon: 0 }, 10_000, fetchImpl as unknown as typeof fetch);
+    const res = await adsbLolSource.fetchRegion({ lat: 0, lon: 0 }, 250, fetchImpl as unknown as typeof fetch);
     const ac = res.aircraft[0]!;
     expect(ac.icao24).toBe('ad5174');
     expect(ac.callsign).toBe('BAW274');
