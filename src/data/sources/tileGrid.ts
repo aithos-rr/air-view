@@ -34,18 +34,26 @@ const REGIONS: Array<[string, number, number, number, number]> = [
 const NM_PER_DEGREE_LAT = 60;
 /**
  * 1.4 leaves overlap between neighbouring circles: measured against this very
- * grid, the worst point enclosed between centres on both axes is 225.2 NM from
- * the nearest one, inside the 230 NM radius. So the spacing covers the
- * *interior* of every box.
+ * grid, the worst point enclosed between centres on both axes — the far corner
+ * of a cell — is 227.9 NM from the nearest centre, inside the 230 NM radius.
+ * So the spacing covers the *interior* of every box, with 2 NM to spare.
  *
  * KNOWN GAP, not covered: the loops below stop at the last centre that still
  * satisfies `<= latMax` / `<= lonMax`, so the final row and column fall up to
  * one step short of the declared edge and the strip beyond them is never
- * queried. Sampled at 1 degree over the ten boxes, 3.0% of the declared area
- * lies further than 230 NM from any centre — the worst holes are 387 NM at
- * -20,33 (southern-africa) and 363 NM at -10,179 (oceania), and Maputo
- * (-25.920, 32.573) sits 279 NM from its nearest centre, inside the box and
- * outside every tile.
+ * queried. Sampled at 1 degree over the ten boxes, 276 of 12883 points — 2.1%
+ * of the declared area — lie further than 230 NM from the nearest centre of
+ * the whole grid. The worst holes are 387 NM at -20,33 (southern-africa) and
+ * 363 NM at -10,179 (oceania), and it is not all ocean: Maputo (-25.920,
+ * 32.573) sits 279 NM from its nearest centre, Harbin 270 NM, Cape Breton
+ * 316 NM — inside a declared box and outside every tile.
+ *
+ * Both figures are measured against the nearest centre of the WHOLE grid,
+ * which is how coverage actually works: the poller fetches every tile, so a
+ * tile covers a point whatever bounding box it came from. Measuring each point
+ * only against the centres of its own region inflates the gap to 2.97%, all of
+ * the difference falling where two boxes overlap. Both numbers are asserted by
+ * tests/unit/data/sources/tileGrid.test.ts, so neither can drift unnoticed.
  *
  * Deliberately left as is: widening the loops changes the tile count, and 413
  * is the acceptance criterion of Step 5 of the plan and the figure quoted
