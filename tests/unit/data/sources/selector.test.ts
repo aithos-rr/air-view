@@ -10,29 +10,33 @@ function fakeSource(id: string, maxRadiusNm: number, impl: () => Promise<SourceR
 
 describe('createSourceSelector', () => {
   it('returns the primary result and tags it with the source id', async () => {
-    const primary = fakeSource('a', 10_000, async () => emptyResult());
+    const primary = fakeSource('a', 250, async () => emptyResult());
     const selector = createSourceSelector([primary]);
     const res = await selector.fetchRegion({ lat: 0, lon: 0 }, 10);
     expect(res.sourceId).toBe('a');
   });
 
   it('falls through to the secondary when the primary throws', async () => {
-    const primary = fakeSource('a', 10_000, async () => { throw new Error('adsb-lol: HTTP 403'); });
-    const secondary = fakeSource('b', 10_000, async () => emptyResult());
+    const primary = fakeSource('a', 250, async () => { throw new Error('adsb-lol: HTTP 403'); });
+    const secondary = fakeSource('b', 250, async () => emptyResult());
     const selector = createSourceSelector([primary, secondary]);
     const res = await selector.fetchRegion({ lat: 0, lon: 0 }, 10);
     expect(res.sourceId).toBe('b');
   });
 
   it('SKIPS a source whose radius ceiling is below the request', async () => {
-    // adsb.fi caps at 250 NM. Calling it with the 10 000 NM global sweep
-    // would return HTTP 400 and open its breaker for nothing.
-    const small = fakeSource('adsb-fi', 250, async () => emptyResult());
-    const big = fakeSource('adsb-lol', 10_000, async () => emptyResult());
-    const selector = createSourceSelector([small, big]);
-    const res = await selector.fetchRegion({ lat: 0, lon: 0 }, 10_000);
-    expect(small.fetchRegion).not.toHaveBeenCalled();
-    expect(res.sourceId).toBe('adsb-lol');
+    // Deliberately anonymous ceilings: this asserts the selector's own rule,
+    // not a fact about any provider. No real pair can exercise this
+    // fall-through, because BOTH providers cap at 250 NM (adsbLol.ts: 251 NM
+    // and above -> 403; adsbFi.ts: 1000 NM -> 400, 5000/10 000 NM -> 429).
+    // An earlier revision wrote this case with a fake 'adsb-lol' serving
+    // 10 000 NM; it went green on mocks while production returned 502.
+    const narrow = fakeSource('narrow', 250, async () => emptyResult());
+    const wide = fakeSource('wide', 1_000, async () => emptyResult());
+    const selector = createSourceSelector([narrow, wide]);
+    const res = await selector.fetchRegion({ lat: 0, lon: 0 }, 500);
+    expect(narrow.fetchRegion).not.toHaveBeenCalled();
+    expect(res.sourceId).toBe('wide');
   });
 
   it('uses a small-radius source when the request fits it', async () => {
@@ -43,8 +47,8 @@ describe('createSourceSelector', () => {
   });
 
   it('does not retry a failed source while its breaker is open', async () => {
-    const primary = fakeSource('a', 10_000, async () => { throw new Error('boom'); });
-    const secondary = fakeSource('b', 10_000, async () => emptyResult());
+    const primary = fakeSource('a', 250, async () => { throw new Error('boom'); });
+    const secondary = fakeSource('b', 250, async () => emptyResult());
     let clock = 1000;
     const selector = createSourceSelector([primary, secondary], { breakerCooldownMs: 60_000, now: () => clock });
 
@@ -56,8 +60,8 @@ describe('createSourceSelector', () => {
   });
 
   it('retries a failed source once the cooldown has elapsed', async () => {
-    const primary = fakeSource('a', 10_000, async () => { throw new Error('boom'); });
-    const secondary = fakeSource('b', 10_000, async () => emptyResult());
+    const primary = fakeSource('a', 250, async () => { throw new Error('boom'); });
+    const secondary = fakeSource('b', 250, async () => emptyResult());
     let clock = 1000;
     const selector = createSourceSelector([primary, secondary], { breakerCooldownMs: 60_000, now: () => clock });
 
@@ -69,11 +73,11 @@ describe('createSourceSelector', () => {
 
   it('closes the breaker again after a success', async () => {
     let fail = true;
-    const primary = fakeSource('a', 10_000, async () => {
+    const primary = fakeSource('a', 250, async () => {
       if (fail) throw new Error('boom');
       return emptyResult();
     });
-    const secondary = fakeSource('b', 10_000, async () => emptyResult());
+    const secondary = fakeSource('b', 250, async () => emptyResult());
     let clock = 1000;
     const selector = createSourceSelector([primary, secondary], { breakerCooldownMs: 10, now: () => clock });
 
@@ -86,8 +90,8 @@ describe('createSourceSelector', () => {
   });
 
   it('throws an aggregated error when every source fails', async () => {
-    const a = fakeSource('a', 10_000, async () => { throw new Error('adsb-lol: HTTP 403'); });
-    const b = fakeSource('b', 10_000, async () => { throw new Error('adsb-fi: HTTP 500'); });
+    const a = fakeSource('a', 250, async () => { throw new Error('adsb-lol: HTTP 403'); });
+    const b = fakeSource('b', 250, async () => { throw new Error('adsb-fi: HTTP 500'); });
     const selector = createSourceSelector([a, b]);
     await expect(selector.fetchRegion({ lat: 0, lon: 0 }, 10)).rejects.toThrow(/403.*500/s);
   });
@@ -96,7 +100,7 @@ describe('createSourceSelector', () => {
     // On the tick after a failure the source is skipped by its own breaker.
     // Without carrying the reason forward the caller would be told
     // "all sources are in cooldown" instead of the actual 403.
-    const a = fakeSource('a', 10_000, async () => { throw new Error('adsb-lol: HTTP 403'); });
+    const a = fakeSource('a', 250, async () => { throw new Error('adsb-lol: HTTP 403'); });
     let clock = 1000;
     const selector = createSourceSelector([a], { breakerCooldownMs: 60_000, now: () => clock });
     await expect(selector.fetchRegion({ lat: 0, lon: 0 }, 10)).rejects.toThrow(/403/);
@@ -105,8 +109,14 @@ describe('createSourceSelector', () => {
   });
 
   it('reports clearly when every source was skipped for radius', async () => {
-    const small = fakeSource('adsb-fi', 250, async () => emptyResult());
-    const selector = createSourceSelector([small]);
+    // The real roster at the 10 000 NM sweep the caller still asks for: both
+    // providers declare 250 NM, so neither is called and /api/states answers
+    // 502. This is the state Task 3 has to end, not a passing feature.
+    const lol = fakeSource('adsb-lol', 250, async () => emptyResult());
+    const fi = fakeSource('adsb-fi', 250, async () => emptyResult());
+    const selector = createSourceSelector([lol, fi]);
     await expect(selector.fetchRegion({ lat: 0, lon: 0 }, 10_000)).rejects.toThrow(/radius/i);
+    expect(lol.fetchRegion).not.toHaveBeenCalled();
+    expect(fi.fetchRegion).not.toHaveBeenCalled();
   });
 });
