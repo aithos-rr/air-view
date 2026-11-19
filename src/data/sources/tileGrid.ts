@@ -107,6 +107,14 @@ export interface TileScheduler {
   /** Marks tiles as wanted now — typically those under a viewer's camera. */
   prioritise(tileIds: string[]): void;
   record(tileId: string, aircraftCount: number): void;
+  /**
+   * A fetch that failed for a reason attributable to THIS tile.
+   *
+   * Separate from record() because only the caller can tell a tile's own
+   * failure from the whole feed's: a 429 is the provider's global rate
+   * limit and would otherwise put all 546 tiles to sleep at once.
+   */
+  recordFailure(tileId: string): void;
   stats(): {
     total: number;
     productive: number;
@@ -135,9 +143,12 @@ function distanceNm(a: GeoPoint, b: GeoPoint): number {
  * Tiles whose centre lies within `radiusNm` of a point, nearest first.
  *
  * Used to turn a viewer's camera into the set of tiles worth refreshing
- * immediately. A full sweep takes ~10 minutes at adsb.lol's measured
- * latency of ~29 s per tile, so without this the region being looked at
- * would be as stale as the far side of the planet.
+ * immediately. A full sweep is 546 tiles fetched one at a time, at most one
+ * every 1.5 s: 820-1000 s, i.e. 14-17 minutes. The ~10 minutes this comment
+ * used to claim read the pace off a 29 s median latency measured during
+ * congestion; the pace comes from the floor, and 546 x 1.5 s = 819 s is a
+ * floor no latency can beat. Without this the region being looked at would
+ * be as stale as the far side of the planet.
  */
 export function tilesNear(grid: Tile[], centre: GeoPoint, radiusNm: number): Tile[] {
   return grid
@@ -205,6 +216,20 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
     return sweeps % retryEvery === 0;
   }
 
+  /**
+   * One more sweep in which this tile yielded nothing.
+   *
+   * Shared by record(count === 0) and recordFailure() on purpose: an empty
+   * answer and a failed fetch cost the same 1.5 s slot and carry the same
+   * meaning for the rotation. Keeping two streaks would let a tile alternate
+   * between the two and never reach either threshold.
+   */
+  function countBarrenSweep(tileId: string): void {
+    const streak = (emptyStreak.get(tileId) ?? 0) + 1;
+    emptyStreak.set(tileId, streak);
+    if (streak >= dormantAfter) dormant.add(tileId);
+  }
+
   return {
     next(count) {
       const out: Tile[] = [];
@@ -219,7 +244,21 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
       // the fleet decays into the region on screen.
       // Credit accrues only when there is something to spend it on, or an
       // idle queue would bank enough to swallow a later batch whole.
-      if (priority.length > 0) priorityCredit += count * (1 - ROTATION_SHARE);
+      // And it is CAPPED at one batch. "Something to spend it on" is not the
+      // same as "enough to spend it on": in the steady state of one viewer
+      // with a static camera the queue holds about one entry — the six tiles
+      // the server prioritises come due one at a time, prioritise() refusing
+      // the rest for minRefreshMs — so the batch accrued 4 and spent 1, and
+      // the surplus was banked for ever. Measured on this code: after 200
+      // such batches the bank swallowed 10 consecutive batches whole, 0
+      // rotation tiles out of 80, and it grows with uptime. The rotation
+      // stopping is not merely staleness: rotationServed freezes, the sweep
+      // period derived from it in server/index.ts inflates, retention pins at
+      // MAX_RETENTION_S, and prune() deletes every tile outside the viewport
+      // before the rotation returns to it.
+      if (priority.length > 0) {
+        priorityCredit = Math.min(count, priorityCredit + count * (1 - ROTATION_SHARE));
+      }
       const priorityQuota = Math.min(count, Math.max(0, Math.ceil(priorityCredit)));
       while (out.length < priorityQuota && priority.length > 0) {
         const id = priority.pop()!;
@@ -275,10 +314,13 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
         dormant.delete(tileId);
         return;
       }
-      const streak = (emptyStreak.get(tileId) ?? 0) + 1;
-      emptyStreak.set(tileId, streak);
-      if (streak >= dormantAfter) dormant.add(tileId);
+      countBarrenSweep(tileId);
     },
+
+    recordFailure(tileId) {
+      countBarrenSweep(tileId);
+    },
+
 
     stats() {
       return {

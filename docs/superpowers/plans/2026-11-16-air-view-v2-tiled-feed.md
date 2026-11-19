@@ -923,7 +923,7 @@ Il cambiamento concettuale di questo piano. Con un endpoint globale il server po
 - **La flotta invecchia su `absorbedAt`, non su `lastContact`.** Ogni record è tenuto insieme all'istante `atUnix` in cui lo abbiamo assorbito, e `prune(nowUnix)` confronta quello. Due ragioni. La finestra di ritenzione misura la cadenza della *nostra* spazzata — quanto passa prima che una tile torni — che è una proprietà del poller e non dell'orologio del provider. E con `lastContact` nullable l'unico modo type-safe di scrivere il vecchio confronto, cioè saltare ciò che non si può confrontare, renderebbe immortale un aereo di staleness ignota. **In concreto: `absorb` riceve `Math.floor(Date.now() / 1000)`, mai `result.fetchedAt`.** `fetchedAt` non è l'istante del nostro fetch: entrambi gli adattatori lo derivano dal campo `now` della risposta upstream (`src/data/sources/adsbLol.ts`, `src/data/sources/adsbFi.ts`), mentre `prune(nowUnix)` gira su `Date.now()`. Passarlo ad `absorb` metterebbe a confronto due orologi diversi a ogni ciclo, e la deriva di quello del provider allungherebbe o accorcerebbe in silenzio la finestra di ritenzione. Ne segue che l'appartenenza alla flotta non dipende da timestamp altrui, coerentemente con il principio che il Task 7 enuncia: «il server è l'unica autorità su chi è in volo».
 - **In `absorb` vince il record in arrivo ogni volta che le due età non sono confrontabili.** Se entrambi i `lastContact` sono non-null vince il più recente, com'era già. Se uno dei due è `null` le età non sono ordinabili, e vince il record in arrivo perché è l'informazione fetchata più di recente che abbiamo. Attenzione: `prev.lastContact !== r.lastContact` **non** restringe il null, perché sono entrambi nullable — il confronto va scritto con due controlli espliciti.
 
-- [ ] **Step 1: Scrivere il test della flotta**
+- [x] **Step 1: Scrivere il test della flotta**
 
 Creare `tests/unit/server/fleet.test.ts`:
 
@@ -1089,12 +1089,12 @@ describe('createFleet', () => {
 });
 ```
 
-- [ ] **Step 2: Eseguire il test e verificare che fallisca**
+- [x] **Step 2: Eseguire il test e verificare che fallisca**
 
 Run: `npx vitest run tests/unit/server/fleet.test.ts`
 Expected: FAIL — modulo inesistente
 
-- [ ] **Step 3: Creare `server/fleet.ts`**
+- [x] **Step 3: Creare `server/fleet.ts`**
 
 ```ts
 import type { AircraftRaw } from '../src/types.js';
@@ -1222,12 +1222,12 @@ export function createFleet(opts: FleetOptions = {}): Fleet {
 }
 ```
 
-- [ ] **Step 4: Eseguire il test e verificare che passi**
+- [x] **Step 4: Eseguire il test e verificare che passi**
 
 Run: `npx vitest run tests/unit/server/fleet.test.ts`
 Expected: PASS, 14 test
 
-- [ ] **Step 5: Scrivere il test di `feedState`**
+- [x] **Step 5: Scrivere il test di `feedState`**
 
 Creare `tests/unit/server/feedState.test.ts`:
 
@@ -1310,12 +1310,12 @@ describe('createFeedState — health', () => {
 });
 ```
 
-- [ ] **Step 6: Eseguire il test e verificare che fallisca**
+- [x] **Step 6: Eseguire il test e verificare che fallisca**
 
 Run: `npx vitest run tests/unit/server/feedState.test.ts`
 Expected: FAIL — modulo inesistente
 
-- [ ] **Step 7: Creare `server/feedState.ts`**
+- [x] **Step 7: Creare `server/feedState.ts`**
 
 ```ts
 export type FeedStatus = 'starting' | 'ok' | 'degraded';
@@ -1406,12 +1406,12 @@ export function createFeedState(opts: FeedStateOptions = {}): FeedState {
 }
 ```
 
-- [ ] **Step 8: Eseguire il test e verificare che passi**
+- [x] **Step 8: Eseguire il test e verificare che passi**
 
 Run: `npx vitest run tests/unit/server/feedState.test.ts`
 Expected: PASS, 8 test
 
-- [ ] **Step 8a: Scrivere il test della catena d'errore**
+- [x] **Step 8a: Scrivere il test della catena d'errore**
 
 Il difetto #51 lascia un'istruzione esplicita per questo task: il logging deve percorrere la catena `cause` fino alla radice, perche' il `code` di undici sta su `e.cause.cause`. Il Task 1 ha conservato `cause` sull'errore aggregato del selector proprio perche' qui lo si potesse leggere, e il Task 1 ha anche tipizzato `status` e `retryAfterSeconds` su `UpstreamHttpError`: il poller li legge invece di indovinarli da una regex sul messaggio.
 
@@ -1489,12 +1489,12 @@ describe('upstreamStatus', () => {
 });
 ```
 
-- [ ] **Step 8b: Eseguire il test e verificare che fallisca**
+- [x] **Step 8b: Eseguire il test e verificare che fallisca**
 
 Run: `npx vitest run tests/unit/server/errorChain.test.ts`
 Expected: FAIL — modulo inesistente
 
-- [ ] **Step 8c: Creare `server/errorChain.ts`**
+- [x] **Step 8c: Creare `server/errorChain.ts`**
 
 ```ts
 /**
@@ -1560,12 +1560,12 @@ export function upstreamStatus(e: unknown): UpstreamStatus | null {
 }
 ```
 
-- [ ] **Step 8d: Eseguire il test e verificare che passi**
+- [x] **Step 8d: Eseguire il test e verificare che passi**
 
 Run: `npx vitest run tests/unit/server/errorChain.test.ts`
 Expected: PASS, 7 test
 
-- [ ] **Step 8e: Scrivere il test della dormienza che impara dal fallimento**
+- [x] **Step 8e: Scrivere il test della dormienza che impara dal fallimento**
 
 `src/data/sources/tileGrid.ts` è già committato dal Task 2, ma il contratto dello scheduler cambia qui, e va cambiato prima dello Step 9 che lo usa. Motivo: `scheduler.record()` è raggiunto **solo sul ramo di successo**, quindi una tile la cui fetch fallisce sempre non diventa mai dormiente, resta nella rotazione per sempre e consuma uno slot da 1,5 s a ogni spazzata. La dormienza — la ragione per cui lo scheduler esiste — imparerebbe solo dal vuoto, mai dal fallimento.
 
@@ -1626,12 +1626,12 @@ Aggiungere in coda al blocco `describe('createTileScheduler', ...)` di `tests/un
   });
 ```
 
-- [ ] **Step 8f: Eseguire il test e verificare che fallisca**
+- [x] **Step 8f: Eseguire il test e verificare che fallisca**
 
 Run: `npx vitest run tests/unit/data/sources/tileGrid.test.ts`
 Expected: FAIL — `s.recordFailure is not a function` nei quattro test nuovi, i 34 preesistenti verdi.
 
-- [ ] **Step 8g: Aggiungere `recordFailure` a `src/data/sources/tileGrid.ts`**
+- [x] **Step 8g: Aggiungere `recordFailure` a `src/data/sources/tileGrid.ts`**
 
 File già committato: tre modifiche puntuali, non una riscrittura.
 
@@ -1683,12 +1683,12 @@ e sostituire il metodo `record` con questa coppia:
     },
 ```
 
-- [ ] **Step 8h: Eseguire il test e verificare che passi**
+- [x] **Step 8h: Eseguire il test e verificare che passi**
 
 Run: `npx vitest run tests/unit/data/sources/tileGrid.test.ts`
 Expected: PASS, 38 test (34 del Task 2 più i 4 nuovi).
 
-- [ ] **Step 8i: Scrivere il test del 429 citato a memoria**
+- [x] **Step 8i: Scrivere il test del 429 citato a memoria**
 
 Durante il cooldown del breaker **nessuna sorgente viene interrogata**, eppure l'errore aggregato di `selector.ts` interpola `lastError`, che per un 429 contiene ancora `HTTP 429`, e lancia con `cause: causes[0]` dove `causes` è vuoto. Lo Step 9 ne ricava `upstreamStatus(e) === null` e poi `/\b429\b/.test(msg) === true`: un messaggio **stale** riarma la sospensione da rate limit con il cooldown di ripiego di 5 minuti, su un tick in cui non è partita una sola richiesta, e il ciclo successivo può rifarlo. Il poller deve poter distinguere «429 appena ricevuto» da «429 ricordato».
 
@@ -1745,12 +1745,12 @@ Aggiungere a `tests/unit/data/sources/selector.test.ts`, dentro `describe('creat
   });
 ```
 
-- [ ] **Step 8j: Eseguire il test e verificare che fallisca**
+- [x] **Step 8j: Eseguire il test e verificare che fallisca**
 
 Run: `npx vitest run tests/unit/data/sources/selector.test.ts`
 Expected: FAIL — `attempted` è `undefined` e `'cause' in err` è `true`; i 12 test preesistenti restano verdi.
 
-- [ ] **Step 8k: Marcare l'errore aggregato in `src/data/sources/selector.ts`**
+- [x] **Step 8k: Marcare l'errore aggregato in `src/data/sources/selector.ts`**
 
 File già committato. Esportare il tipo sopra `createSourceSelector`:
 
@@ -1793,12 +1793,12 @@ e sostituire il solo blocco del `throw` aggregato:
       }
 ```
 
-- [ ] **Step 8l: Eseguire il test e verificare che passi**
+- [x] **Step 8l: Eseguire il test e verificare che passi**
 
 Run: `npx vitest run tests/unit/data/sources/selector.test.ts`
 Expected: PASS, 15 test (12 preesistenti più i 3 nuovi).
 
-- [ ] **Step 9: Riscrivere il ciclo di aggiornamento in `server/index.ts`**
+- [x] **Step 9: Riscrivere il ciclo di aggiornamento in `server/index.ts`**
 
 Rimuovere il blocco della cache artigianale (`const cache = new Map...`, `CACHE_TTL_MS`, `GLOBAL_KEY`, `bboxKey`) e `GLOBAL_SWEEP`. Aggiungere agli import e alle costanti:
 
@@ -2186,7 +2186,7 @@ async function runCycle(): Promise<void> {
 }
 ```
 
-- [ ] **Step 10: Sostituire il gestore `/api/states`**
+- [x] **Step 10: Sostituire il gestore `/api/states`**
 
 La chiave di lettura è sempre `WORLD_KEY`: il poller scrive lì e un lettore che usasse una chiave derivata dal bbox mancherebbe sempre la cache. Il flag `stale` va **nel corpo**, perché `statesClient.ts` legge solo `res.json()` e un header non lo vedrebbe mai — e il Task 7 lo porta fino allo schermo, altrimenti questo spostamento non compra niente. L'header `x-feed-stale` resta per chi guarda con `curl`, non per il browser.
 
@@ -2270,7 +2270,7 @@ app.get('/api/states', async (req, reply) => {
 
 Nota deliberata: niente fetch sincrono nel gestore. Una tile non restituirebbe comunque il mondo, e un fetch per richiesta verso un servizio gratuito è esattamente il traffico da evitare. Finché il primo ciclo non ha prodotto nulla, l'endpoint risponde 503 dicendo che si sta scaldando.
 
-- [ ] **Step 11: Sostituire il gestore `/health`**
+- [x] **Step 11: Sostituire il gestore `/health`**
 
 ```ts
 app.get('/health', async (_req, reply) => {
@@ -2310,7 +2310,7 @@ app.get('/health', async (_req, reply) => {
 });
 ```
 
-- [ ] **Step 11b: Riscrivere i commenti che il Task 3 rende falsi**
+- [x] **Step 11b: Riscrivere i commenti che il Task 3 rende falsi**
 
 Il difetto #27 e' esattamente questa classe: un commento che dichiara una causa di guasto non piu' vera manda fuori strada chi indaghera' il guasto successivo. Quattro blocchi di codice e un commento di test lo diventano nell'istante in cui lo Step 9 atterra, e vanno riscritti tutti qui: il gate in fondo allo step non puo' passare finche' ne sopravvive uno.
 
@@ -2391,7 +2391,7 @@ grep -rn "known broken\|10 000 NM sweep\|GLOBAL_SWEEP" server/ src/ tests/
 
 Expected: nessuna occorrenza. Il `tests/` nel comando non e' decorativo: «the caller still asks for» viveva proprio li', fuori dal raggio della versione precedente di questo gate, che guardava solo `server/` e `src/`. Un commento che descrive un guasto ormai risolto costa piu' di nessun commento: e' il difetto #27, che questo piano ha gia' pagato una volta.
 
-- [ ] **Step 12: Avviare il poller dopo il listen**
+- [x] **Step 12: Avviare il poller dopo il listen**
 
 Nel blocco `try { await app.listen(...) }`, dopo la riga di log:
 
@@ -2412,7 +2412,7 @@ Nel blocco `try { await app.listen(...) }`, dopo la riga di log:
   void refreshNextTiles().finally(scheduleNextCycle);
 ```
 
-- [ ] **Step 13: Verificare entrambi i programmi**
+- [x] **Step 13: Verificare entrambi i programmi**
 
 ```bash
 npm run build:all && npm test -- --run

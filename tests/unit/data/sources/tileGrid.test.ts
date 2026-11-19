@@ -453,4 +453,166 @@ describe('createTileScheduler', () => {
     s.record('a', 42);
     expect(s.stats().productive).toBeGreaterThanOrEqual(1);
   });
+
+  it('marks a tile dormant when its fetch keeps FAILING, not only when it is empty', () => {
+    // record() is reached only on the poller's success branch, so before
+    // recordFailure() a tile that always failed stayed in the rotation for
+    // ever: one 1.5 s slot per sweep, every sweep, for a tile that never
+    // answers. Dormancy learned from emptiness and never from failure.
+    const s = createTileScheduler(tiles3(), { dormantAfterEmptySweeps: 3 });
+    for (let i = 0; i < 3; i++) s.recordFailure('b');
+    expect(s.stats().dormant).toBe(1);
+    expect(s.stats().productive).toBe(2);
+  });
+
+  it('counts a failure and an empty answer on the SAME streak', () => {
+    // Both mean the tile yielded no aircraft this time round and both cost
+    // the same slot. Two separate counters would let a tile alternate
+    // between failing and answering empty and never reach either threshold.
+    const s = createTileScheduler(tiles3(), { dormantAfterEmptySweeps: 3 });
+    s.record('a', 0);
+    s.recordFailure('a');
+    expect(s.stats().dormant).toBe(0);
+    s.record('a', 0);
+    expect(s.stats().dormant).toBe(1);
+  });
+
+  it('wakes a tile that answers again after failing', () => {
+    // Dormancy stays reversible whatever put the tile to sleep: an outage
+    // on one region is not evidence about the next month.
+    const s = createTileScheduler(tiles3(), { dormantAfterEmptySweeps: 2 });
+    s.recordFailure('c');
+    s.recordFailure('c');
+    expect(s.stats().dormant).toBe(1);
+    s.record('c', 7);
+    expect(s.stats().dormant).toBe(0);
+    expect(s.stats().productive).toBe(3);
+  });
+
+  it('drops a failing tile out of the rotation, which is the point of all this', () => {
+    // The slot is the scarce resource: one request every 1.5 s. A tile that
+    // cannot be fetched has to stop spending one on every sweep.
+    const s = createTileScheduler(tiles3(), {
+      dormantAfterEmptySweeps: 1, dormantRetryEvery: 100, minRefreshMs: 0,
+    });
+    // One full sweep first: isDue() lets a dormant tile through on every
+    // retryEvery-th sweep, and sweep ZERO is one of those — without this the
+    // test would pass for the wrong reason, or fail for one.
+    for (const t of s.next(3)) s.record(t.id, 5);
+    s.recordFailure('b');
+    const served = s.next(3).map((t) => t.id);
+    expect(served).not.toContain('b');
+    expect(served.length).toBe(2);
+  });
+});
+
+describe('createTileScheduler — the priority credit must not become a bank', () => {
+  const sixty = (): Array<{ id: string; region: string; centre: { lat: number; lon: number } }> =>
+    Array.from({ length: 60 }, (_, i) => ({
+      id: `t${i}`,
+      region: 'r',
+      centre: { lat: i % 80, lon: 0 },
+    }));
+
+  /**
+   * The steady state of ONE viewer with a static camera.
+   *
+   * The server prioritises six tiles on every /api/states, and prioritise()
+   * refuses any of them fetched within minRefreshMs — so in the steady state
+   * the tiles come due one at a time and the queue holds about one entry when
+   * next() is called. The queue is non-empty, so credit accrues by
+   * count * (1 - ROTATION_SHARE) = 4, and only the single tile actually served
+   * is ever subtracted. Three tiles of credit per batch, banked for ever.
+   */
+  const starve = (
+    s: ReturnType<typeof createTileScheduler>,
+    tiles: ReturnType<typeof sixty>,
+    batches: number,
+    advance: (ms: number) => void
+  ): void => {
+    for (let i = 0; i < batches; i++) {
+      s.prioritise([tiles[i % tiles.length]!.id]);
+      s.next(8);
+      advance(13_000);
+    }
+  };
+
+  /** Batches in which the rotation received NOTHING, and its overall share. */
+  const panAndMeasure = (
+    s: ReturnType<typeof createTileScheduler>,
+    tiles: ReturnType<typeof sixty>,
+    batches: number,
+    advance: (ms: number) => void
+  ): { starvedBatches: number; rotationTiles: number; servedTiles: number } => {
+    let starvedBatches = 0;
+    let rotationTiles = 0;
+    let servedTiles = 0;
+    for (let b = 0; b < batches; b++) {
+      s.prioritise(tiles.slice(0, 12).map((t) => t.id));
+      const before = s.stats().rotationServed;
+      const batch = s.next(8);
+      const after = s.stats().rotationServed;
+      servedTiles += batch.length;
+      rotationTiles += after - before;
+      if (after === before) starvedBatches += 1;
+      advance(13_000);
+    }
+    return { starvedBatches, rotationTiles, servedTiles };
+  };
+
+  it('does not let an idle-ish queue bank credit that later swallows whole batches', () => {
+    // The defect: priorityCredit accrues on every next() where the queue is
+    // non-empty but only `out.length` is ever subtracted, and nothing caps
+    // the surplus. A viewer with a static camera banks ~3 tiles per batch for
+    // as long as the process has been up; the moment the queue fills again —
+    // a pan, a reload, a second viewer — the bank is spent and the viewport
+    // takes WHOLE batches. That is the starvation ROTATION_SHARE exists to
+    // prevent, and it gets worse the longer the server has run.
+    //
+    // Downstream it is not just staleness: rotationServed freezes, so
+    // sweepSeconds = (elapsedS / rotationServed) * dueTiles inflates,
+    // retention pins at MAX_RETENTION_S, and every tile outside the viewport
+    // is pruned before the rotation returns to it.
+    const tiles = sixty();
+    let clock = 1_000_000;
+    const s = createTileScheduler(tiles, { now: () => clock, minRefreshMs: 0 });
+
+    starve(s, tiles, 200, (ms) => {
+      clock += ms;
+    });
+    const after = panAndMeasure(s, tiles, 10, (ms) => {
+      clock += ms;
+    });
+
+    // Measured on the unfixed scheduler: 10 of 10 batches gave the rotation
+    // zero tiles, 0 of 80 tiles served. One batch may legitimately go wholly
+    // to the viewport — that is one batch of credit, which is the cap.
+    expect(after.starvedBatches).toBeLessThanOrEqual(1);
+    expect(after.rotationTiles / after.servedTiles).toBeGreaterThanOrEqual(0.4);
+  });
+
+  it('serves a long-idle scheduler no worse than a fresh one', () => {
+    // The control that says this is about the BANK and not about a scheduler
+    // that has simply run out of due tiles: the same pan workload on a fresh
+    // scheduler, which has banked nothing.
+    const tiles = sixty();
+    let clock = 1_000_000;
+    const fresh = createTileScheduler(tiles, { now: () => clock, minRefreshMs: 0 });
+    const control = panAndMeasure(fresh, tiles, 10, (ms) => {
+      clock += ms;
+    });
+    expect(control.starvedBatches).toBeLessThanOrEqual(1);
+    expect(control.rotationTiles / control.servedTiles).toBeGreaterThanOrEqual(0.4);
+
+    let clock2 = 1_000_000;
+    const aged = createTileScheduler(tiles, { now: () => clock2, minRefreshMs: 0 });
+    starve(aged, tiles, 200, (ms) => {
+      clock2 += ms;
+    });
+    const agedAfter = panAndMeasure(aged, tiles, 10, (ms) => {
+      clock2 += ms;
+    });
+    // Uptime must not be what decides whether the rotation advances.
+    expect(agedAfter.rotationTiles).toBeGreaterThanOrEqual(control.rotationTiles - 8);
+  });
 });

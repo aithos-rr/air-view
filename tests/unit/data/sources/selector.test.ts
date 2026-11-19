@@ -134,9 +134,10 @@ describe('createSourceSelector', () => {
   });
 
   it('reports clearly when every source was skipped for radius', async () => {
-    // The real roster at the 10 000 NM sweep the caller still asks for: both
-    // providers declare 250 NM, so neither is called and /api/states answers
-    // 502. This is the state Task 3 has to end, not a passing feature.
+    // The real roster against a radius no caller asks for any more: both
+    // providers declare 250 NM, so neither is called. This is where Plan 1's
+    // 502 came from, kept as a regression test now that the poller stays
+    // under the ceiling.
     const lol = fakeSource('adsb-lol', 250, async () => emptyResult());
     const fi = fakeSource('adsb-fi', 250, async () => emptyResult());
     const selector = createSourceSelector([lol, fi]);
@@ -148,5 +149,54 @@ describe('createSourceSelector', () => {
     );
     expect(lol.fetchRegion).not.toHaveBeenCalled();
     expect(fi.fetchRegion).not.toHaveBeenCalled();
+  });
+
+  it('marks an error raised while every source was in cooldown as NOT attempted', async () => {
+    // Nothing left the process on that call, so the 429 quoted in the
+    // message is a replay of one from minutes ago. server/index.ts reads
+    // `attempted` before letting message text re-arm the rate-limit
+    // suspension: without it a stale "HTTP 429" froze the feed for five
+    // more minutes on every cycle, without a single request being made.
+    const a = fakeSource('a', 250, async () => {
+      throw new Error('adsb-lol: HTTP 429 (retry after 90s)');
+    });
+    let clock = 1000;
+    const selector = createSourceSelector([a], { breakerCooldownMs: 60_000, now: () => clock });
+
+    const live = await selector.fetchRegion({ lat: 0, lon: 0 }, 10).catch((e: unknown) => e);
+    expect((live as { attempted?: boolean }).attempted).toBe(true);
+
+    clock += 1000; // breaker still open: the source is not asked at all
+    const replayed = await selector.fetchRegion({ lat: 0, lon: 0 }, 10).catch((e: unknown) => e);
+    expect((replayed as Error).message).toMatch(/in cooldown after/);
+    expect((replayed as Error).message).toMatch(/429/); // still readable by an operator
+    expect((replayed as { attempted?: boolean }).attempted).toBe(false);
+    expect(a.fetchRegion).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not pretend to carry a cause when nothing was asked', async () => {
+    // `cause: causes[0]` with an empty `causes` CREATES the property with
+    // value undefined, so a reader cannot tell "no diagnosis exists" from
+    // "the diagnosis was lost" — and every cooldown error looked like the
+    // second. rootCause() then reports the aggregate's own message as the
+    // root, which is the one message that explains nothing.
+    const a = fakeSource('a', 250, async () => { throw new Error('adsb-lol: HTTP 500'); });
+    let clock = 1000;
+    const selector = createSourceSelector([a], { breakerCooldownMs: 60_000, now: () => clock });
+    await selector.fetchRegion({ lat: 0, lon: 0 }, 10).catch(() => undefined);
+    clock += 1000;
+    const replayed = await selector.fetchRegion({ lat: 0, lon: 0 }, 10).catch((e: unknown) => e);
+    expect('cause' in (replayed as Error)).toBe(false);
+  });
+
+  it('still carries the original cause when a source WAS asked', async () => {
+    // The guard above must not cost the diagnostic the cause exists for.
+    const original = Object.assign(new Error('fetch failed'), { code: 'ENOTFOUND' });
+    const a = fakeSource('a', 250, async () => { throw original; });
+    const thrown = await createSourceSelector([a])
+      .fetchRegion({ lat: 0, lon: 0 }, 10)
+      .catch((e: unknown) => e);
+    expect((thrown as Error).cause).toBe(original);
+    expect((thrown as { attempted?: boolean }).attempted).toBe(true);
   });
 });

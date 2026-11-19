@@ -16,6 +16,19 @@ export interface SourceSelector {
 const DEFAULT_COOLDOWN_MS = 120_000;
 
 /**
+ * The aggregate thrown when no source could serve the request.
+ *
+ * `attempted` says whether a request actually left the process on THIS
+ * call. It is false when every source was skipped by its own breaker: the
+ * message then quotes the error that opened the breaker minutes ago, and a
+ * reader that re-parses it — server/index.ts matching /\b429\b/ — would
+ * re-arm a five-minute rate-limit suspension on a tick that asked nothing.
+ */
+export interface SourcesFailedError extends Error {
+  attempted: boolean;
+}
+
+/**
  * Tries sources in order, skipping any that cannot serve the requested
  * radius and any whose breaker is open.
  *
@@ -23,14 +36,11 @@ const DEFAULT_COOLDOWN_MS = 120_000;
  * providers cap at 250 NM — adsb.lol answers 403 "radius exceeds 250 NM"
  * above it, adsb.fi answers 400. Asking either for more is a guaranteed
  * failure that would open its breaker for nothing, and there is no third
- * source to fall through to. That is why this module is the one that emits
- * the "no ADS-B source accepts a N NM radius" error today: the only caller,
- * server/index.ts, still asks for a single 10 000 NM sweep, so every source
- * is skipped on radius and /api/states answers 502 without issuing a single
- * upstream request. Nothing here can fix that — the caller has to stop
- * asking for more than 250 NM. It will, once the tiled feed (Task 3 of
- * docs/superpowers/plans/2026-11-16-air-view-v2-tiled-feed.md) requests one
- * tile at a time; until then this endpoint is known broken.
+ * source to fall through to. The only caller now stays under that ceiling:
+ * server/index.ts polls one 230 NM tile at a time. The check is what caught
+ * the single 10 000 NM request Plan 1 issued — every source skipped on
+ * radius, 502 to the client, not one upstream request — so it stays as the
+ * refusal that happens here rather than at the provider.
  *
  * The breaker exists because otherwise a provider that is down would cost
  * every request a timeout before falling through — turning an outage into
@@ -94,10 +104,18 @@ export function createSourceSelector(
           skippedForRadius.length > 0
             ? ` | skipped for radius: ${skippedForRadius.join(', ')}`
             : '';
-        throw new Error(`all usable ADS-B sources failed: ${errors.join(' | ')}${alsoSkipped}`, {
-          cause: causes[0],
-        });
+        const err = new Error(
+          `all usable ADS-B sources failed: ${errors.join(' | ')}${alsoSkipped}`
+        ) as SourcesFailedError;
+        // causes is non-empty exactly when a source was really tried, which
+        // is also what makes the message describe THIS call rather than an
+        // earlier one. `new Error(m, { cause: undefined })` would still
+        // create the property, so it is assigned only when there is one.
+        if (causes.length > 0) (err as Error & { cause?: unknown }).cause = causes[0];
+        err.attempted = causes.length > 0;
+        throw err;
       }
+
       if (skippedForRadius.length > 0) {
         throw new Error(
           `no ADS-B source accepts a ${radiusNm} NM radius: ${skippedForRadius.join(', ')}`
