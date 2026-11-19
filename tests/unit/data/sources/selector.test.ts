@@ -96,6 +96,31 @@ describe('createSourceSelector', () => {
     await expect(selector.fetchRegion({ lat: 0, lon: 0 }, 10)).rejects.toThrow(/403.*500/s);
   });
 
+  it('keeps the ORIGINAL error as cause, not just its message', async () => {
+    // server/index.ts reads e.cause to log causeMessage and causeCode — the
+    // diagnostic added for the Railway egress failure. Rebuilding an Error
+    // from e.message alone left those fields null exactly when a network
+    // error was the thing being diagnosed.
+    const original = new Error('fetch failed');
+    (original as Error & { code: string }).code = 'UND_ERR_CONNECT_TIMEOUT';
+    const a = fakeSource('a', 250, async () => { throw original; });
+    const selector = createSourceSelector([a]);
+    const thrown = await selector.fetchRegion({ lat: 0, lon: 0 }, 10).catch((e: unknown) => e);
+    expect((thrown as Error).cause).toBe(original);
+    expect(((thrown as Error).cause as { code: string }).code).toBe('UND_ERR_CONNECT_TIMEOUT');
+  });
+
+  it('reports sources skipped for radius EVEN when another one failed', async () => {
+    // A mixed roster used to report only the failure, so the operator read
+    // "adsb-fi: HTTP 500" and never learned the primary was not asked at all.
+    const wide = fakeSource('adsb-fi', 1_000, async () => { throw new Error('adsb-fi: HTTP 500'); });
+    const narrow = fakeSource('adsb-lol', 250, async () => emptyResult());
+    const selector = createSourceSelector([narrow, wide]);
+    await expect(selector.fetchRegion({ lat: 0, lon: 0 }, 500)).rejects.toThrow(
+      'all usable ADS-B sources failed: adsb-fi: HTTP 500 | skipped for radius: adsb-lol (max 250 NM)'
+    );
+  });
+
   it('keeps reporting the real cause while the breaker is open', async () => {
     // On the tick after a failure the source is skipped by its own breaker.
     // Without carrying the reason forward the caller would be told

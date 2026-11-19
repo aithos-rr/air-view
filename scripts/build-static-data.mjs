@@ -10,8 +10,14 @@ const NE = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/maste
 const OPENFLIGHTS = 'https://raw.githubusercontent.com/jpatokal/openflights/master/data';
 const OURAIRPORTS = 'https://davidmegginson.github.io/ourairports-data';
 
+// Kept in step with src/data/sources/userAgent.ts by hand: this file is .mjs
+// and runs outside both TypeScript programs, so it cannot import that
+// constant. The plan's global constraint is that EVERY outgoing request
+// identifies the project — these four downloads were the exception.
+const USER_AGENT = 'air-view/2.0 (+https://air-view-production.up.railway.app)';
+
 async function downloadText(url) {
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: { 'User-Agent': USER_AGENT } });
   if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`);
   return await res.text();
 }

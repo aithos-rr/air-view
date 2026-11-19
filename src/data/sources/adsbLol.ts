@@ -1,6 +1,7 @@
 import type { AircraftRaw } from '../../types.js';
 import type { AircraftSource, GeoPoint, SourceResult } from './types.js';
 import { USER_AGENT } from './userAgent.js';
+import { upstreamHttpError } from './httpError.js';
 
 interface AdsbLolAircraft {
   hex?: string;
@@ -22,7 +23,7 @@ interface AdsbLolResponse {
 
 function normalise(ac: AdsbLolAircraft & { hex: string }, nowMs: number): AircraftRaw {
   const onGround = ac.alt_baro === 'ground';
-  const seenS = typeof ac.seen === 'number' ? ac.seen : 0;
+
   return {
     icao24: ac.hex.toLowerCase(),
     callsign: ac.flight?.trim() || null,
@@ -32,7 +33,12 @@ function normalise(ac: AdsbLolAircraft & { hex: string }, nowMs: number): Aircra
     velocityKt: typeof ac.gs === 'number' ? Math.round(ac.gs) : null,
     headingDeg: typeof ac.track === 'number' ? ac.track : null,
     onGround,
-    lastContact: Math.floor((nowMs - seenS * 1000) / 1000),
+    // `seen` is how many seconds ago this record was heard. Without it the
+    // staleness is UNKNOWN, and defaulting to 0 would stamp the aircraft as
+    // seen at the instant of the fetch — a plausible value in place of a
+    // missing one, which is the rule this project broke in v1 with routes.
+    // Dead reckoning must not extrapolate from a timestamp nobody reported.
+    lastContact: typeof ac.seen === 'number' ? Math.floor((nowMs - ac.seen * 1000) / 1000) : null,
     registration: ac.r?.trim() || null,
     modelCode: ac.t?.trim() || null,
     modelDesc: null, // adsb.lol does not ship a long model name
@@ -54,7 +60,7 @@ export const adsbLolSource: AircraftSource = {
     const res = await fetchImpl(url, {
       headers: { Accept: 'application/json', 'User-Agent': USER_AGENT },
     });
-    if (!res.ok) throw new Error(`adsb-lol: HTTP ${res.status}`);
+    if (!res.ok) throw await upstreamHttpError('adsb-lol', res);
     const data = (await res.json()) as AdsbLolResponse;
     const nowMs = data.now ?? Date.now();
     const aircraft = (data.ac ?? [])

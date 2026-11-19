@@ -110,10 +110,21 @@ describe('adsbFiSource', () => {
     expect(res.aircraft[0]!.lastContact).toBe(Math.floor((1_716_163_200_000 - 12_400) / 1000));
   });
 
-  it('treats a missing "seen" as zero staleness rather than guessing', async () => {
+  it('reports a missing "seen" as UNKNOWN staleness, not as zero', async () => {
+    // Its own title used to be "treats a missing seen as zero staleness
+    // rather than guessing" — but zero IS the guess: it stamps the aircraft
+    // as heard at the instant of the fetch. Dead reckoning would then
+    // extrapolate a position from a timestamp nobody reported, which is how
+    // an aircraft that stopped transmitting keeps gliding across the globe.
     const fetchImpl = mockOk({ now: 1_716_163_200, aircraft: [{ hex: 'a1' }] });
     const res = await adsbFiSource.fetchRegion({ lat: 0, lon: 0 }, 250, fetchImpl as unknown as typeof fetch);
-    expect(res.aircraft[0]!.lastContact).toBe(1_716_163_200);
+    expect(res.aircraft[0]!.lastContact).toBeNull();
+  });
+
+  it('still reports staleness when the provider does give "seen"', async () => {
+    const fetchImpl = mockOk({ now: 1_716_163_200, aircraft: [{ hex: 'a1', seen: 12 }] });
+    const res = await adsbFiSource.fetchRegion({ lat: 0, lon: 0 }, 250, fetchImpl as unknown as typeof fetch);
+    expect(res.aircraft[0]!.lastContact).toBe(1_716_163_188);
   });
 
   it('leaves complete false — the server computes it once the route is attached', async () => {

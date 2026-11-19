@@ -189,6 +189,16 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
   let cursor = 0;
   let sweeps = 0;
   let rotationServed = 0;
+  /**
+   * The rotation's share cannot be split inside a batch of ONE — and a batch
+   * of one is the natural shape under a limit of one request every 1.5 s.
+   * `Math.floor(1 * 0.5)` is 0, and the `max(1, ...)` floor then handed the
+   * whole batch to the viewport for ever: rotationServed stayed at zero, the
+   * exact starvation ROTATION_SHARE exists to prevent. So the share is spread
+   * ACROSS batches instead — it accrues here and is spent a whole tile at a
+   * time, which makes a one-tile poller alternate.
+   */
+  let priorityCredit = 0;
 
   function isDue(tile: Tile): boolean {
     if (!dormant.has(tile.id)) return true;
@@ -207,7 +217,10 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
       // But only up to a share of the batch — the rest belongs to the
       // rotation, or the globe outside the viewport is never refreshed and
       // the fleet decays into the region on screen.
-      const priorityQuota = Math.max(1, Math.floor(count * (1 - ROTATION_SHARE)));
+      // Credit accrues only when there is something to spend it on, or an
+      // idle queue would bank enough to swallow a later batch whole.
+      if (priority.length > 0) priorityCredit += count * (1 - ROTATION_SHARE);
+      const priorityQuota = Math.min(count, Math.max(0, Math.ceil(priorityCredit)));
       while (out.length < priorityQuota && priority.length > 0) {
         const id = priority.pop()!;
         const tile = byId.get(id);
@@ -216,6 +229,8 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
           lastServedAt.set(id, now());
         }
       }
+
+      priorityCredit -= out.length; // only what the queue actually spent
 
       // A tile already taken from the priority queue must not be handed out
       // again by the rotation in the same batch: the caller fetches each

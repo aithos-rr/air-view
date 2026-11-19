@@ -243,6 +243,20 @@ describe('createTileScheduler', () => {
     expect(s.stats().rotationServed).toBeGreaterThanOrEqual(4); // half the batch
   });
 
+  it('gives the rotation its share even when the batch is ONE tile', () => {
+    // A batch of one is the natural shape under a limit of one request every
+    // 1.5 s, and a share cannot be split inside it: floor(1 * 0.5) is 0, and
+    // the old max(1, ...) floor handed every single-tile batch to the
+    // viewport for ever. The share is spread across batches instead.
+    const many = Array.from({ length: 40 }, (_, i) => ({
+      id: `t${i}`, region: 'r', centre: { lat: i, lon: 0 },
+    }));
+    const s = createTileScheduler(many, { minRefreshMs: 0 });
+    s.prioritise(many.slice(0, 12).map((t) => t.id));
+    for (let poll = 0; poll < 12; poll++) s.next(1);
+    expect(s.stats().rotationServed).toBe(6); // half of twelve single-tile polls
+  });
+
   it('never returns the same tile twice in one batch', () => {
     // The caller fetches every entry, so a duplicate is a duplicate request
     // against a provider that answers 429 to bursts.
@@ -341,8 +355,10 @@ describe('createTileScheduler', () => {
     const s = createTileScheduler(tiles3());
     s.prioritise(['a']);
     s.prioritise(['c']);
-    expect(s.next(1)[0]!.id).toBe('c');
-    expect(s.next(1)[0]!.id).toBe('a');
+    // Batches of two: one tile of each goes to the viewport, so two batches
+    // drain the queue and the ORDER is what is under test here.
+    expect(s.next(2)[0]!.id).toBe('c');
+    expect(s.next(2)[0]!.id).toBe('a');
   });
 
   it('drops the OLDEST entry when a moving camera overflows the queue', () => {

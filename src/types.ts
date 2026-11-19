@@ -17,7 +17,7 @@ export interface AircraftRaw {
   velocityKt: number | null;
   headingDeg: number | null;
   onGround: boolean;
-  lastContact: number;                // unix seconds
+  lastContact: number | null;         // unix seconds; null = provider did not say how stale
   registration: string | null;        // tail number, e.g. "I-ABCD"
   modelCode: string | null;           // ICAO type code, e.g. "A320"
   modelDesc: string | null;           // long name; only adsb.fi ships it

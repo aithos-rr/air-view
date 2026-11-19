@@ -11,7 +11,10 @@ export function FlightCard({ aircraft, onClose }: FlightCardProps) {
   const now = new Date();
   const originTime = r?.origin ? formatLocalTime(now, r.origin.timezone) : null;
   const destTime = r?.destination ? formatLocalTime(now, r.destination.timezone) : null;
-  const lastSeen = new Date(aircraft.lastContact * 1000).toISOString().slice(11, 19);
+  const lastSeen =
+    aircraft.lastContact === null
+      ? '—'
+      : new Date(aircraft.lastContact * 1000).toISOString().slice(11, 19);
 
   return (
     <article aria-label="Flight detail">

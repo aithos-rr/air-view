@@ -48,6 +48,12 @@ export function createSourceSelector(
   return {
     async fetchRegion(centre, radiusNm, fetchImpl) {
       const errors: string[] = [];
+      // The ORIGINAL error objects, not just their messages. server/index.ts
+      // reads `e.cause` to log causeMessage/causeCode — the diagnostic added
+      // for the Railway egress failure (UND_ERR_CONNECT_TIMEOUT, ENOTFOUND).
+      // Rebuilding an Error from `e.message` alone left those fields null
+      // exactly when they were needed.
+      const causes: unknown[] = [];
       const skippedForRadius: string[] = [];
       const t = now();
 
@@ -76,11 +82,21 @@ export function createSourceSelector(
           openUntil.set(source.id, now() + cooldownMs);
           lastError.set(source.id, msg);
           errors.push(msg);
+          causes.push(e);
         }
       }
 
       if (errors.length > 0) {
-        throw new Error(`all usable ADS-B sources failed: ${errors.join(' | ')}`);
+        // A source skipped for radius is still part of the picture: without
+        // this, a mixed roster reports only "adsb-fi: HTTP 500" and the
+        // operator never learns the primary was never asked at all.
+        const alsoSkipped =
+          skippedForRadius.length > 0
+            ? ` | skipped for radius: ${skippedForRadius.join(', ')}`
+            : '';
+        throw new Error(`all usable ADS-B sources failed: ${errors.join(' | ')}${alsoSkipped}`, {
+          cause: causes[0],
+        });
       }
       if (skippedForRadius.length > 0) {
         throw new Error(

@@ -34,7 +34,10 @@ export const useAircraftStore = create<AircraftState>((set) => ({
           prev.latitude !== null &&
           prev.latitude !== undefined
         ) {
-          trail.push({ lon: prev.longitude, lat: prev.latitude, t: prev.lastContact });
+          // A point we cannot timestamp cannot be ordered in the trail.
+          if (prev.lastContact !== null) {
+            trail.push({ lon: prev.longitude, lat: prev.latitude, t: prev.lastContact });
+          }
           if (trail.length > TRAIL_MAX) trail.shift();
         }
         next.set(r.icao24, { ...r, trail });
@@ -46,7 +49,9 @@ export const useAircraftStore = create<AircraftState>((set) => ({
     set((state) => {
       const next = new Map(state.aircraft);
       for (const [icao, ac] of next) {
-        if (nowUnix - ac.lastContact > STALE_SECONDS) {
+        // Unknown staleness is not evidence of staleness: leave it to the
+        // server, which owns fleet membership once the tiled feed lands.
+        if (ac.lastContact !== null && nowUnix - ac.lastContact > STALE_SECONDS) {
           next.delete(icao);
         }
       }

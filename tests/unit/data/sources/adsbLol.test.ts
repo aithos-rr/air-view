@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { adsbLolSource } from '@/data/sources/adsbLol';
 import { USER_AGENT } from '@/data/sources/userAgent';
+import type { UpstreamHttpError } from '@/data/sources/httpError';
 
 function mockOk(body: unknown) {
   return vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => body });
@@ -73,6 +74,7 @@ describe('adsbLolSource', () => {
     expect(ac.latitude).toBeNull();
     expect(ac.registration).toBeNull();
     expect(ac.modelCode).toBeNull();
+    expect(ac.lastContact).toBeNull(); // no "seen" means unknown, not "now"
   });
 
   it('skips entries without a hex', async () => {
@@ -86,6 +88,43 @@ describe('adsbLolSource', () => {
     await expect(
       adsbLolSource.fetchRegion({ lat: 0, lon: 0 }, 10, fetchImpl as unknown as typeof fetch)
     ).rejects.toThrow(/adsb-lol.*403/);
+  });
+
+  it('carries the reason adsb.lol puts in the BODY of a 403', async () => {
+    // The status alone cannot tell a radius refusal from a blocked
+    // User-Agent — and those are the two failures that took v1 down. The
+    // reason is in the body, and it was being discarded.
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false, status: 403, text: async () => 'radius exceeds 250 NM',
+    });
+    await expect(
+      adsbLolSource.fetchRegion({ lat: 0, lon: 0 }, 250, fetchImpl as unknown as typeof fetch)
+    ).rejects.toThrow('adsb-lol: HTTP 403 ("radius exceeds 250 NM")');
+  });
+
+  it('carries Retry-After from a 429, which is how long to stay silent', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false, status: 429, text: async () => '',
+      headers: new Headers({ 'Retry-After': '300' }),
+    });
+    // null if it resolves, which would fail both assertions below.
+    const err = await adsbLolSource
+      .fetchRegion({ lat: 0, lon: 0 }, 250, fetchImpl as unknown as typeof fetch)
+      .then(
+        () => null,
+        (e: unknown) => e as UpstreamHttpError
+      );
+    expect(err?.status).toBe(429);
+    expect(err?.retryAfterSeconds).toBe(300);
+  });
+
+  it('survives an error response whose body cannot be read', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false, status: 503, text: async () => { throw new Error('socket closed'); },
+    });
+    await expect(
+      adsbLolSource.fetchRegion({ lat: 0, lon: 0 }, 250, fetchImpl as unknown as typeof fetch)
+    ).rejects.toThrow('adsb-lol: HTTP 503');
   });
 
   it('returns an empty array when the payload has no aircraft key', async () => {

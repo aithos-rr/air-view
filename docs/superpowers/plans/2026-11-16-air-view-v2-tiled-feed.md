@@ -50,7 +50,7 @@ Questo task è **già implementato e committato** sul branch `v2-design` dai com
 
 **Non rieseguire gli step originali**: chiederebbero di sostituire testo già sostituito, e il gate TDD non potrebbe mai vedere il rosso che si aspetta. Un esecutore fedele si bloccherebbe, o romperebbe il codice apposta per renderlo rosso.
 
-- [ ] **Step 1: Verificare lo stato e passare oltre**
+- [x] **Step 1: Verificare lo stato e passare oltre**
 
 ```bash
 grep -n "maxRadiusNm: " src/data/sources/adsbLol.ts src/data/sources/adsbFi.ts
@@ -73,7 +73,7 @@ Expected: entrambi gli adattatori dichiarano `maxRadiusNm: 250`, build pulita su
 
 **Perché adattiva.** La griglia copre riquadri geografici, ma molte tile cadono su oceano aperto dove nessun ricevitore esiste. Misurato dal vivo: una tile sugli Stati Uniti centrali restituisce **660 aerei**, una sul Pacifico orientale **zero**. Interrogare indefinitamente le tile vuote sprecherebbe la gran parte del budget di richieste verso un servizio gratuito. Lo scheduler impara: dopo alcuni passaggi a vuoto una tile diventa dormiente e viene ritentata di rado, perché la copertura ADS-B cambia nel tempo e una tile morta oggi può rianimarsi domani.
 
-- [ ] **Step 1: Scrivere il test che fallisce**
+- [x] **Step 1: Scrivere il test che fallisce**
 
 Creare `tests/unit/data/sources/tileGrid.test.ts`:
 
@@ -273,12 +273,12 @@ describe('createTileScheduler', () => {
 });
 ```
 
-- [ ] **Step 2: Eseguire il test e verificare che fallisca**
+- [x] **Step 2: Eseguire il test e verificare che fallisca**
 
 Run: `npx vitest run tests/unit/data/sources/tileGrid.test.ts`
 Expected: FAIL — import non risolto
 
-- [ ] **Step 3: Creare `src/data/sources/tileGrid.ts`**
+- [x] **Step 3: Creare `src/data/sources/tileGrid.ts`**
 
 Import relativi con `.js`: questo modulo è compilato anche dal programma del server.
 
@@ -523,12 +523,12 @@ export function createTileScheduler(tiles: Tile[], opts: SchedulerOptions = {}):
 }
 ```
 
-- [ ] **Step 4: Eseguire il test e verificare che passi**
+- [x] **Step 4: Eseguire il test e verificare che passi**
 
 Run: `npx vitest run tests/unit/data/sources/tileGrid.test.ts`
 Expected: PASS, 21 test
 
-- [ ] **Step 5: Verificare la griglia reale senza fare volume**
+- [x] **Step 5: Verificare la griglia reale senza fare volume**
 
 ```bash
 cat > probe-grid.mts <<'EOF'
@@ -555,7 +555,7 @@ Le regioni più numerose sono quelle con le bounding box più larghe, non quelle
 >
 > La correzione tratta lo step come un **tetto, non un incremento**: ogni box è diviso nel minor numero di passi interi che restano sotto quel tetto, quindi una riga finisce esattamente su `lonMax` e una colonna esattamente su `latMax`. Misurato sul codice vero, campionando a 0,1 grado: **1 224 760 punti su 1 224 760 entro 230 NM**, il peggiore a 218,0 NM. Maputo passa da 279 a 59,9 NM, Cape Breton da 316 a 69,7 NM, Harbin da 270 a 137,9 NM, il Golfo del Bengala da 308 a 33,2 NM. Il prezzo è **546 tile invece di 413 (+32%)**, e le aggiunte sono in gran parte strisce di bordo sull'acqua, che lo scheduler marca dormienti dopo tre spazzate vuote. Tutte le cifre derivate da 413 — durata dello sweep, finestra di ritenzione, `MIN_RETENTION_S` — sono state aggiornate in questo piano. La copertura è asserita a 0,5 gradi (50 112 punti, zero scoperti) da `tests/unit/data/sources/tileGrid.test.ts`, e `STEP_FACTOR = 1.6` la fa fallire.
 
-- [ ] **Step 6: Verificare ENTRAMBI i programmi e committare**
+- [x] **Step 6: Verificare ENTRAMBI i programmi e committare**
 
 ```bash
 npm run build:all && npm test -- --run
@@ -3242,3 +3242,8 @@ Con questi vincoli il globo ha due velocità, ed è bene saperlo prima di guarda
 | 46 | Nel Task 6 l'ordine era invertito: implementazione allo Step 1, test allo Step 2, e lo Step 3 pretendeva un fallimento impossibile. Lo stesso difetto del Task 1, ma interno al piano | Lettura degli step | Ordine TDD ripristinato: test, rosso, implementazione (Task 6) |
 | 47 | **Critico.** `buildTileGrid` lasciava scoperto il 2,1% dell'area dichiarata, e il commento sorgente sosteneva il contrario per la parte interna («copre l'interno di ogni box, con 2 NM di margine»). Due famiglie di buco: la striscia oltre l'ultimo centro di ogni riga e colonna, e una **scalinata fra righe contigue**, perché lo step in longitudine dipende dalla latitudine e righe vicine finivano a longitudini diverse. Il test che pretendeva di dimostrare la copertura interna campionava solo il punto medio fra longitudini adiacenti **della riga inferiore**, quindi non visitava mai la scalinata: un'asserzione verde che non provava la tesi attribuitale | Sul codice vero: (19 N, 89,75 E) nel Golfo del Bengala, racchiuso fra centri su entrambi gli assi, **308,3 NM** dal centro più vicino dell'intera griglia, contro i 227,9 NM asseriti come caso peggiore. Maputo 279 NM, Harbin 270 NM, Cape Breton 316 NM, tutte dentro una bbox e fuori da ogni tile | Lo step diventa un **tetto anziché un incremento**: ogni box è diviso nel minor numero di passi interi che restano sotto il tetto, quindi righe e colonne finiscono esattamente sul bordo dichiarato. Misurato a 0,1 grado: **1 224 760 punti su 1 224 760 entro 230 NM**, peggiore 218,0 NM. 546 tile invece di 413, e tutte le cifre derivate aggiornate. Il test ora scandisce 50 112 punti e pretende **zero** scoperti (Task 2) |
 | 48 | Quattro comportamenti dello scheduler erano descritti solo dai commenti: mutandoli la suite restava verde. Il commento diceva «la richiesta più recente è servita per prima» mentre `next()` prelevava con `shift()`, cioè la **più vecchia** — con la camera in movimento si rinfrescava la posizione precedente prima di quella inquadrata, il ritardo che la priorità da viewport esiste per eliminare. E i quattro default — i valori che la produzione usa davvero, perché il Task 3 costruisce lo scheduler senza opzioni — non erano esercitati da nessun test: `maxPriorityQueue` e `minRefreshMs` sono la correzione letterale del difetto #38 e potevano essere annullati senza un rosso | Mutation testing sul file del repo, baseline verde: `shift`→`pop` nel cap, rimozione di `lastServedAt.set()` nel ramo di rotazione, rimozione del dedupe `priority.includes(id)`, e i quattro default portati a valori distruttivi — **tutti e sette i mutanti sopravvivevano** | `next()` preleva con `pop()`: il più recente è ora sia il primo servito sia l'ultimo scartato. Sette test nuovi, ognuno verificato per mutazione: dieci mutanti su dieci muoiono (Task 2) |
+| 49 | Gli adattatori sostituivano un valore plausibile a un campo mancante, la regola che questo progetto ha già infranto una volta con le rotte: senza `seen` nel record del provider, `lastContact` diventava l'istante del fetch, cioè un aereo di freschezza **ignota** veniva dichiarato visto adesso. Il dead reckoning avrebbe estrapolato una posizione da un timestamp che nessuno ha riportato — un aereo che ha smesso di trasmettere continua a scivolare sul globo. Peggio: un test lo **benediceva**, intitolato «treats a missing seen as zero staleness rather than guessing», quando zero *è* la congettura | Lettura dei due adattatori e del test | `lastContact` diventa `number \| null`; i tre consumatori (scia, `removeStale`, `FlightCard`) trattano il null come «staleness ignota», non come «fresco». Il test è riscritto e ne è aggiunto uno per il caso con `seen` presente (Task 1) |
+| 50 | Gli adattatori scartavano corpo e header della risposta d'errore, quindi i log dicevano «adsb-lol: HTTP 403» e nulla più — e proprio 403 è lo status che non distingue un rifiuto per raggio da uno User-Agent bloccato, cioè le due cause che hanno fermato la v1. Su un 429 si perdeva `Retry-After`, l'unico dato che dice quanto stare zitti | Lettura dei due adattatori | Nuovo `src/data/sources/httpError.ts`: l'errore porta status, corpo (primi 200 caratteri) e `retryAfterSeconds`, tollerando i doppi di test privi di `text`/`headers`. Task 3 può leggere `retryAfterSeconds` invece di indovinare la pausa (Task 1) |
+| 51 | Il selector distruggeva la catena `cause`: catturava l'errore originale e ricostruiva un `new Error` dal solo `e.message`. `server/index.ts` legge `e.cause` per loggare `causeMessage`/`causeCode` — la diagnostica aggiunta apposta per il guasto di egress Railway (`UND_ERR_CONNECT_TIMEOUT`, `ENOTFOUND`) — quindi quei campi erano sempre nulli esattamente quando servivano. In più, in un roster misto le sorgenti saltate per raggio sparivano dal messaggio | Lettura di `selector.ts` e di `server/index.ts` | L'errore aggregato porta ora l'errore originale come `cause`, e il messaggio elenca anche le sorgenti saltate per raggio. **Nota per il Task 3**: il nuovo logging deve percorrere la catena `cause` fino alla radice, perché il `code` di undici sta su `e.cause.cause` (Task 1) |
+| 52 | La quota riservata alla rotazione non reggeva per batch da una tile: `Math.max(1, Math.floor(1 * 0.5))` vale 1, quindi la coda prioritaria si prendeva l'intero batch e `rotationServed` restava a zero — la fame che `ROTATION_SHARE` esiste per impedire, in un poller da una richiesta ogni 1,5 s, cioè la forma naturale sotto questo rate limit | Lettura di `next()` | La quota si accumula **fra** batch (`priorityCredit`) e si spende una tile intera alla volta: un poller da una tile alterna. Il credito matura solo a coda non vuota, altrimenti una coda inattiva ne accantonerebbe abbastanza da inghiottire un batch successivo (Task 2) |
+| 53 | Lo script dei dati statici faceva quattro download senza alcuno `User-Agent`, contro il vincolo globale del piano | Lettura di `scripts/build-static-data.mjs` | Header aggiunto, con la nota del perché la costante è duplicata: il file è `.mjs` e sta fuori da entrambi i programmi TypeScript |
