@@ -2538,7 +2538,20 @@ sleep 180; curl -s localhost:3000/health | python3 -c "import json,sys; t=json.l
 
 Expected: `rotationServed` **cresce** fra le due letture e `prioritised` resta piccolo e limitato. Se `rotationServed` resta fermo mentre il visitatore interroga, la priorità sta affamando la rotazione: il resto del pianeta non viene mai aggiornato e `prune` lo cancellerà. È il difetto che la quota riservata esiste per impedire, ed è invisibile a una `curl` singola.
 
-- [ ] **Step 15a: Misurare il payload invece di supporlo**
+- [x] **Step 15a: Misurare il payload invece di supporlo** — ESEGUITO il 2026-11-20
+
+> **Misura reale, e chiude la questione del payload magro della spec §3.3.** Server avviato contro adsb.lol, 159 tile, flotta a 6 254 aerei con finestra derivata a 1 604 s:
+>
+> | | |
+> |---|---|
+> | corpo grezzo | **1,79 MB** |
+> | corpo gzip | **253 KB** (rapporto 6,9x) |
+> | cap da 24 000 aerei | non raggiunto |
+> | sweep osservato | 802 s |
+>
+> La spec §3.3 chiede «poche centinaia di KB contro i 5,8 MB della v1», e propone array posizionali per ottenerle. **La compressione le dà già**: 253 KB stanno dentro l'obiettivo dichiarato, e il rapporto 6,9x è quello che ci si aspetta da JSON ripetitivo. Riscrivere il formato sul filo in array posizionali risparmierebbe byte che il gzip sta già togliendo, al prezzo di un codificatore e un decodificatore da tenere allineati a mano — la classe di difetto che questo progetto ha già pagato due volte.
+>
+> **Decisione: il payload magro §3.3 non si fa.** La spec resta soddisfatta nel suo obiettivo misurabile. Quello che va tenuto d'occhio è la crescita: la flotta cresce finché la finestra di ritenzione non si stabilizza, quindi il corpo crescerà ancora. Il cap a 24 000 aerei corrisponde a ~6,9 MB grezzi, cioè **~1 MB gzip**: ancora accettabile, e `capped: true` resta un FAIL in `verify-feed` perché raggiungerlo significa che la finestra è troppo lunga, non che il cap è troppo basso.
 
 `/api/states` serve l'intera flotta accumulata a ogni richiesta e il bbox è ignorato di proposito: il peso del corpo non dipende da quanto guardi, dipende da quanto trattieni. Con il pavimento di ritenzione a 1 200 s il corpo contiene **almeno venti minuti di avvistamenti** — più aerei di qualunque istantanea — e ogni record porta ora registrazione, modello, rotta e flag di completezza, cioè più del doppio dei byte della v1. Misurato su 20 000 record con variazione realistica: **280 B senza rotta, 414 B con rotta**, contro i ~143 B della v1 — fra 5,6 e 8,3 MB di corpo per una flotta da ventimila aerei.
 

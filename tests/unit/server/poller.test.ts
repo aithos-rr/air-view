@@ -17,17 +17,25 @@ import type { Tile } from '../../../src/data/sources/tileGrid';
  */
 function virtualClock(start = 1_700_000_000_000): {
   now: () => number;
+  monotonicNow: () => number;
   sleep: (ms: number) => Promise<void>;
   advance: (ms: number) => void;
+  /** Shoves the WALL clock backwards, leaving the monotonic one alone. */
+  jumpWallClock: (ms: number) => void;
 } {
   let t = start;
+  let wallSkew = 0;
   return {
-    now: () => t,
+    now: () => t + wallSkew,
+    monotonicNow: () => t,
     sleep: async (ms: number) => {
       t += ms;
     },
     advance: (ms: number) => {
       t += ms;
+    },
+    jumpWallClock: (ms: number) => {
+      wallSkew += ms;
     },
   };
 }
@@ -101,6 +109,7 @@ describe('createTilePoller — request spacing', () => {
       recordFailure: () => {},
       log: silentLog,
       now: clock.now,
+    monotonicNow: clock.monotonicNow,
       sleep: clock.sleep,
       // No tileIntervalMs override on purpose: the PRODUCTION default is
       // what has to hold, so cutting the constant fails this test too.
@@ -118,6 +127,48 @@ describe('createTilePoller — request spacing', () => {
     // The ceiling is a contract with two free services that have already cut
     // this feed off once. It is a number, so it is pinned as one.
     expect(TILE_INTERVAL_MS).toBeGreaterThanOrEqual(1_500);
+  });
+
+  it('holds the spacing when the WALL CLOCK jumps FORWARD', async () => {
+    // Date.now() is not a stopwatch. Measured on this machine, it moves
+    // BACKWARDS by ~528 ms every ~32 s as WSL2 resyncs against the host.
+    //
+    // A backwards jump is harmless here and was a red herring: the wait is
+    // computed once and then slept on a monotonic timer, so the sleep still
+    // lasts its full 1.5 s and only the RECORDED departure reads early. That
+    // is what made 8 of 138 logged departures look 0.98 s apart while the
+    // real spacing never moved — a measurement artefact, not a breach.
+    //
+    // A FORWARD jump is the one that bites: it inflates `now()` while the
+    // stamp stays put, the computed wait comes out short by exactly the jump,
+    // and the request really does leave early — against a free service that
+    // has already blocked this project once. NTP corrects in both directions,
+    // so the fix is to time durations monotonically rather than to hope.
+    const clock = virtualClock();
+    const at: number[] = [];
+    const poller = createTilePoller({
+      scheduler: fakeScheduler(grid()),
+      fleet: { absorb: () => 0 },
+      fetchTile: async () => {
+        at.push(clock.monotonicNow());
+        clock.jumpWallClock(+528); // the resync, between the stamp and the wait
+        return { aircraft: [] };
+      },
+      recordFailure: () => {},
+      log: silentLog,
+      now: clock.now,
+      monotonicNow: clock.monotonicNow,
+      sleep: clock.sleep,
+    });
+
+    await poller.runCycle();
+    await poller.runCycle();
+
+    // Measured on the monotonic clock: real elapsed time, not what a jumping
+    // wall clock says about it.
+    const gaps = at.slice(1).map((t, i) => t - at[i]!);
+    expect(gaps.length).toBe(TILES_PER_CYCLE * 2 - 1);
+    expect(Math.min(...gaps)).toBeGreaterThanOrEqual(TILE_INTERVAL_MS);
   });
 
   it('keeps the spacing ACROSS the cycle boundary', async () => {
@@ -138,6 +189,7 @@ describe('createTilePoller — request spacing', () => {
       recordFailure: () => {},
       log: silentLog,
       now: clock.now,
+    monotonicNow: clock.monotonicNow,
       sleep: clock.sleep,
     });
 
@@ -175,6 +227,7 @@ describe('createTilePoller — request spacing', () => {
       recordFailure: () => {},
       log: silentLog,
       now: clock.now,
+    monotonicNow: clock.monotonicNow,
       sleep: clock.sleep,
     });
 
@@ -203,6 +256,7 @@ describe('createTilePoller — request spacing', () => {
       recordFailure: () => {},
       log: silentLog,
       now: clock.now,
+    monotonicNow: clock.monotonicNow,
       sleep: clock.sleep,
     });
 
@@ -229,6 +283,7 @@ describe('createTilePoller — the 429 suspension', () => {
       recordFailure: () => {},
       log: silentLog,
       now: clock.now,
+    monotonicNow: clock.monotonicNow,
       sleep: clock.sleep,
     });
 
@@ -236,7 +291,7 @@ describe('createTilePoller — the 429 suspension', () => {
 
     expect(calls).toBe(3); // not 8
     expect(outcome.tilesAttempted).toBe(3);
-    expect(poller.suspendedUntilMs()).toBeGreaterThan(clock.now());
+    expect(poller.suspendedForMs()).toBe(300_000); // the 5-minute fallback, exactly
   });
 
   it('asks nothing at all while the suspension is still running', async () => {
@@ -253,6 +308,7 @@ describe('createTilePoller — the 429 suspension', () => {
       recordFailure: () => {},
       log: silentLog,
       now: clock.now,
+    monotonicNow: clock.monotonicNow,
       sleep: clock.sleep,
     });
 
@@ -271,7 +327,6 @@ describe('createTilePoller — the 429 suspension', () => {
 
   it('serves a Retry-After the provider actually stated', async () => {
     const clock = virtualClock();
-    const start = clock.now();
     const poller = createTilePoller({
       scheduler: fakeScheduler(grid()),
       fleet: { absorb: () => 0 },
@@ -281,11 +336,12 @@ describe('createTilePoller — the 429 suspension', () => {
       recordFailure: () => {},
       log: silentLog,
       now: clock.now,
+    monotonicNow: clock.monotonicNow,
       sleep: clock.sleep,
     });
 
     await poller.runCycle();
-    expect(poller.suspendedUntilMs()).toBe(start + 900_000);
+    expect(poller.suspendedForMs()).toBe(900_000); // the Retry-After the provider stated
   });
 });
 
@@ -319,6 +375,7 @@ describe('createTilePoller — absorb runs on OUR clock', () => {
       recordFailure: () => {},
       log: silentLog,
       now: clock.now,
+    monotonicNow: clock.monotonicNow,
       sleep: clock.sleep,
     });
 
@@ -352,6 +409,7 @@ describe('createTilePoller — absorb runs on OUR clock', () => {
       recordFailure: () => {},
       log: silentLog,
       now: clock.now,
+    monotonicNow: clock.monotonicNow,
       sleep: clock.sleep,
     });
 

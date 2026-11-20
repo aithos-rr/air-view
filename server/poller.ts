@@ -86,8 +86,31 @@ export interface TilePollerDeps {
   /** feed.recordFailure — the message /health surfaces. */
   recordFailure(message: string): void;
   log: PollerLog;
-  /** Injectable so the spacing can be measured instead of believed. */
+  /**
+   * WALL clock, epoch ms. Used ONLY to stamp records for the fleet, because
+   * prune() compares against Date.now() and the two must agree.
+   */
   now?: () => number;
+  /**
+   * MONOTONIC clock, any origin. Every duration uses this one — the spacing
+   * between requests and the 429 suspension.
+   *
+   * Measured on this machine: Date.now() jumps by ~528 ms every ~32 s, as
+   * WSL2 resyncs against the host. The jumps observed went BACKWARDS, and
+   * those are harmless to the pacing — the wait is computed once and slept on
+   * a monotonic timer, so only the LOGGED departure reads early. That is what
+   * made 8 of 138 logged departures look 0.98 s apart while the real spacing
+   * never moved: an artefact of measuring an interval with a ruler that
+   * shrinks.
+   *
+   * A FORWARD jump is the one that bites. It inflates now() while the stamp
+   * stays put, the computed wait comes out short by exactly the jump, and the
+   * request really does leave early — against a free service that has already
+   * blocked this project once. NTP corrects in both directions, so durations
+   * are timed monotonically rather than hoped about. A wall clock is not a
+   * stopwatch.
+   */
+  monotonicNow?: () => number;
   sleep?: (ms: number) => Promise<void>;
   tilesPerCycle?: number;
   tileIntervalMs?: number;
@@ -102,8 +125,14 @@ export interface TileCycleOutcome {
 
 export interface TilePoller {
   runCycle(): Promise<TileCycleOutcome>;
-  /** Epoch ms until which every provider request is suspended, or 0. */
-  suspendedUntilMs(): number;
+  /**
+   * Milliseconds of 429 suspension still to run, 0 when not suspended.
+   *
+   * A DURATION, not an instant: the suspension is timed on the monotonic
+   * clock, and a monotonic value rendered as a date is meaningless. The
+   * caller adds it to its own wall clock if it wants to show a time.
+   */
+  suspendedForMs(): number;
   /** The last tile failure as THROWN: /health reads its chain, not a string. */
   lastFailure(): unknown;
 }
@@ -122,6 +151,7 @@ const defaultSleep = (ms: number): Promise<void> =>
  */
 export function createTilePoller(deps: TilePollerDeps): TilePoller {
   const now = deps.now ?? Date.now;
+  const monotonicNow = deps.monotonicNow ?? (() => performance.now());
   const sleep = deps.sleep ?? defaultSleep;
   const tilesPerCycle = deps.tilesPerCycle ?? TILES_PER_CYCLE;
   const tileIntervalMs = deps.tileIntervalMs ?? TILE_INTERVAL_MS;
@@ -133,12 +163,12 @@ export function createTilePoller(deps: TilePollerDeps): TilePoller {
 
   /** Waits until tileIntervalMs has passed since the last fetch was issued. */
   async function waitForTileSlot(): Promise<void> {
-    const waitMs = lastTileFetchAtMs + tileIntervalMs - now();
+    const waitMs = lastTileFetchAtMs + tileIntervalMs - monotonicNow();
     if (waitMs > 0) await sleep(waitMs);
   }
 
   async function runCycle(): Promise<TileCycleOutcome> {
-    if (now() < tilesSuspendedUntil) return { anySuccess: false, tilesAttempted: 0 };
+    if (monotonicNow() < tilesSuspendedUntil) return { anySuccess: false, tilesAttempted: 0 };
 
     const batch = deps.scheduler.next(tilesPerCycle);
     if (batch.length === 0) return { anySuccess: false, tilesAttempted: 0 };
@@ -167,12 +197,14 @@ export function createTilePoller(deps: TilePollerDeps): TilePoller {
     // the ceiling.
     for (const tile of batch) {
       await waitForTileSlot();
-      if (now() < tilesSuspendedUntil) break;
+      if (monotonicNow() < tilesSuspendedUntil) break;
 
       // Stamped before the fetch, not after: the floor is on the interval
       // between requests leaving this process, and a tile slower than the
       // floor already spaces itself.
-      lastTileFetchAtMs = now();
+      const sinceLastMs = lastTileFetchAtMs === 0 ? null : monotonicNow() - lastTileFetchAtMs;
+      lastTileFetchAtMs = monotonicNow();
+      const departedAt = now();
       tilesAttempted += 1;
       try {
         const result = await deps.fetchTile(tile);
@@ -182,7 +214,23 @@ export function createTilePoller(deps: TilePollerDeps): TilePoller {
         // One line per successful tile: without it the request rate cannot be
         // observed from outside, and the point of the ceiling is that it must
         // be verifiable rather than believed.
-        deps.log.info({ tile: tile.id, aircraft: result.aircraft.length }, 'tile fetched');
+        // `departedAt` and `ms`, not just the completion instant. The ceiling
+        // is on the interval between requests LEAVING this process, and the
+        // gap between two completions is that interval plus the difference of
+        // two latencies: measured on a real run, six of 116 completion gaps
+        // read below 1.4 s while every departure was correctly spaced. A log
+        // that cannot distinguish the two makes the ceiling unverifiable,
+        // which is the one thing this line exists to prevent.
+        deps.log.info(
+          {
+            tile: tile.id,
+            aircraft: result.aircraft.length,
+            departedAt,
+            sinceLastMs,
+            ms: Math.round(monotonicNow() - lastTileFetchAtMs),
+          },
+          'tile fetched'
+        );
       } catch (e) {
         // `msg` is the aggregate, which names every source tried; `root` is the
         // bottom of the cause chain, where undici puts the code (defect #51).
@@ -211,7 +259,7 @@ export function createTilePoller(deps: TilePollerDeps): TilePoller {
                   MAX_RATE_LIMIT_COOLDOWN_MS,
                   Math.max(MIN_RATE_LIMIT_COOLDOWN_MS, retryAfterSeconds * 1000)
                 );
-          tilesSuspendedUntil = now() + waitMs;
+          tilesSuspendedUntil = monotonicNow() + waitMs;
           deps.log.error(
             { err: msg, code: root.code, tile: tile.id, waitSeconds: Math.round(waitMs / 1000) },
             'tile fetch rate-limited — suspending'
@@ -251,7 +299,7 @@ export function createTilePoller(deps: TilePollerDeps): TilePoller {
 
   return {
     runCycle,
-    suspendedUntilMs: () => tilesSuspendedUntil,
+    suspendedForMs: () => Math.max(0, tilesSuspendedUntil - monotonicNow()),
     lastFailure: () => lastFailure,
   };
 }

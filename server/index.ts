@@ -362,12 +362,14 @@ registerHealthRoute(app, {
     maxAircraft: MAX_PAYLOAD_AIRCRAFT,
   }),
   tiles: () => {
-    const suspendedUntil = poller.suspendedUntilMs();
+    const suspendedForMs = poller.suspendedForMs();
     return {
       ...scheduler.stats(),
       observedSweepSeconds,
+      // Rendered from OUR wall clock at read time: the poller times the
+      // suspension monotonically, so it hands back a remaining duration.
       suspendedUntil:
-        Date.now() < suspendedUntil ? new Date(suspendedUntil).toISOString() : null,
+        suspendedForMs > 0 ? new Date(Date.now() + suspendedForMs).toISOString() : null,
     };
   },
 });
