@@ -499,6 +499,18 @@ app.get('/api/states', async (req, reply) => {
 // Static frontend (production only) — serves the Vite build from dist/.
 // ----------------------------------------------------------------------------
 
+/*
+ * Why this block announces every outcome, including doing nothing.
+ *
+ * Railway does not set NODE_ENV. The gate below was therefore false on every
+ * deploy, the whole block was skipped, and the service answered 404 at `/`
+ * while /health and /api/states worked perfectly — so every check anyone ran
+ * said the deploy was healthy. It stayed silent about serving no frontend at
+ * all, which is the same failure this project has met everywhere else: doing
+ * less than expected and saying nothing. `npm start` now sets NODE_ENV
+ * itself, because the production entry point should not depend on what a
+ * host happens to set, and the skipped branch now says so out loud.
+ */
 if (NODE_ENV === 'production') {
   const distDir = resolve(process.cwd(), 'dist');
   if (existsSync(distDir)) {
@@ -520,6 +532,11 @@ if (NODE_ENV === 'production') {
   } else {
     app.log.warn(`NODE_ENV=production but ${distDir} does not exist — no static files served`);
   }
+} else {
+  app.log.warn(
+    `NODE_ENV is "${NODE_ENV}", not "production" — serving the API only, and / will answer 404. ` +
+      'If this is a deploy, its start command is not setting NODE_ENV.'
+  );
 }
 
 // ----------------------------------------------------------------------------
