@@ -3512,7 +3512,7 @@ Prima di disegnare un arco bisogna sapere **dove** sono i suoi due capi, e cosa 
 
 **Il terminal è modellato e non sarà mai popolato, ed è l'esito corretto.** Non aggiungo un campo `terminal` a `FlightRouteLite`: sarebbe un `null` su ogni record di un payload da 0,84 MB per un dato che nessuna sorgente gratuita espone (spec §2). Il tipo di UI lo prevede, la scheda renderizza quella riga solo se è non-null, e in produzione non comparirà. L'alternativa è scrivere «Terminal —», che suggerisce un terminal che non abbiamo.
 
-- [ ] **Step 1: Creare `tests/unit/data/airportInfo.test.ts`**
+- [x] **Step 1: Creare `tests/unit/data/airportInfo.test.ts`**
 
 ```ts
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -3594,7 +3594,7 @@ describe('airportInfoFor', () => {
 });
 ```
 
-- [ ] **Step 2: Verificare il rosso**
+- [x] **Step 2: Verificare il rosso**
 
 ```bash
 npx vitest run tests/unit/data/airportInfo.test.ts
@@ -3602,7 +3602,7 @@ npx vitest run tests/unit/data/airportInfo.test.ts
 
 Expected: `Failed to resolve import "@/data/airportInfo"`. Zero test passati.
 
-- [ ] **Step 3: Creare `src/data/airportInfo.ts`**
+- [x] **Step 3: Creare `src/data/airportInfo.ts`**
 
 ```ts
 import type { FlightRouteLite } from '@/types';
@@ -3673,7 +3673,7 @@ export function isPlaceable(a: AirportInfo): boolean {
 }
 ```
 
-- [ ] **Step 4: Verificare il verde**
+- [x] **Step 4: Verificare il verde**
 
 ```bash
 npx vitest run tests/unit/data/airportInfo.test.ts
@@ -3681,7 +3681,7 @@ npx vitest run tests/unit/data/airportInfo.test.ts
 
 Expected: **6 passed**. Suite intera: 391.
 
-- [ ] **Step 5: Estendere il blocco `selectionStore` di `tests/unit/state/stores.test.ts`**
+- [x] **Step 5: Estendere il blocco `selectionStore` di `tests/unit/state/stores.test.ts`**
 
 Sostituire il blocco
 
@@ -3735,7 +3735,7 @@ describe('selectionStore', () => {
 });
 ```
 
-- [ ] **Step 6: Verificare il rosso**
+- [x] **Step 6: Verificare il rosso**
 
 ```bash
 npx vitest run tests/unit/state/stores.test.ts
@@ -3743,7 +3743,7 @@ npx vitest run tests/unit/state/stores.test.ts
 
 Expected: i tre test nuovi falliscono — `openAirport is not a function` — e i due vecchi restano verdi.
 
-- [ ] **Step 7: Sostituire `src/state/selectionStore.ts`**
+- [x] **Step 7: Sostituire `src/state/selectionStore.ts`**
 
 ```ts
 import { create } from 'zustand';
@@ -3771,7 +3771,7 @@ export const useSelectionStore = create<SelectionState>((set) => ({
 }));
 ```
 
-- [ ] **Step 8: Creare `tests/component/FlightCard.test.tsx`**
+- [x] **Step 8: Creare `tests/component/FlightCard.test.tsx`**
 
 ```tsx
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -3839,7 +3839,7 @@ describe('FlightCard', () => {
 });
 ```
 
-- [ ] **Step 9: Verificare il rosso**
+- [x] **Step 9: Verificare il rosso**
 
 ```bash
 npx vitest run tests/component/FlightCard.test.tsx
@@ -3847,7 +3847,7 @@ npx vitest run tests/component/FlightCard.test.tsx
 
 Expected: 2 passed, **1 failed** — il secondo test. Oggi `src/ui/FlightCard.tsx:31` decide con `r?.origin && r?.destination`, cioè con il risultato di `lookupAirport`, quindi per `FRU` cade sul ramo «Route unknown». È il difetto che questo step apre.
 
-- [ ] **Step 10: Sostituire il blocco della rotta in `src/ui/FlightCard.tsx`**
+- [x] **Step 10: Sostituire il blocco della rotta in `src/ui/FlightCard.tsx`**
 
 Aggiungere agli import:
 
@@ -3905,7 +3905,7 @@ e aggiungere, sopra `const lastSeen =`:
   const ends = aircraft.route ? routeEnds(aircraft.route) : null;
 ```
 
-- [ ] **Step 11: Aggiungere lo stile della nota in `src/ui/styles.css`**
+- [x] **Step 11: Aggiungere lo stile della nota in `src/ui/styles.css`**
 
 Sotto la riga `.route { font-size: 17px; letter-spacing: -0.374px; margin-bottom: 4px; }` aggiungere:
 
@@ -3913,7 +3913,7 @@ Sotto la riga `.route { font-size: 17px; letter-spacing: -0.374px; margin-bottom
 .route__note { font-size: 11px; opacity: 0.5; margin-bottom: 4px; }
 ```
 
-- [ ] **Step 12: Verificare il verde e l'intera suite**
+- [x] **Step 12: Verificare il verde e l'intera suite**
 
 ```bash
 npx vitest run tests/component/FlightCard.test.tsx tests/unit/state/stores.test.ts
@@ -3950,7 +3950,7 @@ Terza richiesta dell'utente: in focus compare la rotta del volo. Una geodetica v
 
 **Il caso degenere non si aggira, si riconosce.** Due punti coincidenti e due punti antipodali non hanno un grande cerchio unico: lo slerp divide per `sin(ω)` che vale zero, e il risultato è `NaN` propagato in un buffer di posizioni, cioè geometria invisibile e nessun errore. `geodesicPoints` risponde `null` e il layer non disegna. Fra aeroporti reali non capita, ma un `NaN` silenzioso in un render loop è il genere di guasto che resta in produzione per mesi.
 
-- [ ] **Step 1: Creare `tests/unit/globe/routeArc.test.ts`**
+- [x] **Step 1: Creare `tests/unit/globe/routeArc.test.ts`**
 
 ```ts
 import { describe, it, expect } from 'vitest';
@@ -4083,7 +4083,7 @@ describe('geodesic arc', () => {
 });
 ```
 
-- [ ] **Step 2: Verificare il rosso**
+- [x] **Step 2: Verificare il rosso**
 
 ```bash
 npx vitest run tests/unit/globe/routeArc.test.ts
@@ -4091,7 +4091,7 @@ npx vitest run tests/unit/globe/routeArc.test.ts
 
 Expected: `Failed to resolve import "@/globe/routeArc"`. Zero test passati.
 
-- [ ] **Step 3: Creare `src/globe/routeArc.ts`**
+- [x] **Step 3: Creare `src/globe/routeArc.ts`**
 
 ```ts
 import {
@@ -4286,7 +4286,7 @@ export function createRouteArcLayer(): RouteArcLayer {
 }
 ```
 
-- [ ] **Step 4: Verificare il verde**
+- [x] **Step 4: Verificare il verde**
 
 ```bash
 npx vitest run tests/unit/globe/routeArc.test.ts
@@ -4294,7 +4294,7 @@ npx vitest run tests/unit/globe/routeArc.test.ts
 
 Expected: **12 passed**. Suite intera: 409.
 
-- [ ] **Step 5: Aggiungere `readDrawableArc` a `src/state/sceneView.ts`**
+- [x] **Step 5: Aggiungere `readDrawableArc` a `src/state/sceneView.ts`**
 
 Aggiungere agli import del file:
 
@@ -4336,7 +4336,7 @@ export function readDrawableArc(): DrawableArc | null {
 }
 ```
 
-- [ ] **Step 6: Montare il layer in `src/globe/scene.ts`**
+- [x] **Step 6: Montare il layer in `src/globe/scene.ts`**
 
 Aggiungere agli import:
 
@@ -4404,7 +4404,7 @@ Quarta richiesta: due marcatori precisi sulla mappa che si aggiornano con lo zoo
 
 **La soglia dell'etichetta è una funzione pura.** `OrbitControls` tiene la camera fra 3,0 e 10,0 raggi di globo (`src/globe/scene.ts:45-46`): sotto 6,0 — la metà bassa della corsa — accanto al pallino compare il codice IATA. Una soglia scritta dentro il render loop non si potrebbe testare, e questa è esattamente il genere di costante che qualcuno cambia per sbaglio.
 
-- [ ] **Step 1: Creare `tests/unit/globe/airportMarkers.test.ts`**
+- [x] **Step 1: Creare `tests/unit/globe/airportMarkers.test.ts`**
 
 ```ts
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -4491,7 +4491,7 @@ describe('airport markers', () => {
 });
 ```
 
-- [ ] **Step 2: Verificare il rosso**
+- [x] **Step 2: Verificare il rosso**
 
 ```bash
 npx vitest run tests/unit/globe/airportMarkers.test.ts
@@ -4499,7 +4499,7 @@ npx vitest run tests/unit/globe/airportMarkers.test.ts
 
 Expected: `Failed to resolve import "@/globe/airportMarkers"`. Zero test passati.
 
-- [ ] **Step 3: Creare `src/globe/airportMarkers.ts`**
+- [x] **Step 3: Creare `src/globe/airportMarkers.ts`**
 
 ```ts
 import type { Camera } from 'three';
@@ -4647,7 +4647,7 @@ export function createAirportMarkers(
 }
 ```
 
-- [ ] **Step 4: Verificare il verde**
+- [x] **Step 4: Verificare il verde**
 
 ```bash
 npx vitest run tests/unit/globe/airportMarkers.test.ts
@@ -4655,7 +4655,7 @@ npx vitest run tests/unit/globe/airportMarkers.test.ts
 
 Expected: **7 passed**. Suite intera: 416.
 
-- [ ] **Step 5: Creare `tests/component/AirportCard.test.tsx`**
+- [x] **Step 5: Creare `tests/component/AirportCard.test.tsx`**
 
 ```tsx
 import { describe, it, expect, afterEach } from 'vitest';
@@ -4728,7 +4728,7 @@ describe('AirportCard', () => {
 });
 ```
 
-- [ ] **Step 6: Verificare il rosso**
+- [x] **Step 6: Verificare il rosso**
 
 ```bash
 npx vitest run tests/component/AirportCard.test.tsx
@@ -4736,7 +4736,7 @@ npx vitest run tests/component/AirportCard.test.tsx
 
 Expected: `Failed to resolve import "@/ui/AirportCard"`. Zero test passati.
 
-- [ ] **Step 7: Creare `src/ui/AirportCard.tsx`**
+- [x] **Step 7: Creare `src/ui/AirportCard.tsx`**
 
 ```tsx
 import type { AirportInfo } from '@/data/airportInfo';
@@ -4796,7 +4796,7 @@ function Row({ label, value }: { label: string; value: string }) {
 }
 ```
 
-- [ ] **Step 8: Verificare il verde**
+- [x] **Step 8: Verificare il verde**
 
 ```bash
 npx vitest run tests/component/AirportCard.test.tsx
@@ -4804,7 +4804,7 @@ npx vitest run tests/component/AirportCard.test.tsx
 
 Expected: **6 passed**. Suite intera: 422.
 
-- [ ] **Step 9: Estendere `tests/unit/state/sceneView.test.ts` — un estremo solo è comunque un estremo**
+- [x] **Step 9: Estendere `tests/unit/state/sceneView.test.ts` — un estremo solo è comunque un estremo**
 
 Aggiungere in fondo al file, dopo la chiusura di `describe('readVisibilityRule', …)`, e aggiungere agli import:
 
@@ -4885,7 +4885,7 @@ npx vitest run tests/unit/state/sceneView.test.ts
 
 Expected: **8 passed, 4 failed** — i quattro nuovi, perché `readFocusView` non esiste ancora. Lo Step 10 li rende verdi.
 
-- [ ] **Step 10: Una risoluzione sola per arco e marcatori, in `src/state/sceneView.ts`**
+- [x] **Step 10: Una risoluzione sola per arco e marcatori, in `src/state/sceneView.ts`**
 
 Sostituire la funzione `readDrawableArc` creata dal Task 6 con:
 
@@ -5002,7 +5002,7 @@ import type { DrawableArc } from '@/globe/routeArc';
 import type { MarkerSpec } from '@/globe/airportMarkers';
 ```
 
-- [ ] **Step 11: Collegare scena, shell e pannello**
+- [x] **Step 11: Collegare scena, shell e pannello**
 
 In `src/globe/scene.ts`:
 
@@ -5094,7 +5094,7 @@ import { readOpenAirport } from '@/state/sceneView';
   const openAirport = openEnd !== null ? readOpenAirport() : null;
 ```
 
-- [ ] **Step 12: Aggiungere il gradino della scheda aeroporto alla scala di `Esc`**
+- [x] **Step 12: Aggiungere il gradino della scheda aeroporto alla scala di `Esc`**
 
 In `tests/unit/state/escape.test.ts`, aggiungere `openEnd: null` al `beforeEach` (`useSelectionStore.setState({ selectedIcao: null, openEnd: null });`) e aggiungere un test:
 
@@ -5141,7 +5141,7 @@ e in `src/state/flightFocus.ts`, come prima riga del corpo di `leaveFlight`:
   useSelectionStore.getState().openAirport(null);
 ```
 
-- [ ] **Step 13: Aggiungere lo stile dei marcatori in `src/ui/styles.css`**
+- [x] **Step 13: Aggiungere lo stile dei marcatori in `src/ui/styles.css`**
 
 In fondo al file:
 
@@ -5243,7 +5243,7 @@ Quinta richiesta. La barra è sempre visibile — dietro una scorciatoia sarebbe
 
 Le due letture non si sovrappongono mai, e vale la pena dirlo perché sembra il contrario: la forma ICAO richiede **tre lettere** seguite da una cifra, la forma IATA due caratteri seguiti da sole cifre. `BAW274` ha prefisso `BAW` (tre lettere) e la lettura IATA fallirebbe perché `W274` non è un numero; `VY1234` ha prefisso `VY1`, che non sono tre lettere, quindi resta solo la lettura IATA.
 
-- [ ] **Step 1: Creare `tests/unit/data/flightQuery.test.ts`**
+- [x] **Step 1: Creare `tests/unit/data/flightQuery.test.ts`**
 
 ```ts
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -5308,7 +5308,7 @@ describe('flight query', () => {
 });
 ```
 
-- [ ] **Step 2: Verificare il rosso**
+- [x] **Step 2: Verificare il rosso**
 
 ```bash
 npx vitest run tests/unit/data/flightQuery.test.ts
@@ -5316,7 +5316,7 @@ npx vitest run tests/unit/data/flightQuery.test.ts
 
 Expected: `Failed to resolve import "@/data/flightQuery"`. Zero test passati.
 
-- [ ] **Step 3: Aggiungere la mappa IATA → ICAO in `src/data/airlineLookup.ts`**
+- [x] **Step 3: Aggiungere la mappa IATA → ICAO in `src/data/airlineLookup.ts`**
 
 Sostituire
 
@@ -5357,7 +5357,7 @@ export function lookupAirlineIcaosByIata(iata: string): string[] {
 }
 ```
 
-- [ ] **Step 4: Creare `src/data/flightQuery.ts`**
+- [x] **Step 4: Creare `src/data/flightQuery.ts`**
 
 ```ts
 import { lookupAirlineIcaosByIata } from './airlineLookup';
@@ -5409,7 +5409,7 @@ export function expandQuery(input: string): string[] {
 }
 ```
 
-- [ ] **Step 5: Verificare il verde**
+- [x] **Step 5: Verificare il verde**
 
 ```bash
 npx vitest run tests/unit/data/flightQuery.test.ts
@@ -5417,7 +5417,7 @@ npx vitest run tests/unit/data/flightQuery.test.ts
 
 Expected: **9 passed**. Suite intera: 437.
 
-- [ ] **Step 6: Creare `tests/unit/server/routeQuery.test.ts`**
+- [x] **Step 6: Creare `tests/unit/server/routeQuery.test.ts`**
 
 ```ts
 // @vitest-environment node
@@ -5501,7 +5501,7 @@ describe('GET /api/route/:callsign', () => {
 });
 ```
 
-- [ ] **Step 7: Verificare il rosso**
+- [x] **Step 7: Verificare il rosso**
 
 ```bash
 npx vitest run tests/unit/server/routeQuery.test.ts
@@ -5509,7 +5509,7 @@ npx vitest run tests/unit/server/routeQuery.test.ts
 
 Expected: il file non si carica, `Cannot find module '../../../server/routeQuery'`. Zero test passati.
 
-- [ ] **Step 8: Creare `server/routeQuery.ts`**
+- [x] **Step 8: Creare `server/routeQuery.ts`**
 
 ```ts
 import type { FastifyInstance } from 'fastify';
@@ -5567,7 +5567,7 @@ export function registerRouteQueryRoute(app: FastifyInstance, deps: RouteQueryDe
 }
 ```
 
-- [ ] **Step 9: Registrare l'endpoint in `server/index.ts`**
+- [x] **Step 9: Registrare l'endpoint in `server/index.ts`**
 
 Aggiungere l'import accanto a quello di `registerHealthRoute` (riga 64):
 
@@ -5595,7 +5595,7 @@ registerRouteQueryRoute(app, {
 });
 ```
 
-- [ ] **Step 10: Verificare il verde**
+- [x] **Step 10: Verificare il verde**
 
 ```bash
 npx vitest run tests/unit/server/routeQuery.test.ts
@@ -5604,7 +5604,7 @@ npm run build:all
 
 Expected: **5 passed**; build pulita su entrambi i programmi — in particolare `tsconfig.server.json`, che non accetta l'alias `@/` e pretende i suffissi `.js`. Suite intera: 442.
 
-- [ ] **Step 11: Creare `tests/component/FlightSearch.test.tsx`**
+- [x] **Step 11: Creare `tests/component/FlightSearch.test.tsx`**
 
 ```tsx
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -5832,7 +5832,7 @@ describe('FlightSearch — the four outcomes', () => {
 });
 ```
 
-- [ ] **Step 12: Verificare il rosso**
+- [x] **Step 12: Verificare il rosso**
 
 ```bash
 npx vitest run tests/component/FlightSearch.test.tsx
@@ -5840,7 +5840,7 @@ npx vitest run tests/component/FlightSearch.test.tsx
 
 Expected: `Failed to resolve import "@/ui/FlightSearch"`. Zero test passati.
 
-- [ ] **Step 13: Creare `tests/unit/data/routeClient.test.ts`**
+- [x] **Step 13: Creare `tests/unit/data/routeClient.test.ts`**
 
 Il difetto che questo file chiude è la forma più pura della famiglia (D15b): **un guasto diventa un'affermazione sul volo**. `if (!res.ok) return null` e `.catch(() => null)` fanno sì che un 500, un timeout o un server spento producano «No flight by that number» — lo schermo dichiara di aver verificato una cosa che non ha potuto nemmeno chiedere.
 
@@ -5911,7 +5911,7 @@ describe('fetchRoute — three answers, and never the wrong one', () => {
 });
 ```
 
-- [ ] **Step 14: Verificare il rosso**
+- [x] **Step 14: Verificare il rosso**
 
 ```bash
 npx vitest run tests/unit/data/routeClient.test.ts
@@ -5919,7 +5919,7 @@ npx vitest run tests/unit/data/routeClient.test.ts
 
 Expected: `Failed to resolve import "@/data/routeClient"`. Zero test passati.
 
-- [ ] **Step 15: Creare `src/data/routeClient.ts`**
+- [x] **Step 15: Creare `src/data/routeClient.ts`**
 
 ```ts
 import type { FlightRouteLite } from '@/types';
@@ -5979,7 +5979,7 @@ npx vitest run tests/unit/data/routeClient.test.ts
 
 Expected: **6 passed**. Suite intera: 448.
 
-- [ ] **Step 16: Creare `src/state/searchStore.ts`**
+- [x] **Step 16: Creare `src/state/searchStore.ts`**
 
 ```ts
 import { create } from 'zustand';
@@ -6110,7 +6110,7 @@ export const useSearchStore = create<SearchState>((set) => ({
 }));
 ```
 
-- [ ] **Step 17: Estendere `tests/unit/state/sceneView.test.ts` — di chi è l'arco**
+- [x] **Step 17: Estendere `tests/unit/state/sceneView.test.ts` — di chi è l'arco**
 
 Aggiungere agli import `arcSubject` (accanto a `readFocusView`, già importato dal Task 7) e `import { useSearchStore } from '@/state/searchStore';`.
 
@@ -6161,7 +6161,7 @@ npx vitest run tests/unit/state/sceneView.test.ts
 
 Expected: rosso sui due nuovi — `arcSubject` non esiste ancora, quindi o i due test falliscono (`arcSubject is not a function`) o il runner rifiuta l'import prima di eseguire il file, a seconda di come Vite tratta un export mancante. In nessuno dei due casi il comportamento dei 12 test del Task 7 cambia: `readFocusView` non ha ancora imparato niente.
 
-- [ ] **Step 18: L'arco fantasma, e UNA sola autorità su di chi è l'arco — `src/state/sceneView.ts`**
+- [x] **Step 18: L'arco fantasma, e UNA sola autorità su di chi è l'arco — `src/state/sceneView.ts`**
 
 `run` lascia il volo **prima** di promettere l'arco, e questo chiude un ordine solo: cercare mentre un volo è a fuoco. L'ordine opposto — cliccare un aereo **dopo** la ricerca — non lo chiude nessuno: niente azzera l'esito quando l'utente seleziona qualcosa, e l'arco va alla selezione. La riga continuava a dire «BA999 · position unavailable — outside ADS-B coverage» mentre al posto dell'arco di BA999 c'era quello del volo selezionato, oppure — se quel volo non ha rotta, cioè il 95,3 % della flotta — nessun arco. Lo schermo nominava ciò che non stava disegnando.
 
@@ -6243,7 +6243,7 @@ npx vitest run tests/unit/state/sceneView.test.ts
 
 Expected: **14 passed**. Suite intera: 450.
 
-- [ ] **Step 19: Creare `src/ui/FlightSearch.tsx`**
+- [x] **Step 19: Creare `src/ui/FlightSearch.tsx`**
 
 ```tsx
 import { useSearchStore } from '@/state/searchStore';
@@ -6370,7 +6370,7 @@ import { arcSubject } from '@/state/sceneView';
 import type { FlightRouteLite } from '@/types';
 ```
 
-- [ ] **Step 20: Verificare il verde**
+- [x] **Step 20: Verificare il verde**
 
 ```bash
 npx vitest run tests/component/FlightSearch.test.tsx
@@ -6378,7 +6378,7 @@ npx vitest run tests/component/FlightSearch.test.tsx
 
 Expected: **14 passed**. Suite intera: 464.
 
-- [ ] **Step 21: Aggiungere il gradino della ricerca alla scala di `Esc`**
+- [x] **Step 21: Aggiungere il gradino della ricerca alla scala di `Esc`**
 
 In `tests/unit/state/escape.test.ts` aggiungere al `beforeEach` `useSearchStore.setState({ query: '', outcome: { kind: 'idle' } });` con il relativo import, e il test:
 
@@ -6404,7 +6404,7 @@ In `src/state/escape.ts`, fra il gradino della scheda aeroporto e quello del foc
 
 con l'import `import { useSearchStore } from './searchStore';`.
 
-- [ ] **Step 22: Montare la barra e darle uno stile**
+- [x] **Step 22: Montare la barra e darle uno stile**
 
 In `src/ui/AppShell.tsx` aggiungere `import { FlightSearch } from './FlightSearch';` e, nel JSX, `<FlightSearch />` subito dopo `<FleetPanel />`.
 
@@ -6490,7 +6490,7 @@ Nessun test unitario di questo piano prova la cosa che conta davvero: che le cin
 
 **Il feed viene intercettato, non atteso.** `playwright.config.ts:13` avvia solo `npm run dev`, cioè Vite: il server Fastify non c'è e `/api/states` non risponde. Il test `happy-path` esistente sopravvive perché `/\d+ aircraft/` combacia anche con «0 aircraft». Un test sul pannello non può vivere di quello: serve una flotta nota. `page.route()` serve una risposta fissa — il che rende il test **deterministico**, cosa che un feed vero non sarebbe mai, e non manda una sola richiesta verso un servizio gratuito.
 
-- [ ] **Step 1: Creare `tests/e2e/panel-focus-search.spec.ts`**
+- [x] **Step 1: Creare `tests/e2e/panel-focus-search.spec.ts`**
 
 ```ts
 import { test, expect } from '@playwright/test';
@@ -6653,7 +6653,7 @@ test('dismissing the flight card gives the sky back, and says so while it is gon
 });
 ```
 
-- [ ] **Step 2: Estendere `tests/e2e/a11y.spec.ts`**
+- [x] **Step 2: Estendere `tests/e2e/a11y.spec.ts`**
 
 Aggiungere in fondo al file:
 

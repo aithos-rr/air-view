@@ -62,6 +62,7 @@ import { createFleet } from './fleet.js';
 import { rootCause } from './errorChain.js';
 import { createTilePoller } from './poller.js';
 import { registerHealthRoute } from './healthRoute.js';
+import { registerRouteQueryRoute } from './routeQuery.js';
 import { buildTileGrid, createTileScheduler, tilesNear, TILE_RADIUS_NM } from '../src/data/sources/tileGrid.js';
 import { createRouteResolver } from './routeResolver.js';
 import { enrichAndMark } from './enrich.js';
@@ -400,6 +401,14 @@ registerHealthRoute(app, {
   },
   routes: () => routes.stats(),
   aircraft: () => ({ total: lastTotalCount, complete: lastCompleteCount }),
+});
+
+// Search outcome 2: the flight is not in the sky we can see, but we know
+// where it goes. Served from the resolver's memory only — see routeQuery.ts
+// for why a live lookup here would be a ban waiting to happen.
+registerRouteQueryRoute(app, {
+  knowledge: (callsign) => routes.knowledge(callsign),
+  enqueue: (callsigns) => routes.enqueue(callsigns),
 });
 
 // ----------------------------------------------------------------------------

@@ -284,6 +284,7 @@ html, body, #root {
 }
 
 .route { font-size: 17px; letter-spacing: -0.374px; margin-bottom: 4px; }
+.route__note { font-size: 11px; opacity: 0.5; margin-bottom: 4px; }
 .times { font-size: 14px; letter-spacing: -0.224px; opacity: 0.7; font-variant-numeric: tabular-nums; }
 .divider { height: 1px; background: rgba(255,255,255,0.08); margin: var(--space-lg) 0; }
 .fields { display: flex; flex-direction: column; gap: var(--space-md); }
@@ -331,4 +332,95 @@ html, body, #root {
 
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.01s !important; transition-duration: 0.01s !important; }
+}
+
+/* D/A airport markers — positioned by the render loop, never by CSS */
+.app-markers {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+.marker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  pointer-events: auto;
+  color: var(--color-primary-on-dark);
+  font-family: var(--font-stack);
+}
+.marker__dot {
+  display: grid;
+  place-items: center;
+  /* min-width, not width: a route that ends where it began gets ONE marker
+     reading D/A, and a fixed 18px box would clip it. */
+  min-width: 18px;
+  padding: 0 3px;
+  height: 18px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(41, 151, 255, 0.9);
+  background: rgba(41, 151, 255, 0.22);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+.marker__label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+.airport__end {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.45;
+}
+.airport__name { font-size: 15px; font-weight: 600; }
+
+/* Flight search — always visible, never behind a shortcut (spec §6.3) */
+.search {
+  position: fixed;
+  top: var(--space-xl);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.search__input {
+  width: 190px;
+  padding: var(--space-xs) var(--space-md);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--color-on-dark);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: var(--radius-pill);
+  font-size: 13px;
+  font-family: var(--font-stack);
+}
+.search__clear {
+  background: none;
+  border: 0;
+  color: var(--color-on-dark);
+  opacity: 0.5;
+  cursor: pointer;
+  font-size: 12px;
+}
+.search__outcome {
+  flex-basis: 100%;
+  text-align: center;
+  margin-top: var(--space-xxs);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.65);
 }

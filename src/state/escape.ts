@@ -2,6 +2,7 @@ import { useSelectionStore } from './selectionStore';
 import { useFilterStore } from './filterStore';
 import { usePanelStore } from './panelStore';
 import { leaveFlight } from './flightFocus';
+import { useSearchStore } from './searchStore';
 
 /**
  * One Escape, one thing closed, innermost first.
@@ -20,6 +21,14 @@ import { leaveFlight } from './flightFocus';
  *   handle Escape.
  */
 export function handleEscape(): boolean {
+  if (useSelectionStore.getState().openEnd !== null) {
+    useSelectionStore.getState().openAirport(null);
+    return true;
+  }
+  if (useSearchStore.getState().outcome.kind !== 'idle') {
+    useSearchStore.getState().clear();
+    return true;
+  }
   if (useSelectionStore.getState().selectedIcao !== null) {
     // One press undoes one ACT, and choosing a flight was one act: the
     // selection and the card opened for it go together. Which is exactly

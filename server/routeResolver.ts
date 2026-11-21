@@ -16,6 +16,33 @@ export interface SeedRecord {
   route: FlightRoute | null;
 }
 
+/**
+ * What we know about a callsign — including the fact that we never asked.
+ *
+ * get() returns null for two facts that are not the same fact, and a caller
+ * holding only that null cannot tell them apart:
+ *
+ *  - `noRoute` — we DID ask adsbdb and it has no route for this callsign.
+ *    The 351 records of route-cache.json whose route is null, plus every
+ *    404 the pump has collected since. This is a measurement.
+ *  - `notLookedUpYet` — nobody has ever asked. The cache holds ~8 374
+ *    callsigns and grows by ~920 an hour, so for a real flight number typed
+ *    into the search box this is the ORDINARY case, not the exotic one.
+ *  - `lookupFailed` — we tried until the attempt cap and nothing ever
+ *    answered. Not a verdict about the flight, and not a promise either:
+ *    enqueue() refuses to try an abandoned callsign again.
+ *
+ * Flattening the three is how "No flight by that number" came to be printed
+ * about flights nobody had asked about (D15b).
+ */
+export type RouteKnowledgeStatus = 'known' | 'noRoute' | 'notLookedUpYet' | 'lookupFailed';
+
+export interface RouteKnowledge {
+  status: RouteKnowledgeStatus;
+  /** The route — non-null only when status is 'known'. */
+  route: FlightRoute | null;
+}
+
 export interface ResolverStats {
   resolved: number;
   unknown: number;
@@ -63,6 +90,8 @@ export interface RouteResolverOptions {
 export interface RouteResolver {
   seed(records: SeedRecord[]): void;
   get(callsign: string): FlightRoute | null;
+  /** The route AND how we come to be saying so — see RouteKnowledge. */
+  knowledge(callsign: string): RouteKnowledge;
   enqueue(callsigns: string[]): void;
   pump(fetchImpl?: typeof fetch): Promise<number>;
   /**
@@ -206,6 +235,19 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
 
     get(callsign) {
       return resolved.get(key(callsign)) ?? null;
+    },
+
+    knowledge(callsign) {
+      const cs = key(callsign);
+      const route = resolved.get(cs);
+      if (route !== undefined) return { status: 'known', route };
+      // The order matters only in that these three sets are disjoint: a
+      // callsign in `unknown` was answered about, one in `abandoned` was
+      // tried and never answered, and anything else has simply not been
+      // reached yet — queued or not.
+      if (unknown.has(cs)) return { status: 'noRoute', route: null };
+      if (abandoned.has(cs)) return { status: 'lookupFailed', route: null };
+      return { status: 'notLookedUpYet', route: null };
     },
 
     enqueue(callsigns) {

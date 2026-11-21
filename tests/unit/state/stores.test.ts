@@ -102,7 +102,7 @@ describe('aircraftStore', () => {
 });
 
 describe('selectionStore', () => {
-  beforeEach(() => useSelectionStore.setState({ selectedIcao: null }));
+  beforeEach(() => useSelectionStore.setState({ selectedIcao: null, openEnd: null }));
   it('select sets selectedIcao', () => {
     useSelectionStore.getState().select('a1');
     expect(useSelectionStore.getState().selectedIcao).toBe('a1');
@@ -111,6 +111,24 @@ describe('selectionStore', () => {
     useSelectionStore.setState({ selectedIcao: 'a1' });
     useSelectionStore.getState().select(null);
     expect(useSelectionStore.getState().selectedIcao).toBeNull();
+  });
+  it('opens one end of the route at a time', () => {
+    useSelectionStore.getState().openAirport('origin');
+    expect(useSelectionStore.getState().openEnd).toBe('origin');
+    useSelectionStore.getState().openAirport('destination');
+    expect(useSelectionStore.getState().openEnd).toBe('destination');
+  });
+  it('shuts the airport card when a different flight is selected', () => {
+    // Otherwise the card for LHR stays on screen over the next flight's
+    // route, labelled with an airport that has nothing to do with it.
+    useSelectionStore.setState({ selectedIcao: 'a1', openEnd: 'origin' });
+    useSelectionStore.getState().select('a2');
+    expect(useSelectionStore.getState().openEnd).toBeNull();
+  });
+  it('shuts the airport card when focus ends', () => {
+    useSelectionStore.setState({ selectedIcao: 'a1', openEnd: 'destination' });
+    useSelectionStore.getState().select(null);
+    expect(useSelectionStore.getState().openEnd).toBeNull();
   });
 });
 

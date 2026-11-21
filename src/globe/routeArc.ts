@@ -1,0 +1,219 @@
+import {
+  AdditiveBlending,
+  BufferAttribute,
+  BufferGeometry,
+  DynamicDrawUsage,
+  Group,
+  LineBasicMaterial,
+  LineSegments,
+  Sphere,
+  Vector3,
+} from 'three';
+import { GLOBE_RADIUS, latLonToVec3 } from './geoHelpers';
+
+export interface GeoPointDeg {
+  lat: number;
+  lon: number;
+}
+
+export interface DrawableArc {
+  origin: GeoPointDeg;
+  destination: GeoPointDeg;
+  /** Where the aircraft is, or null when the flight is outside coverage. */
+  aircraft: GeoPointDeg | null;
+}
+
+/** #2997ff — the single accent, shared with the selected aircraft. */
+export const ARC_COLOR: [number, number, number] = [0.16, 0.59, 1.0];
+
+/** Below this a short hop looks like a polyline; above it a polar route is wasted vertices. */
+export const MIN_ARC_SAMPLES = 24;
+export const MAX_ARC_SAMPLES = 256;
+
+const FLOWN_BRIGHTNESS = 0.3;
+const AHEAD_BRIGHTNESS = 1.0;
+
+/** Just clear of the surface, and of the continent hairlines at R * 1.003. */
+const ARC_BASE_OFFSET = 0.018;
+/** How far the arc bows out at its apex, in proportion to its own length. */
+const ARC_APEX_MIN = 0.012;
+const ARC_APEX_RANGE = 0.055;
+
+/** Angle at the centre of the Earth between two points, in radians. */
+export function greatCircleRad(a: GeoPointDeg, b: GeoPointDeg): number {
+  const va = latLonToVec3(a.lat, a.lon, 1).normalize();
+  const vb = latLonToVec3(b.lat, b.lon, 1).normalize();
+  return Math.acos(Math.min(1, Math.max(-1, va.dot(vb))));
+}
+
+export function arcSampleCount(omegaRad: number): number {
+  const wanted = Math.round((omegaRad / Math.PI) * MAX_ARC_SAMPLES);
+  return Math.min(MAX_ARC_SAMPLES, Math.max(MIN_ARC_SAMPLES, wanted));
+}
+
+/** Why slerp cannot draw a line between two points. */
+export type ArcDegeneracy = 'samePlace' | 'antipodal' | 'unmeasurable';
+
+/**
+ * The pairs a geodesic cannot be drawn through, named rather than merely
+ * refused.
+ *
+ * Coincident and antipodal pairs both make sin(omega) zero, and an
+ * unguarded slerp writes NaN into a position buffer. geodesicPoints() has
+ * always dropped them — silently, with setDrawRange(0, 0) — which is fine
+ * for the renderer and useless to everyone else: 13 of the 4 243 routes in
+ * the committed cache depart and arrive at the SAME airport, and for those
+ * the card announced "CDG → CDG" over a globe that drew nothing, with
+ * nothing on screen joining the two (D15a). Exported so a caller can refuse
+ * the arc at the source and SAY why, instead of handing over an arc that
+ * disappears downstream.
+ *
+ * 1e-6 rad is about 6 m on the Earth's surface: two ends closer than that
+ * are one point, and two markers on them are one pixel.
+ */
+export function arcDegeneracy(a: GeoPointDeg, b: GeoPointDeg): ArcDegeneracy | null {
+  const omega = greatCircleRad(a, b);
+  if (!Number.isFinite(omega)) return 'unmeasurable';
+  if (omega < 1e-6) return 'samePlace';
+  if (omega > Math.PI - 1e-6) return 'antipodal';
+  return null;
+}
+
+/**
+ * The great circle between two airports, sampled by slerp.
+ *
+ * Slerp between two unit vectors IS the great circle, by definition, and
+ * geoHelpers already produces those vectors. The alternative — interpolating
+ * lat and lon linearly, which continents.ts does for coastlines over 2°
+ * segments — draws the rhumb line: measured on JFK->LHR it puts the
+ * midpoint at 46,06 N instead of 52,21 N, south of London instead of north
+ * of it. Real routes curve on the sphere and drawing them straight is a lie
+ * anyone who knows the North Atlantic tracks can see.
+ *
+ * Returns null for coincident and antipodal pairs. Both make sin(omega)
+ * zero, and an unguarded slerp would write NaN into a position buffer:
+ * invisible geometry, no error, nobody notices for months. The test itself
+ * lives in arcDegeneracy() — ONE rule, so that whoever decides whether to
+ * offer an arc and whoever draws it cannot disagree.
+ */
+export function geodesicPoints(a: GeoPointDeg, b: GeoPointDeg): Vector3[] | null {
+  if (arcDegeneracy(a, b) !== null) return null;
+  const omega = greatCircleRad(a, b);
+
+  const va = latLonToVec3(a.lat, a.lon, 1).normalize();
+  const vb = latLonToVec3(b.lat, b.lon, 1).normalize();
+  const sinOmega = Math.sin(omega);
+  const samples = arcSampleCount(omega);
+  const apex = ARC_APEX_MIN + ARC_APEX_RANGE * (omega / Math.PI);
+
+  const out: Vector3[] = [];
+  for (let i = 0; i < samples; i++) {
+    const t = i / (samples - 1);
+    const f1 = Math.sin((1 - t) * omega) / sinOmega;
+    const f2 = Math.sin(t * omega) / sinOmega;
+    const radius = GLOBE_RADIUS + ARC_BASE_OFFSET + apex * Math.sin(Math.PI * t);
+    out.push(
+      new Vector3(
+        (va.x * f1 + vb.x * f2) * radius,
+        (va.y * f1 + vb.y * f2) * radius,
+        (va.z * f1 + vb.z * f2) * radius
+      )
+    );
+  }
+  return out;
+}
+
+/**
+ * How much of the route is behind the aircraft, 0..1.
+ *
+ * Measured as travelled angle over total angle — a real distance, not a
+ * guess. A diverted aircraft off the great circle still produces an honest
+ * "how far along", and the clamp keeps a flight past its destination from
+ * indexing off the end of the buffer.
+ */
+export function flownFraction(a: GeoPointDeg, b: GeoPointDeg, at: GeoPointDeg): number {
+  const total = greatCircleRad(a, b);
+  if (total < 1e-9) return 0;
+  return Math.min(1, Math.max(0, greatCircleRad(a, at) / total));
+}
+
+export interface RouteArcLayer {
+  group: Group;
+  update: (arc: DrawableArc | null) => void;
+}
+
+/**
+ * One arc at a time: focus is about one flight, and the search ghost
+ * replaces it rather than adding to it.
+ */
+export function createRouteArcLayer(): RouteArcLayer {
+  const maxVertices = (MAX_ARC_SAMPLES - 1) * 2;
+  const positions = new Float32Array(maxVertices * 3);
+  const colors = new Float32Array(maxVertices * 3);
+
+  const geom = new BufferGeometry();
+  const positionAttr = new BufferAttribute(positions, 3);
+  positionAttr.setUsage(DynamicDrawUsage);
+  const colorAttr = new BufferAttribute(colors, 3);
+  colorAttr.setUsage(DynamicDrawUsage);
+  geom.setAttribute('position', positionAttr);
+  geom.setAttribute('color', colorAttr);
+  geom.boundingSphere = new Sphere(new Vector3(0, 0, 0), GLOBE_RADIUS + 0.5);
+
+  const mat = new LineBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    blending: AdditiveBlending,
+    depthWrite: false,
+    // Same choice the trails make: the arc of the one flight in focus is
+    // readable through the globe rather than cut in half by it.
+    depthTest: false,
+  });
+
+  const lines = new LineSegments(geom, mat);
+  lines.renderOrder = 5; // above the aircraft: in focus it IS the subject
+  lines.frustumCulled = false;
+
+  const group = new Group();
+  group.add(lines);
+
+  function writeVertex(i: number, p: Vector3, brightness: number): void {
+    positions[i * 3] = p.x;
+    positions[i * 3 + 1] = p.y;
+    positions[i * 3 + 2] = p.z;
+    colors[i * 3] = ARC_COLOR[0] * brightness;
+    colors[i * 3 + 1] = ARC_COLOR[1] * brightness;
+    colors[i * 3 + 2] = ARC_COLOR[2] * brightness;
+  }
+
+  function update(arc: DrawableArc | null): void {
+    if (arc === null) {
+      geom.setDrawRange(0, 0);
+      return;
+    }
+    const pts = geodesicPoints(arc.origin, arc.destination);
+    if (pts === null) {
+      geom.setDrawRange(0, 0);
+      return;
+    }
+    // No aircraft on the arc means nothing has been "already flown" that we
+    // know of — the off-coverage case of spec §6.3.2. One even brightness.
+    const flown =
+      arc.aircraft === null ? 0 : flownFraction(arc.origin, arc.destination, arc.aircraft);
+
+    let v = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const tA = i / (pts.length - 1);
+      const tB = (i + 1) / (pts.length - 1);
+      const brightA = arc.aircraft !== null && tA < flown ? FLOWN_BRIGHTNESS : AHEAD_BRIGHTNESS;
+      const brightB = arc.aircraft !== null && tB < flown ? FLOWN_BRIGHTNESS : AHEAD_BRIGHTNESS;
+      writeVertex(v++, pts[i]!, brightA);
+      writeVertex(v++, pts[i + 1]!, brightB);
+    }
+    geom.setDrawRange(0, v);
+    positionAttr.needsUpdate = true;
+    colorAttr.needsUpdate = true;
+  }
+
+  return { group, update };
+}

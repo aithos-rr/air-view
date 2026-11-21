@@ -6,7 +6,7 @@ import { useFilterStore } from '@/state/filterStore';
 
 describe('leaveFlight — one act, one function', () => {
   beforeEach(() => {
-    useSelectionStore.setState({ selectedIcao: null });
+    useSelectionStore.setState({ selectedIcao: null, openEnd: null });
     usePanelStore.setState({ mode: 'closed' });
     useFilterStore.setState({ showComplete: true, showPartial: true, panelOpen: false });
   });
@@ -17,7 +17,7 @@ describe('leaveFlight — one act, one function', () => {
     // — so readVisibilityRule went on granting focus, the globe went on
     // drawing 1 aircraft of 5 900, and the only words explaining that had
     // just been dismissed with the card (D15).
-    useSelectionStore.setState({ selectedIcao: 'a1' });
+    useSelectionStore.setState({ selectedIcao: 'a1', openEnd: null });
     usePanelStore.setState({ mode: 'flight' });
     leaveFlight();
     expect(useSelectionStore.getState().selectedIcao).toBeNull();
@@ -25,7 +25,7 @@ describe('leaveFlight — one act, one function', () => {
   });
 
   it('leaves the aircraft list open, because the list is not the flight', () => {
-    useSelectionStore.setState({ selectedIcao: 'a1' });
+    useSelectionStore.setState({ selectedIcao: 'a1', openEnd: null });
     usePanelStore.setState({ mode: 'list' });
     leaveFlight();
     expect(useSelectionStore.getState().selectedIcao).toBeNull();
@@ -41,5 +41,16 @@ describe('leaveFlight — one act, one function', () => {
     expect(useFilterStore.getState().panelOpen).toBe(true);
     expect(useSelectionStore.getState().selectedIcao).toBeNull();
     expect(usePanelStore.getState().mode).toBe('closed');
+  });
+
+  it('takes the airport card with the flight it was opened from', () => {
+    // The airport card is reached only THROUGH a focused flight, so a
+    // selection left behind would reopen a card the user never asked for
+    // the next time they click an aircraft. One act, one function (D15).
+    useSelectionStore.setState({ selectedIcao: 'a1', openEnd: 'origin' });
+    usePanelStore.setState({ mode: 'flight' });
+    leaveFlight();
+    expect(useSelectionStore.getState().openEnd).toBeNull();
+    expect(useSelectionStore.getState().selectedIcao).toBeNull();
   });
 });

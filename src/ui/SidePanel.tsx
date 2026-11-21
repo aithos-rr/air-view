@@ -3,6 +3,8 @@ import { usePanelStore } from '@/state/panelStore';
 import { useSelectionStore } from '@/state/selectionStore';
 import { useAircraftStore } from '@/state/aircraftStore';
 import { FlightCard } from './FlightCard';
+import { AirportCard } from './AirportCard';
+import { readOpenAirport } from '@/state/sceneView';
 import { AircraftList } from './AircraftList';
 import { leaveFlight } from '@/state/flightFocus';
 
@@ -13,6 +15,12 @@ export const SidePanel = forwardRef<HTMLDivElement>(function SidePanel(_props, r
   const aircraft = useAircraftStore((s) => s.aircraft);
 
   const selectedAircraft = selectedIcao ? aircraft.get(selectedIcao) ?? null : null;
+  const openEnd = useSelectionStore((s) => s.openEnd);
+  const openAirportEnd = useSelectionStore((s) => s.openAirport);
+  // Read on render, not subscribed: `aircraft` and `openEnd` above are
+  // already subscriptions, so every change that could alter this answer
+  // re-renders the component anyway.
+  const openAirport = openEnd !== null ? readOpenAirport() : null;
 
   return (
     <aside ref={ref} className="panel" data-mode={mode} aria-label="Aircraft information">
@@ -22,6 +30,16 @@ export const SidePanel = forwardRef<HTMLDivElement>(function SidePanel(_props, r
           5 900, and the explanation gone with the card (D15). The ✕, Escape
           and the search box's clear button are the same act and now call
           the same function. */}
+      {/* The airport card sits above the flight, inside the panel that the
+          leader line already points at, rather than in a popover that would
+          have to dodge the very marker it belongs to and stay reachable
+          with a keyboard.
+          Its ✕ closes the airport only — it is a card INSIDE the focus, not
+          the focus — which is why it calls openAirportEnd(null) and not
+          leaveFlight(). Escape walks out in the same order. */}
+      {mode === 'flight' && openAirport && (
+        <AirportCard airport={openAirport} onClose={() => openAirportEnd(null)} />
+      )}
       {mode === 'flight' && selectedAircraft && (
         <FlightCard aircraft={selectedAircraft} onClose={leaveFlight} />
       )}

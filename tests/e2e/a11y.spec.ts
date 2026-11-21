@@ -14,3 +14,12 @@ test('home page passes axe-core in panel-open mode', async ({ page }) => {
   const results = await new AxeBuilder({ page }).analyze();
   expect(results.violations).toEqual([]);
 });
+
+test('the fleet panel and the search bar pass axe-core', async ({ page }) => {
+  // Three new surfaces have never been under axe: the disclosure button,
+  // two checkboxes and a search landmark.
+  await page.goto('/');
+  await page.locator('.hud__summary').click();
+  const results = await new AxeBuilder({ page }).analyze();
+  expect(results.violations).toEqual([]);
+});

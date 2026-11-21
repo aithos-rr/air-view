@@ -3,12 +3,23 @@ import { handleEscape } from '@/state/escape';
 import { useSelectionStore } from '@/state/selectionStore';
 import { useFilterStore } from '@/state/filterStore';
 import { usePanelStore } from '@/state/panelStore';
+import { useSearchStore } from '@/state/searchStore';
 
 describe('the Escape ladder', () => {
   beforeEach(() => {
-    useSelectionStore.setState({ selectedIcao: null });
+    useSelectionStore.setState({ selectedIcao: null, openEnd: null });
     useFilterStore.setState({ showComplete: true, showPartial: true, panelOpen: false });
     usePanelStore.setState({ mode: 'closed' });
+    useSearchStore.setState({ query: '', outcome: { kind: 'idle' } });
+  });
+
+  it('closes the airport card before leaving focus', () => {
+    // The card is inside the focus: Escape walks out of the innermost thing
+    // first, or one press would undo two steps of the user's navigation.
+    useSelectionStore.setState({ selectedIcao: 'a1', openEnd: 'origin' });
+    expect(handleEscape()).toBe(true);
+    expect(useSelectionStore.getState().openEnd).toBeNull();
+    expect(useSelectionStore.getState().selectedIcao).toBe('a1');
   });
 
   it('leaves the flight first, and takes its card with it', () => {
@@ -60,5 +71,14 @@ describe('the Escape ladder', () => {
     expect(useFilterStore.getState().panelOpen).toBe(false);
 
     expect(handleEscape()).toBe(false); // nothing of ours is open
+  });
+
+  it('clears the search before leaving focus', () => {
+    // The search is what put the user in focus; undoing the search undoes
+    // the focus with it, and clear() already does exactly that.
+    useSearchStore.setState({ query: 'BA274', outcome: { kind: 'focused', callsign: 'BAW274' } });
+    useSelectionStore.setState({ selectedIcao: 'a1' });
+    expect(handleEscape()).toBe(true);
+    expect(useSearchStore.getState().outcome.kind).toBe('idle');
   });
 });

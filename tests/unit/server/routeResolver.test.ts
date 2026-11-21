@@ -275,3 +275,41 @@ describe('createRouteResolver — rate limiting', () => {
     expect(performance.now() - started).toBeGreaterThanOrEqual(80); // two gaps, not three
   });
 });
+
+describe('createRouteResolver — what we asked, and what we never asked', () => {
+  // get() answers null for two facts that are not the same fact: "we asked
+  // adsbdb and it has no route for this callsign" (the 351 records of
+  // route-cache.json whose route is null) and "this callsign has never been
+  // looked up". The cache holds ~8 374 callsigns and grows by ~920 an hour,
+  // so a real flight number a user types is far more often the second than
+  // the first — and the second is not something anyone has measured.
+
+  it('says it has never asked about a callsign it has never seen', () => {
+    expect(mk().knowledge('BAW999')).toEqual({ status: 'notLookedUpYet', route: null });
+  });
+
+  it('says NO ROUTE only for a callsign that was actually asked about', () => {
+    const r = mk();
+    r.seed([{ callsign: 'AAA111', route: null }]);
+    expect(r.knowledge('AAA111')).toEqual({ status: 'noRoute', route: null });
+  });
+
+  it('hands back the route itself when it has one', () => {
+    const r = mk();
+    r.seed([{ callsign: 'BAW274', route: ROUTE }]);
+    expect(r.knowledge('baw274 ')).toEqual({ status: 'known', route: ROUTE });
+  });
+
+  it('keeps a callsign it gave up on apart from one adsbdb answered about', async () => {
+    // Three transport failures are not a verdict about the flight: nothing
+    // ever answered. It is also not "not looked up yet", because enqueue()
+    // deliberately refuses to try it again — so promising the user a retry
+    // would be the same invention in the other direction.
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+    const r = mk({ maxPerPump: 1, maxAttempts: 3 });
+    r.enqueue(['BAW274']);
+    for (let i = 0; i < 4; i++) await r.pump(fetchImpl as unknown as typeof fetch);
+    expect(r.stats().abandoned).toBe(1);
+    expect(r.knowledge('BAW274')).toEqual({ status: 'lookupFailed', route: null });
+  });
+});

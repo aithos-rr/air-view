@@ -16,6 +16,9 @@ import { usePanelStore } from './panelStore';
  * Idempotent, because two surfaces can fire on one gesture.
  */
 export function leaveFlight(): void {
+  // The airport card is reached only through a focused flight, so it never
+  // outlives one: left set, it would reopen itself on the next selection.
+  useSelectionStore.getState().openAirport(null);
   useSelectionStore.getState().select(null);
   // Not a second thing to close: the card exists only for the selected
   // flight, and a panel left in 'flight' mode with nothing selected renders

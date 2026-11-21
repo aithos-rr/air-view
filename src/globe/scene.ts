@@ -6,6 +6,8 @@ import { loadContinents } from './continents';
 import { createAircraftLayer } from './aircraft';
 import { createTrailsLayer } from './trails';
 import { createFocusFade } from './focus';
+import { createRouteArcLayer } from './routeArc';
+import { createAirportMarkers } from './airportMarkers';
 import { LeaderLine } from './leaderLine';
 import { findAircraftAtPointer } from './raycaster';
 import { latLonAltToVec3, vec3ToLatLon, visibleCapRadiusNm } from './geoHelpers';
@@ -13,7 +15,7 @@ import { useAircraftStore } from '@/state/aircraftStore';
 import { useSelectionStore } from '@/state/selectionStore';
 import { usePanelStore } from '@/state/panelStore';
 import { useA11yStore } from '@/state/a11yStore';
-import { readVisibilityRule } from '@/state/sceneView';
+import { readVisibilityRule, readFocusView, markerSpecs } from '@/state/sceneView';
 
 export interface ViewCentre {
   lat: number;
@@ -29,7 +31,8 @@ export interface SceneHandle {
 export function mountScene(
   canvas: HTMLCanvasElement,
   leaderSvg: SVGElement,
-  panelEl: HTMLElement
+  panelEl: HTMLElement,
+  markersEl: HTMLElement
 ): SceneHandle {
   const scene = new Scene();
 
@@ -70,6 +73,12 @@ export function mountScene(
   scene.add(aircraftLayer.group);
   const trailsLayer = createTrailsLayer();
   scene.add(trailsLayer.group);
+  const arcLayer = createRouteArcLayer();
+  scene.add(arcLayer.group);
+  const markers = createAirportMarkers(markersEl, (end) => {
+    useSelectionStore.getState().openAirport(end);
+    usePanelStore.getState().open('flight');
+  });
 
   // Continents (async)
   void loadContinents()
@@ -149,6 +158,9 @@ export function mountScene(
     aircraftLayer.update(aircraftMap.values(), selectedIcao, rule, othersBrightness);
     const tTr = performance.now();
     trailsLayer.update(aircraftMap.values(), selectedIcao, rule);
+    const focusView = readFocusView();
+    arcLayer.update(focusView?.arc ?? null);
+    markers.update(markerSpecs(focusView), camera, canvas.clientWidth, canvas.clientHeight);
     const tLd = performance.now();
 
     // Leader line: only when an aircraft is selected and on the near hemisphere
@@ -205,6 +217,7 @@ export function mountScene(
       canvas.removeEventListener('click', onClick);
       canvas.removeEventListener('pointerdown', stopRotate);
       canvas.removeEventListener('wheel', stopRotate);
+      markers.dispose();
       renderer.dispose();
     },
     viewCentre: () => {
