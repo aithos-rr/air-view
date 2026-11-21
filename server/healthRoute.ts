@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { FeedStatus } from './feedState.js';
 import type { FeedHealth } from './feedState.js';
+import type { ResolverStats } from './routeResolver.js';
 import { rootCause } from './errorChain.js';
 
 /**
@@ -31,6 +32,11 @@ export interface HealthPayloadNumbers {
   maxAircraft: number;
 }
 
+export interface HealthAircraftNumbers {
+  total: number;
+  complete: number;
+}
+
 export interface HealthRouteDeps {
   health(): FeedHealth;
   uptimeSeconds(): number;
@@ -39,6 +45,18 @@ export interface HealthRouteDeps {
   fleet: { size(): number; maxAgeSeconds(): number };
   payload(): HealthPayloadNumbers;
   tiles(): Record<string, unknown>;
+  /**
+   * The route resolver's stats — `suspendedUntil`, `consecutiveRateLimits`
+   * and `lastError` among them. Without these an adsbdb block stays
+   * invisible while /health goes on saying `ok`, which is the blindness
+   * this plan exists to remove.
+   *
+   * Optional only so the callers that predate the resolver — the route's own
+   * test among them — keep compiling. server/index.ts always passes it.
+   */
+  routes?(): ResolverStats;
+  /** How much of the fleet carries a full card and a drawable route. */
+  aircraft?(): HealthAircraftNumbers;
 }
 
 export function registerHealthRoute(app: FastifyInstance, deps: HealthRouteDeps): void {
@@ -62,6 +80,8 @@ export function registerHealthRoute(app: FastifyInstance, deps: HealthRouteDeps)
       // is what this plan is replacing everywhere else.
       payload: deps.payload(),
       tiles: deps.tiles(),
+      routes: deps.routes?.(),
+      aircraft: deps.aircraft?.(),
     });
   });
 }

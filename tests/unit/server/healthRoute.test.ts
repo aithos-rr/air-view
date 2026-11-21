@@ -4,6 +4,7 @@ import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
 import { registerHealthRoute, httpStatusForFeed } from '../../../server/healthRoute';
 import { createFeedState } from '../../../server/feedState';
+import type { ResolverStats } from '../../../server/routeResolver';
 
 /**
  * The route under a controllable clock, with a REAL createFeedState behind
@@ -14,7 +15,14 @@ import { createFeedState } from '../../../server/feedState';
  * a flat `200` — a dead feed reporting healthy for ever, which is the v1
  * failure that ran for 25 days — kept the whole suite green.
  */
-function build(opts: { degradedAfterMs?: number; startupGraceMs?: number } = {}): {
+function build(
+  opts: {
+    degradedAfterMs?: number;
+    startupGraceMs?: number;
+    routes?: () => ResolverStats;
+    aircraft?: () => { total: number; complete: number };
+  } = {}
+): {
   app: FastifyInstance;
   feed: ReturnType<typeof createFeedState>;
   advance: (ms: number) => void;
@@ -35,6 +43,8 @@ function build(opts: { degradedAfterMs?: number; startupGraceMs?: number } = {})
       aircraft: 7, bytes: 100, gzipBytes: 20, capped: false, maxAircraft: 24_000,
     }),
     tiles: () => ({ total: 546, productive: 546, dormant: 0 }),
+    routes: opts.routes,
+    aircraft: opts.aircraft,
   });
   return {
     app,
@@ -114,6 +124,44 @@ describe('GET /health — the status code that gates the Railway deploy', () => 
     expect(
       new Set([starting.json().status, ok.json().status, degraded.json().status]).size
     ).toBe(3);
+    await app.close();
+  });
+
+  it('publishes the resolver state, suspension included', async () => {
+    // Without these fields an adsbdb block is invisible while /health goes
+    // on saying `ok` — the blindness this plan exists to remove. The route
+    // pump and the resolver live in a top-level script no test can reach;
+    // this endpoint is where their state becomes observable.
+    const { app, feed } = build({
+      routes: () => ({
+        resolved: 9_000,
+        unknown: 1_200,
+        queued: 40,
+        abandoned: 3,
+        suspendedUntil: '2026-11-21T04:06:00.000Z',
+        consecutiveRateLimits: 2,
+        lastError: 'adsbdb: HTTP 429 rate limited; suspended for 720s',
+      }),
+      aircraft: () => ({ total: 8_000, complete: 2_500 }),
+    });
+    feed.put('world', '{}');
+    const body = (await app.inject({ method: 'GET', url: '/health' })).json();
+    expect(body.routes.suspendedUntil).toBe('2026-11-21T04:06:00.000Z');
+    expect(body.routes.consecutiveRateLimits).toBe(2);
+    expect(body.routes.lastError).toContain('429');
+    expect(body.routes.resolved).toBe(9_000);
+    // Two different numbers, not one reported twice: a fleet reported as
+    // wholly complete is the same lie as a dead feed reported as healthy.
+    expect(body.aircraft).toEqual({ total: 8_000, complete: 2_500 });
+    await app.close();
+  });
+
+  it('leaves both absent for a caller with no resolver, rather than inventing zeros', async () => {
+    const { app, feed } = build();
+    feed.put('world', '{}');
+    const body = (await app.inject({ method: 'GET', url: '/health' })).json();
+    expect(body.routes).toBeUndefined();
+    expect(body.aircraft).toBeUndefined();
     await app.close();
   });
 

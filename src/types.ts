@@ -21,7 +21,7 @@ export interface AircraftRaw {
   registration: string | null;        // tail number, e.g. "I-ABCD"
   modelCode: string | null;           // ICAO type code, e.g. "A320"
   modelDesc: string | null;           // long name; only adsb.fi ships it
-  route: FlightRouteLite | null;      // filled by the server; null until Task 6
+  route: FlightRouteLite | null;      // filled by the server (Task 5) from the pre-built cache; null = adsbdb has no route for this callsign
   complete: boolean;                  // computed server-side by isComplete(); false from adapters
 }
 

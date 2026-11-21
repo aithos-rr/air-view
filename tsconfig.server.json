@@ -10,6 +10,6 @@
     "isolatedModules": false,
     "allowImportingTsExtensions": false
   },
-  "include": ["server/**/*.ts", "src/data/sources/**/*.ts", "src/types.ts"],
+  "include": ["server/**/*.ts", "src/data/sources/**/*.ts", "src/data/completeness.ts", "src/types.ts"],
   "exclude": ["node_modules", "dist", "dist-server", "tests"]
 }

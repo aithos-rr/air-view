@@ -63,12 +63,24 @@ import { rootCause } from './errorChain.js';
 import { createTilePoller } from './poller.js';
 import { registerHealthRoute } from './healthRoute.js';
 import { buildTileGrid, createTileScheduler, tilesNear, TILE_RADIUS_NM } from '../src/data/sources/tileGrid.js';
+import { createRouteResolver } from './routeResolver.js';
+import { enrichAndMark } from './enrich.js';
+import { readRouteCache } from './routeCache.js';
 
 const feed = createFeedState();
 const fleet = createFleet();
 const tiles = buildTileGrid();
 const scheduler = createTileScheduler(tiles);
 const WORLD_KEY = 'world';
+
+const routes = createRouteResolver();
+// Deliberately slow: the bulk of the cache comes from the seed file, and
+// adsbdb bans at a few requests per second. One lookup every 10 s is
+// ~360/hour, enough to absorb newly appearing callsigns.
+const ROUTE_PUMP_MS = 10_000;
+
+let lastCompleteCount = 0;
+let lastTotalCount = 0;
 
 /**
  * Hard ceiling on the records in one payload.
@@ -297,6 +309,17 @@ async function runCycle(): Promise<void> {
 
   fleet.prune(nowUnix);
 
+  // Attaching the routes and marking completeness is server/enrich.ts's, for
+  // the reason the pacing is poller.ts's: nothing in this file is reachable
+  // from a test, and while this block lived here seventeen mutations of it —
+  // no route attached at all, origin and destination swapped, the fleet never
+  // marked, completeness computed BEFORE the routes were attached — left all
+  // 205 tests green. It runs on the records fleet.snapshot() hands back,
+  // which are the very objects JSON.stringify photographs below.
+  const counts = enrichAndMark(fleet.snapshot(), routes);
+  lastCompleteCount = counts.complete;
+  lastTotalCount = counts.total;
+
   const payloadAircraft = fleet.snapshot(MAX_PAYLOAD_AIRCRAFT);
   lastPayloadAircraft = payloadAircraft.length;
   lastPayloadCapped = fleet.size() > payloadAircraft.length;
@@ -372,6 +395,8 @@ registerHealthRoute(app, {
         suspendedForMs > 0 ? new Date(Date.now() + suspendedForMs).toISOString() : null,
     };
   },
+  routes: () => routes.stats(),
+  aircraft: () => ({ total: lastTotalCount, complete: lastCompleteCount }),
 });
 
 // ----------------------------------------------------------------------------
@@ -486,6 +511,26 @@ if (NODE_ENV === 'production') {
 }
 
 // ----------------------------------------------------------------------------
+// Route cache seed
+// ----------------------------------------------------------------------------
+
+const seedPath = resolve(process.cwd(), 'server/data/route-cache.json');
+if (existsSync(seedPath)) {
+  try {
+    // Both shapes of the file — the `{ gridCursor, records }` envelope the
+    // sampler writes now and the bare array older runs wrote — are read in
+    // routeCache.ts, where a test can tell the difference. Only malformed
+    // JSON throws into the catch below and starts the server cold.
+    routes.seed(readRouteCache(readFileSync(seedPath, 'utf8')));
+    app.log.info({ callsigns: routes.stats().resolved + routes.stats().unknown }, 'route cache seeded');
+  } catch (e) {
+    app.log.warn({ err: e instanceof Error ? e.message : String(e) }, 'route cache unreadable — starting cold');
+  }
+} else {
+  app.log.warn('no route cache file — starting cold, most aircraft will be incomplete');
+}
+
+// ----------------------------------------------------------------------------
 // Listen
 // ----------------------------------------------------------------------------
 
@@ -507,6 +552,30 @@ try {
     t.unref();
   };
   void refreshNextTiles().finally(scheduleNextCycle);
+
+  // Same shape as the tile loop, and for the same reason: a hung adsbdb
+  // request must not let pumps stack. Reproduced during review — a single
+  // 300 s hang with a bare setInterval produced 30 concurrent lookups
+  // against the one service that bans hard and renews the ban on every
+  // request sent during the penalty.
+  let routePumpInFlight = false;
+  const scheduleNextPump = (): void => {
+    const t = setTimeout(() => {
+      if (routePumpInFlight) {
+        scheduleNextPump();
+        return;
+      }
+      routePumpInFlight = true;
+      void routes
+        .pump()
+        .finally(() => {
+          routePumpInFlight = false;
+          scheduleNextPump();
+        });
+    }, ROUTE_PUMP_MS);
+    t.unref();
+  };
+  scheduleNextPump();
 } catch (err) {
   app.log.error(err);
   process.exit(1);

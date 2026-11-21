@@ -3234,8 +3234,10 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Create: `scripts/build-route-cache.mjs`
 - Create: `server/data/route-cache.json` — generato dallo Step 3 e committato. Nessuno step crea un `.gitkeep`: la cartella arriva con il file, e un `git add` di un percorso inesistente farebbe abortire il commit
 - Create: `src/data/completeness.ts`
-- Modify: `server/index.ts`, `tsconfig.server.json`, `package.json`, `src/types.ts` (solo il commento del campo `route`, che questo task rende falso)
-- Test: `tests/unit/data/completeness.test.ts`
+- Create: `server/enrich.ts`, `server/routeCache.ts` — l'arricchimento e il lettore del seed estratti da `server/index.ts`, che è uno script top-level e come tale irraggiungibile da qualunque test (stessa mossa già fatta per `poller.ts` e `healthRoute.ts`)
+- Create: `server/providerLock.ts`, `server/lookupPolicy.ts` — l'interlock e la politica di rifiuto dello script offline, per la stessa ragione: `scripts/build-route-cache.mjs` è un programma top-level
+- Modify: `server/index.ts`, `server/healthRoute.ts` (lo Step 10 pubblica `routes` e `aircraft`, e quel corpo vive lì dal Task 3), `tsconfig.server.json`, `package.json`, `src/types.ts` (solo il commento del campo `route`, che questo task rende falso)
+- Test: `tests/unit/data/completeness.test.ts`, `tests/unit/server/enrich.test.ts`, `tests/unit/server/routeCache.test.ts`, `tests/unit/server/providerLock.test.ts`, `tests/unit/server/lookupPolicy.test.ts`, `tests/unit/server/healthRoute.test.ts` (esteso)
 
 **Interfaces:**
 - Consumes: `RouteResolver`, `SeedRecord`, `FlightRoute` dal Task 4; `FlightRouteLite` e `makeAircraftRaw` dal piano precedente
@@ -3245,7 +3247,9 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 Lo script campiona il feed a intervalli nell'arco di ore, perché un singolo snapshot contiene fra 5.900 e 12.500 callsign a seconda dell'ora e l'insieme di una giornata è molto maggiore. È **ripartibile in entrambe le metà**: rilegge dal file di cache sia le risposte già ottenute sia la posizione raggiunta nella rotazione sulla griglia, così un'interruzione non butta via il lavoro fatto e la corsa successiva campiona tile nuove. Il cursore sul disco non è un dettaglio: un giro di campionamento prende 20 tile e il cancello ne lascia partire uno ogni 20 minuti, quindi quattro ore percorrono 240 delle 546 tile — con il cursore solo in memoria ogni corsa ripresa, che è il modo d'uso raccomandato, sarebbe ripartita dalla tile 0 e le tile oltre la 240esima non sarebbero mai entrate nella cache.
 
-- [ ] **Step 1: Creare `scripts/build-route-cache.mjs`**
+- [x] **Step 1: Creare `scripts/build-route-cache.mjs`**
+
+> Il blocco qui sotto è la stesura iniziale. La verifica del Task 5 ha poi aggiunto allo script l'interlock (`server/providerLock.ts`) e la politica dei rifiuti non-429 (`server/lookupPolicy.ts`): **il file su disco è la versione corrente**, questo blocco no.
 
 ```js
 // Builds server/data/route-cache.json by asking adsbdb about the callsigns
@@ -3498,7 +3502,7 @@ console.log(`grid cursor at ${gridCursor}/${GRID.length} — the next run sample
 console.log(`written to ${OUT} — commit it`);
 ```
 
-- [ ] **Step 2: Aggiungere lo script a `package.json`**
+- [x] **Step 2: Aggiungere lo script a `package.json`**
 
 Nel blocco `"scripts"`:
 
@@ -3508,9 +3512,15 @@ Nel blocco `"scripts"`:
 
 `tsx` e non `node`: lo script importa `buildTileGrid` e `TILE_RADIUS_NM` da `src/data/sources/tileGrid.ts`, e node da solo non risolve un `.ts` dietro un import `.js` (`ERR_MODULE_NOT_FOUND`). `tsx` è già una dipendenza del progetto, la stessa con cui gira `npm run server`.
 
-- [ ] **Step 3: Lanciare una corsa breve per verificare che funzioni**
+- [x] **Step 3: Lanciare una corsa breve per verificare che funzioni** — ESEGUITO il 2026-11-21
+
+> `68 callsign in cache (56 risolti, 12 unknown), cursore a 20/546`, file da 15,2 KB, exit 0. Throttle verificato prima di lanciare (`await sleep(delayMs)` alla riga 337).
+>
+> **Difetto trovato dalla corsa, e corretto prima della corsa lunga.** Nove tile su venti hanno risposto `HTTP 429`, e questa diramazione si limitava a loggare e proseguire — spaziata di 1,5 s, ma continuando a bussare per tutto il resto del giro. La metà adsbdb dello script aveva già imparato la lezione (`lookupPolicy.ts`), la metà delle tile no. Ora un rifiuto chiude il giro, riavvolge il cursore sulla tile rifiutata e lo dichiara all'uscita. Il silenzio NON è i 360 s dei lookup: adsb.lol e adsbdb sono provider diversi, e un blocco sul campionatore non deve fermare lookup ancora graditi — il campionamento riprende al giro successivo, a ~20 minuti. Verificato offline con fetch finta: `ending this round at 3/6 tiles, cursor held at 2`.
 
 **Arrestare prima il server**, se è ancora in esecuzione dal Task 3. Il poller emette ~0,67 richieste/s verso adsb.lol e il campionatore altrettante: sommate superano il vincolo di progetto e si avvicinano al tasso che ha già prodotto un 429 su entrambe le sorgenti. Sono due client indipendenti che non si coordinano.
+
+Questo non è più solo un promemoria: lo script **si rifiuta di partire** se qualcosa risponde su `http://127.0.0.1:$PORT/health` o se un altro build tiene `server/data/.build-routes.lock` (`server/providerLock.ts`), esce con stato 1 e non emette una sola richiesta verso i provider. Simulate tre ore con entrambi i processi attivi, la coppia metteva 2.077 delle 8.039 richieste ad adsbdb sotto la soglia di 1.500 ms — e i 360 s di silenzio dopo un 429 sono di un processo solo, mentre l'altro continua a bussare e **rinnova** la penalità.
 
 ```bash
 pkill -f "tsx watch server/index.ts" || true
@@ -3529,7 +3539,7 @@ Se quella riga non compare nel ciclo principale, **non eseguire lo script**: man
 
 Expected: circa tre minuti di esecuzione e `server/data/route-cache.json` scritto. Il primo giro di campionamento prende ~40 s (20 tile a 1,5 s più la latenza) e restano ~140 s di lookup: con `delayMs` iniziale di 2000 ms sono **al massimo ~70**, con una riga `[sample] walked ...` e **nessuna** riga di avanzamento, perché la prima compare al centesimo esito. Se ne vedi molte di più il throttle non funziona: interrompi con Ctrl-C e attendi sei minuti prima di qualunque altra chiamata ad adsbdb.
 
-Se compare `[429]`, lo script deve **dormire 360 s in silenzio** e non emettere altre richieste: è il comportamento voluto.
+Se compare `[blocked] <callsign>: HTTP 429` (oppure 403, o un 5xx: dallo Step 4 della verifica sono trattati tutti allo stesso modo), lo script deve **dormire 360 s in silenzio** e non emettere altre richieste: è il comportamento voluto. Dopo cinque rifiuti **consecutivi** stampa `[abort]`, salva ed esce con stato 1 — una corsa di tre ore contro un provider che rifiuta tutto non deve più somigliare a una corsa riuscita.
 
 Verificare la forma del file:
 
@@ -3574,7 +3584,7 @@ Expected: le due righe `[sample] walked ... from <tile>` nominano **tile di part
 
 La corsa lunga vera (`npm run build:routes -- --hours 10`) la lancia l'utente quando vuole, ed è ripartibile in entrambe le metà: riprende i callsign già risolti e riprende il giro della griglia da dove si era fermato. Dieci ore e non otto perché 546 tile sono ~9,3 ore di campionamento; con `--hours 8` il giro si ferma intorno alla tile 480 e la corsa successiva riparte da lì. Il piano non la richiede per proseguire: il server funziona anche con una cache parziale, semplicemente con meno aerei blu.
 
-- [ ] **Step 4: Scrivere il test che fallisce per `isComplete`**
+- [x] **Step 4: Scrivere il test che fallisce per `isComplete`**
 
 Creare `tests/unit/data/completeness.test.ts`:
 
@@ -3627,12 +3637,12 @@ describe('isComplete', () => {
 });
 ```
 
-- [ ] **Step 5: Eseguire il test e verificare che fallisca**
+- [x] **Step 5: Eseguire il test e verificare che fallisca**
 
 Run: `npx vitest run tests/unit/data/completeness.test.ts`
 Expected: FAIL — modulo inesistente
 
-- [ ] **Step 6: Creare `src/data/completeness.ts`**
+- [x] **Step 6: Creare `src/data/completeness.ts`**
 
 Import relativo con `.js`: questo modulo è compilato anche dal programma del server.
 
@@ -3660,12 +3670,12 @@ export function isComplete(ac: AircraftRaw): boolean {
 }
 ```
 
-- [ ] **Step 7: Eseguire il test e verificare che passi**
+- [x] **Step 7: Eseguire il test e verificare che passi**
 
 Run: `npx vitest run tests/unit/data/completeness.test.ts`
 Expected: PASS, 10 test
 
-- [ ] **Step 8: Collegare resolver, seed e completezza in `server/index.ts`**
+- [x] **Step 8: Collegare resolver, seed e completezza in `server/index.ts`**
 
 Agli import:
 
@@ -3707,7 +3717,7 @@ if (existsSync(seedPath)) {
 
 In `tsconfig.server.json`, aggiungere all'`include` il percorso `"src/data/completeness.ts"`: senza, il modulo non entra nel programma del server e `build:server` fallisce.
 
-- [ ] **Step 9: Arricchire e marcare dentro `refreshNextTiles`**
+- [x] **Step 9: Arricchire e marcare dentro `refreshNextTiles`**
 
 **Dopo la guardia `if (!anySuccess) return;` e dopo `fleet.prune(...)`, prima di `const payloadAircraft = fleet.snapshot(MAX_PAYLOAD_AIRCRAFT)`** — cioè prima che il corpo venga serializzato, perché `JSON.stringify` fotografa i record così come sono in quel momento. L'arricchimento gira una volta per ciclo, non una per tile: `result` vive dentro il ciclo delle tile e qui non è visibile.
 
@@ -3740,6 +3750,8 @@ In `tsconfig.server.json`, aggiungere all'`include` il percorso `"src/data/compl
 
 Senza il secondo ciclo `isComplete` resterebbe codice morto: `noUnusedLocals` non segnala una funzione esportata mai importata, e nulla avviserebbe che metà del deliverable non è stata consegnata.
 
+> La verifica ha poi **estratto questo blocco** in `server/enrich.ts` (`enrichAndMark(world, routes)`), e il lettore del seed dello Step 8 in `server/routeCache.ts`. Dentro `runCycle()` nessun test poteva raggiungerli: diciassette mutazioni — nessuna rotta attaccata, origine e destinazione scambiate, completezza calcolata *prima* dell'arricchimento, nessun callsign in coda — lasciavano verde l'intera suite. Stessa mossa già fatta per `poller.ts` e `healthRoute.ts`, per la stessa ragione.
+
 **Poi correggere il commento che questo step rende falso.** In `src/types.ts` il campo `route` porta `// filled by the server; null until Task 6`, ma è questo step a popolarlo: il Task 6 non riempie nulla, cancella soltanto il lookup falso lato client. Sostituire la riga con:
 
 ```ts
@@ -3748,7 +3760,7 @@ Senza il secondo ciclo `isComplete` resterebbe codice morto: `noUnusedLocals` no
 
 Il `null` non significa più «non ancora implementato» ma «interrogato e sconosciuto», che è la stessa semantica del `null` in `SeedRecord` e la ragione per cui `isComplete` può fidarsi del campo.
 
-- [ ] **Step 10: Avviare il pump e pubblicare lo stato su `/health`**
+- [x] **Step 10: Avviare il pump e pubblicare lo stato su `/health`**
 
 Accanto al timer del feed, dopo `app.listen`:
 
@@ -3778,16 +3790,16 @@ Accanto al timer del feed, dopo `app.listen`:
   scheduleNextPump();
 ```
 
-Nel corpo di `/health`:
+Nel corpo di `/health` — che dal Task 3 vive in **`server/healthRoute.ts`**, non in `server/index.ts`: servono due campi nuovi in `HealthRouteDeps` (`routes?()` e `aircraft?()`, opzionali perché i chiamanti che precedono il resolver, il test della rotta compreso, continuino a compilare) e due righe nella risposta, mentre `server/index.ts` passa le funzioni al factory. Entrambi i file vanno nel commit dello Step 13, o l'albero committato non compila.
 
 ```ts
-    routes: routes.stats(),
-    aircraft: { total: lastTotalCount, complete: lastCompleteCount },
+    routes: deps.routes?.(),
+    aircraft: deps.aircraft?.(),
 ```
 
 `routes.stats()` include `suspendedUntil`, `consecutiveRateLimits` e `lastError`: senza questi campi un blocco di adsbdb resterebbe invisibile mentre `/health` continua a dire `ok`, che è la cecità che questo piano esiste per rimuovere.
 
-- [ ] **Step 11: Verificare entrambi i programmi**
+- [x] **Step 11: Verificare entrambi i programmi**
 
 ```bash
 npm run build:all && npm test -- --run
@@ -3823,7 +3835,23 @@ print('esempio:', {k:comp[0][k] for k in ('callsign','registration','modelCode',
 - [ ] **Step 13: Commit**
 
 ```bash
-git add scripts/build-route-cache.mjs server/data/route-cache.json src/data/completeness.ts tests/unit/data/completeness.test.ts server/index.ts src/types.ts tsconfig.server.json package.json
+git add scripts/build-route-cache.mjs server/data/route-cache.json \
+  src/data/completeness.ts tests/unit/data/completeness.test.ts \
+  server/enrich.ts server/routeCache.ts server/providerLock.ts server/lookupPolicy.ts \
+  tests/unit/server/enrich.test.ts tests/unit/server/routeCache.test.ts \
+  tests/unit/server/providerLock.test.ts tests/unit/server/lookupPolicy.test.ts \
+  tests/unit/server/healthRoute.test.ts \
+  server/index.ts server/healthRoute.ts src/types.ts tsconfig.server.json package.json
+
+# Nulla di ciò che il task ha toccato può restare fuori dalla riga qui sopra.
+# Il Task 3 ha committato una riga `git add` che non nominava né
+# server/healthRoute.ts né server/poller.ts, entrambi modificati: l'albero
+# committato non compilava. Questo controllo si esegue DOPO il git add e
+# prima del commit, e stampa ciò che resterebbe indietro.
+git status --porcelain | grep -vE '^\?\? (\.agents/|\.claude/|mockups/|skills-lock\.json)' \
+  | grep -vE '^.. docs/' | awk '{print $2}' | while read -r f; do
+    git diff --cached --name-only | grep -qx "$f" || echo "FUORI DAL COMMIT: $f"
+  done
 git commit -m "feat(server): pre-built route cache, wiring and completeness
 
 /api/states now carries a real route and a 'complete' flag, and /health
@@ -3842,6 +3870,16 @@ This static file is NOT a return to openflights-routes.json. That one was
 wrong by construction — list[0] returned a route unrelated to the flight.
 This one is verified by construction: every entry is adsbdb's answer for
 that specific callsign. At worst it ages.
+
+The enrichment, the seed reader, the builder's interlock and its refusal
+policy are four small modules rather than four blocks inside two top-level
+programs: nothing in server/index.ts or in the builder is reachable from a
+test, and seventeen mutations of this task's logic — routes drawn backwards,
+the fleet never marked complete, the seed never read — left all 205 tests
+green. The builder now refuses to start while the server is up or another
+build holds the lock, treats 403 and 5xx like the 429 it already knew, logs
+every refusal with its status, and stops after five in a row instead of
+spending three hours on a provider that is saying no.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
