@@ -2627,7 +2627,7 @@ Il secondo, scoperto eseguendo il server contro l'API reale: **adsbdb rate-limit
 
 Il terzo: un singolo snapshot contiene fra **5.900 e 12.500 callsign distinti** a seconda dell'ora, e l'insieme cumulativo nell'arco di una giornata è molto maggiore. A una cadenza rispettosa il primo riempimento richiede **ore**, non minuti. Per questo la cache non si costruisce a runtime ma viene **pre-costruita offline** dal Task 5 e caricata con `seed()`; a runtime il pump serve solo per i callsign nuovi, molto lentamente.
 
-- [ ] **Step 1: Scrivere il test che fallisce**
+- [x] **Step 1: Scrivere il test che fallisce**
 
 Creare `tests/unit/server/routeResolver.test.ts`:
 
@@ -2877,12 +2877,12 @@ describe('createRouteResolver — rate limiting', () => {
 });
 ```
 
-- [ ] **Step 2: Eseguire il test e verificare che fallisca**
+- [x] **Step 2: Eseguire il test e verificare che fallisca**
 
 Run: `npx vitest run tests/unit/server/routeResolver.test.ts`
 Expected: FAIL — modulo inesistente
 
-- [ ] **Step 3: Creare `server/routeResolver.ts`**
+- [x] **Step 3: Creare `server/routeResolver.ts`**
 
 ```ts
 import { USER_AGENT } from '../src/data/sources/userAgent.js';
@@ -2926,7 +2926,25 @@ export interface RouteResolverOptions {
    * Tests pass 0.
    */
   minIntervalMs?: number;
+  /**
+   * WALL clock, epoch ms. Used ONLY to render `suspendedUntil` as an instant
+   * callers and /health can read. Never to measure how long anything lasts.
+   */
   now?: () => number;
+  /**
+   * MONOTONIC clock, any origin. The 429 suspension is a DURATION and is
+   * timed on this one.
+   *
+   * Measured on this machine: Date.now() moves by ~528 ms every ~32 s as
+   * WSL2 resyncs against the host, and NTP corrects in both directions. A
+   * backwards jump would merely extend the silence, which is harmless here.
+   * A FORWARD jump is the one that bites: it makes the cooldown look spent
+   * and sends a lookup DURING the adsbdb penalty — and a request sent during
+   * the penalty RENEWS it, which is the single failure mode this suspension
+   * exists to prevent. server/poller.ts draws the same line for the same
+   * reason. A wall clock is not a stopwatch.
+   */
+  monotonicNow?: () => number;
 }
 
 export interface RouteResolver {
@@ -2995,6 +3013,7 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
   const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const minIntervalMs = opts.minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS;
   const now = opts.now ?? Date.now;
+  const monotonicNow = opts.monotonicNow ?? (() => performance.now());
 
   const resolved = new Map<string, FlightRoute>();
   const unknown = new Set<string>();
@@ -3004,6 +3023,7 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
   /** Permanent record of callsigns we stopped trying, so enqueue() skips them. */
   const abandoned = new Set<string>();
 
+  /** On the MONOTONIC clock, like every other duration in this file. */
   let suspendedUntil = 0;
   let consecutiveRateLimits = 0;
   let lastError: string | null = null;
@@ -3079,7 +3099,7 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
     },
 
     async pump(fetchImpl: typeof fetch = fetch) {
-      if (now() < suspendedUntil) return 0; // not one request while suspended
+      if (monotonicNow() < suspendedUntil) return 0; // not one request while suspended
 
       let count = 0;
       const batch = queue.splice(0, maxPerPump);
@@ -3092,7 +3112,7 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
         if (i > 0) await sleep(minIntervalMs);
         // Re-check: a 429 raised earlier in this same batch must stop the
         // rest of it, not just future pumps.
-        if (now() < suspendedUntil) {
+        if (monotonicNow() < suspendedUntil) {
           queue.unshift(cs, ...batch.slice(i + 1));
           for (const rest of batch.slice(i)) queued.add(rest);
           return count;
@@ -3105,7 +3125,7 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
           if (e instanceof RateLimited) {
             consecutiveRateLimits += 1;
             const cooldown = Math.min(baseCooldownMs * 2 ** (consecutiveRateLimits - 1), MAX_COOLDOWN_MS);
-            suspendedUntil = now() + cooldown;
+            suspendedUntil = monotonicNow() + cooldown;
             lastError = `${e.message}; suspended for ${Math.round(cooldown / 1000)}s`;
             // Put back this callsign AND everything we had not reached, then
             // stop: further requests would renew the penalty.
@@ -3133,12 +3153,15 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
     },
 
     stats() {
+      // The deadline is monotonic; the instant reported is the wall clock's.
+      // Converting here, once, is what keeps the two clocks from mixing.
+      const remainingMs = suspendedUntil - monotonicNow();
       return {
         resolved: resolved.size,
         unknown: unknown.size,
         queued: queue.length,
         abandoned: abandoned.size,
-        suspendedUntil: now() < suspendedUntil ? new Date(suspendedUntil).toISOString() : null,
+        suspendedUntil: remainingMs > 0 ? new Date(now() + remainingMs).toISOString() : null,
         consecutiveRateLimits,
         lastError,
       };
@@ -3147,12 +3170,18 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
 }
 ```
 
-- [ ] **Step 4: Eseguire il test e verificare che passi**
+- [x] **Step 4: Eseguire il test e verificare che passi**
 
 Run: `npx vitest run tests/unit/server/routeResolver.test.ts`
-Expected: PASS, 18 test
+Expected: PASS, **19 test**. Il piano ne prescriveva 18; il diciannovesimo —
+`holds the SUSPENSION when the WALL CLOCK jumps FORWARD` — presidia la
+separazione degli orologi adottata nel blocco qui sopra. Verificato per
+mutazione: rimettendo il cooldown su `Date.now()` i 18 test originali restano
+**tutti verdi** e muore solo quello.
 
-- [ ] **Step 5: Verificare contro adsbdb reale, con parsimonia**
+- [x] **Step 5: Verificare contro adsbdb reale, con parsimonia** — ESEGUITO il 2026-11-21, cinque richieste
+
+> `resolved: 3, unknown: 2, queued: 0, suspendedUntil: null`, esattamente l'atteso. `BAW274` → British Airways, **LAS McCarran → LHR London Heathrow**; `NJE004M` → `null`, contato fra gli unknown, quindi il ramo 404 funziona. Nella v1 lo stesso volo mostrava Aalborg → Aarhus, come ogni altro volo BA, perché `routeLookup` ignorava il numero e restituiva `list[0]`. Nessun 429, nessuna penalità.
 
 Lo script va **dentro il repo**: in ESM un import relativo si risolve rispetto al file che importa, quindi uno script in `/tmp` cercherebbe `/tmp/server/routeResolver.js` e fallirebbe prima di qualunque chiamata.
 
