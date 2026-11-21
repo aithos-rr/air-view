@@ -189,7 +189,7 @@ Prima di disegnare qualsiasi cosa, il piano fissa il posto unico dove si decide 
 
 **Perché `isCompleteExceptRoute` e non un booleano in più sul record.** Il server marca già `complete` e il client lo riceve. Un secondo flag sul filo costerebbe byte su 2 000-6 000 record per un numero che il client sa calcolare da sé in un giro di `for`. E il refactor è a comportamento invariato: `isComplete` diventa `ac.route !== null && isCompleteExceptRoute(ac)`, che è letteralmente la sua definizione attuale riordinata, quindi i 10 test esistenti restano la rete di sicurezza.
 
-- [ ] **Step 1: Estendere `tests/unit/data/completeness.test.ts`**
+- [x] **Step 1: Estendere `tests/unit/data/completeness.test.ts`**
 
 Aggiungere in fondo al file, **dopo** la chiusura del `describe('isComplete', ...)` esistente, e cambiare la riga di import `import { isComplete } from '@/data/completeness';` in:
 
@@ -218,7 +218,7 @@ describe('isCompleteExceptRoute', () => {
 });
 ```
 
-- [ ] **Step 2: Verificare il rosso**
+- [x] **Step 2: Verificare il rosso**
 
 ```bash
 npx vitest run tests/unit/data/completeness.test.ts
@@ -226,7 +226,7 @@ npx vitest run tests/unit/data/completeness.test.ts
 
 Expected: fallisce in fase di import — `isCompleteExceptRoute is not a function` o l'errore di TypeScript equivalente. Nessun test di quel file passa.
 
-- [ ] **Step 3: Sostituire `src/data/completeness.ts`**
+- [x] **Step 3: Sostituire `src/data/completeness.ts`**
 
 Sostituire l'intero contenuto del file con:
 
@@ -266,7 +266,7 @@ export function isComplete(ac: AircraftRaw): boolean {
 }
 ```
 
-- [ ] **Step 4: Verificare il verde**
+- [x] **Step 4: Verificare il verde**
 
 ```bash
 npx vitest run tests/unit/data/completeness.test.ts
@@ -274,7 +274,7 @@ npx vitest run tests/unit/data/completeness.test.ts
 
 Expected: **13 passed** nel file (10 preesistenti + 3 nuovi). Suite intera: 284.
 
-- [ ] **Step 5: Creare `tests/unit/state/filterStore.test.ts`**
+- [x] **Step 5: Creare `tests/unit/state/filterStore.test.ts`**
 
 ```ts
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -377,7 +377,7 @@ describe('countFleet', () => {
 });
 ```
 
-- [ ] **Step 6: Verificare il rosso**
+- [x] **Step 6: Verificare il rosso**
 
 ```bash
 npx vitest run tests/unit/state/filterStore.test.ts
@@ -385,7 +385,7 @@ npx vitest run tests/unit/state/filterStore.test.ts
 
 Expected: il file non si carica, `Failed to resolve import "@/state/filterStore"`. Zero test passati.
 
-- [ ] **Step 7: Creare `src/state/filterStore.ts`**
+- [x] **Step 7: Creare `src/state/filterStore.ts`**
 
 ```ts
 import { create } from 'zustand';
@@ -454,7 +454,7 @@ export function countFleet(aircraft: Iterable<Aircraft>): FleetCounts {
 }
 ```
 
-- [ ] **Step 8: Verificare il verde**
+- [x] **Step 8: Verificare il verde**
 
 ```bash
 npx vitest run tests/unit/state/filterStore.test.ts
@@ -462,7 +462,7 @@ npx vitest run tests/unit/state/filterStore.test.ts
 
 Expected: **8 passed**. Suite intera: 292.
 
-- [ ] **Step 9: Creare `tests/unit/globe/visibility.test.ts`**
+- [x] **Step 9: Creare `tests/unit/globe/visibility.test.ts`**
 
 ```ts
 import { describe, it, expect } from 'vitest';
@@ -541,7 +541,7 @@ describe('isFocusable', () => {
 });
 ```
 
-- [ ] **Step 10: Verificare il rosso**
+- [x] **Step 10: Verificare il rosso**
 
 ```bash
 npx vitest run tests/unit/globe/visibility.test.ts
@@ -549,7 +549,7 @@ npx vitest run tests/unit/globe/visibility.test.ts
 
 Expected: `Failed to resolve import "@/globe/visibility"`. Zero test passati.
 
-- [ ] **Step 11: Creare `src/globe/visibility.ts`**
+- [x] **Step 11: Creare `src/globe/visibility.ts`**
 
 ```ts
 import type { Aircraft } from '@/types';
@@ -616,7 +616,7 @@ export const SHOW_ALL: VisibilityRule = {
 };
 ```
 
-- [ ] **Step 12: Creare `tests/unit/globe/visibleFleet.test.ts` — la TABELLA degli stati (D15)**
+- [x] **Step 12: Creare `tests/unit/globe/visibleFleet.test.ts` — la TABELLA degli stati (D15)**
 
 Questo è il test che impedisce alla famiglia di difetti di tornare. Non elenca casi: enumera stati, e su ognuno verifica le tre affermazioni dell'invariante insieme.
 
@@ -826,7 +826,7 @@ describe('describeVisibleFleet — the invariant, state by state', () => {
 });
 ```
 
-- [ ] **Step 13: Verificare il rosso**
+- [x] **Step 13: Verificare il rosso**
 
 ```bash
 npx vitest run tests/unit/globe/visibleFleet.test.ts
@@ -834,7 +834,7 @@ npx vitest run tests/unit/globe/visibleFleet.test.ts
 
 Expected: `describeVisibleFleet is not a function` — il modulo esiste (Step 11) ma non esporta ancora niente di tutto questo. Zero test passati.
 
-- [ ] **Step 14: Aggiungere il meccanismo a `src/globe/visibility.ts`**
+- [x] **Step 14: Aggiungere il meccanismo a `src/globe/visibility.ts`**
 
 Aggiungere in fondo al file, **sotto** `SHOW_ALL`:
 
@@ -1014,7 +1014,7 @@ export function describeVisibleFleet(
 }
 ```
 
-- [ ] **Step 15: Verificare il verde e l'intera suite**
+- [x] **Step 15: Verificare il verde e l'intera suite**
 
 ```bash
 npx vitest run tests/unit/globe/visibility.test.ts tests/unit/globe/visibleFleet.test.ts
@@ -1057,7 +1057,7 @@ Oggi `src/globe/aircraft.ts:15` dipinge **ogni** aereo di `#ffe6c4`: il flag `co
 
 **Tre point set invece di due, e l'ordine conta.** La spec §4.2 chiede «selezionato sopra tutto, poi i completi, poi gli incompleti»: con `AdditiveBlending` e 5 900 punti, un completo sepolto sotto il rumore grigio è informazione persa. I figli del gruppo restano nell'ordine `[parziali, completi, selezionato]` **apposta**: `tests/unit/globe/renderCapacity.test.ts:44` legge `layer.group.children[0]` e costruisce una flotta di `makeAircraftRaw()`, che ha `complete: false`, quindi continua a misurare esattamente il set che intende misurare. Costo in memoria del set in più: 24 000 × 7 float × 4 B ≈ 0,67 MB, che porta il totale dei punti a ~1,34 MB. Trascurabile, e misurato contro il tetto del server (`MAX_PAYLOAD_AIRCRAFT = 24 000`), non contro uno snapshot.
 
-- [ ] **Step 1: Creare `tests/unit/globe/fleetColours.test.ts`**
+- [x] **Step 1: Creare `tests/unit/globe/fleetColours.test.ts`**
 
 ```ts
 import { describe, it, expect } from 'vitest';
@@ -1274,7 +1274,7 @@ describe('the layer reports exactly what it put in the buffers (D15)', () => {
 
 > Aggiungere `import type { VisibilityRule } from '@/globe/visibility';` agli import di questo file.
 
-- [ ] **Step 2: Verificare il rosso**
+- [x] **Step 2: Verificare il rosso**
 
 ```bash
 npx vitest run tests/unit/globe/fleetColours.test.ts
@@ -1282,7 +1282,7 @@ npx vitest run tests/unit/globe/fleetColours.test.ts
 
 Expected: fallisce all'import — `COMPLETE_COLOR`/`PARTIAL_COLOR` non esistono e `update` non accetta quattro argomenti. Zero test passati.
 
-- [ ] **Step 3: Sostituire il blocco dei colori in `src/globe/aircraft.ts`**
+- [x] **Step 3: Sostituire il blocco dei colori in `src/globe/aircraft.ts`**
 
 Sostituire le due righe
 
@@ -1309,7 +1309,7 @@ export const PARTIAL_COLOR: [number, number, number] = [0.541, 0.576, 0.627];
 const SELECTED_COLOR: [number, number, number] = [0.16, 0.59, 1.0]; // sky-leaning Action Blue
 ```
 
-- [ ] **Step 4: Sostituire la dichiarazione di `MAX_AIRCRAFT` in `src/globe/aircraft.ts`**
+- [x] **Step 4: Sostituire la dichiarazione di `MAX_AIRCRAFT` in `src/globe/aircraft.ts`**
 
 Sostituire la riga `const MAX_AIRCRAFT = 24000;` (riga 26, sotto il commento sul tetto del server, che resta) con:
 
@@ -1323,7 +1323,7 @@ const MAX_AIRCRAFT = 24000;
 // each.
 ```
 
-- [ ] **Step 5: Sostituire il corpo di `createAircraftLayer` in `src/globe/aircraft.ts`**
+- [x] **Step 5: Sostituire il corpo di `createAircraftLayer` in `src/globe/aircraft.ts`**
 
 Sostituire tutto dalla riga `export interface AircraftLayer {` fino alla fine del file con:
 
@@ -1463,7 +1463,7 @@ import type { VisibilityRule, VisibleFleet } from './visibility';
 
 > `isAircraftVisible` non viene più importato qui: lo chiama `describeVisibleFleet` per conto di questo file. Due import della stessa regola sarebbero due posti da cui chiamarla, cioè l'inizio della divergenza.
 
-- [ ] **Step 6: Far seguire la stessa regola alle scie in `src/globe/trails.ts`**
+- [x] **Step 6: Far seguire la stessa regola alle scie in `src/globe/trails.ts`**
 
 Aggiungere in cima, dopo `import { GLOBE_RADIUS } from './geoHelpers';`:
 
@@ -1527,7 +1527,7 @@ con
       if (!isAircraftVisible(ac, rule)) continue;
 ```
 
-- [ ] **Step 7: Far obbedire il picking in `src/globe/raycaster.ts`**
+- [x] **Step 7: Far obbedire il picking in `src/globe/raycaster.ts`**
 
 Aggiungere l'import dopo `import { latLonAltToVec3 } from './geoHelpers';`:
 
@@ -1576,7 +1576,7 @@ con
     if (!isAircraftVisible(ac, rule)) continue;
 ```
 
-- [ ] **Step 8: Aggiornare i tre call site di `tests/unit/globe/renderCapacity.test.ts`**
+- [x] **Step 8: Aggiornare i tre call site di `tests/unit/globe/renderCapacity.test.ts`**
 
 Aggiungere l'import in cima, dopo `import { createTrailsLayer } from '@/globe/trails';`:
 
@@ -1612,7 +1612,7 @@ Sostituire, nell'ordine in cui compaiono:
 
 (L'ultimo è il layer delle scie, che prende tre argomenti e non quattro.)
 
-- [ ] **Step 9: Collegare la scena**
+- [x] **Step 9: Collegare la scena**
 
 In `src/globe/scene.ts`, aggiungere agli import, dopo `import { useA11yStore } from '@/state/a11yStore';`:
 
@@ -1668,7 +1668,7 @@ con
 
 > Il quarto argomento è `1` fisso: il Task 4 lo sostituisce con la dissolvenza. Scriverlo già qui evita di toccare due volte la stessa riga.
 
-- [ ] **Step 10: Creare `tests/unit/state/sceneView.test.ts`**
+- [x] **Step 10: Creare `tests/unit/state/sceneView.test.ts`**
 
 ```ts
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -1781,7 +1781,7 @@ npx vitest run tests/unit/state/sceneView.test.ts
 
 Expected: `Failed to resolve import "@/state/sceneView"`. Zero test passati.
 
-- [ ] **Step 11: Creare `src/state/sceneView.ts`**
+- [x] **Step 11: Creare `src/state/sceneView.ts`**
 
 ```ts
 import { useAircraftStore } from './aircraftStore';
@@ -1833,7 +1833,7 @@ export function readVisibilityRule(): VisibilityRule {
 }
 ```
 
-- [ ] **Step 12: Verificare il verde e l'intera suite**
+- [x] **Step 12: Verificare il verde e l'intera suite**
 
 ```bash
 npx vitest run tests/unit/globe/fleetColours.test.ts tests/unit/globe/renderCapacity.test.ts \
@@ -1878,7 +1878,7 @@ La prima cosa che l'utente ha chiesto. Il contatore esistente diventa la riga ch
 
 **Le righe che spiegano il globo non stanno dentro la tendina (D14).** «N hidden by filters» e «No aircraft shown — both filters are off» parlano di ciò che si vede sul globo, che è sempre sullo schermo; la tendina no, e `Esc` la chiude. Vivono quindi accanto al contatore, fuori da `{open && …}`, e restano montate finché il filtro è attivo. Dentro la tendina resta solo la riga «N of the partial ones lack only a route», che spiega la scomposizione in categorie e non il globo.
 
-- [ ] **Step 1: Rinominare, senza toccare altro**
+- [x] **Step 1: Rinominare, senza toccare altro**
 
 ```bash
 git mv src/ui/HudCounter.tsx src/ui/FeedStatus.tsx
@@ -1907,7 +1907,7 @@ npm test -- --run
 
 Expected: **339 passed**, invariato. Un rename che cambia un numero di test è un rename che ha cambiato il comportamento.
 
-- [ ] **Step 2: Togliere il totale da `src/ui/FeedStatus.tsx`, e cedergli anche la classe `.hud`**
+- [x] **Step 2: Togliere il totale da `src/ui/FeedStatus.tsx`, e cedergli anche la classe `.hud`**
 
 Sostituire
 
@@ -1942,7 +1942,7 @@ con
 
 **Perché la classe se ne va con il numero.** Lo Step 5 fa rendere a `FleetPanel` un `<div className="hud">` con `<FeedStatus />` dentro. Se la classe restasse anche qui, sullo schermo ci sarebbero **due nodi `.hud` annidati**, entrambi `position: fixed` a `top/left: 32px` (`src/ui/styles.css:90-101`): due scatole impilate nello stesso angolo. E `tests/e2e/happy-path.spec.ts:6` fa `page.locator('.hud')` — Playwright lavora in strict mode, un selettore che trova due elementi **è un errore**, non una scelta del primo, quindi `toBeVisible()` fallirebbe con «strict mode violation: resolved to 2 elements». La classe appartiene alla scatola; la scatola adesso è il pannello. Questo componente resta la live region, che è il suo unico mestiere.
 
-- [ ] **Step 3: Creare `tests/component/FleetPanel.test.tsx`**
+- [x] **Step 3: Creare `tests/component/FleetPanel.test.tsx`**
 
 ```tsx
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -2233,7 +2233,7 @@ describe('FleetPanel', () => {
 });
 ```
 
-- [ ] **Step 4: Verificare il rosso**
+- [x] **Step 4: Verificare il rosso**
 
 ```bash
 npx vitest run tests/component/FleetPanel.test.tsx
@@ -2241,7 +2241,7 @@ npx vitest run tests/component/FleetPanel.test.tsx
 
 Expected: `Failed to resolve import "@/ui/FleetPanel"`. Zero test passati.
 
-- [ ] **Step 5: Creare `src/ui/FleetPanel.tsx`**
+- [x] **Step 5: Creare `src/ui/FleetPanel.tsx`**
 
 ```tsx
 import { useMemo } from 'react';
@@ -2490,7 +2490,7 @@ function FilterRow({ kind, label, testid, count, checked, onChange }: FilterRowP
 }
 ```
 
-- [ ] **Step 6: Verificare il verde**
+- [x] **Step 6: Verificare il verde**
 
 ```bash
 npx vitest run tests/component/FleetPanel.test.tsx
@@ -2498,7 +2498,7 @@ npx vitest run tests/component/FleetPanel.test.tsx
 
 Expected: **22 passed**. Suite intera: 361.
 
-- [ ] **Step 7: Aggiungere lo stile in `src/ui/styles.css`**
+- [x] **Step 7: Aggiungere lo stile in `src/ui/styles.css`**
 
 Sostituire il blocco
 
@@ -2616,7 +2616,7 @@ con
 }
 ```
 
-- [ ] **Step 8: Montare il pannello in `src/ui/AppShell.tsx`**
+- [x] **Step 8: Montare il pannello in `src/ui/AppShell.tsx`**
 
 Sostituire
 
@@ -2638,7 +2638,7 @@ con
       <FleetPanel />
 ```
 
-- [ ] **Step 9: Verificare build, suite e browser**
+- [x] **Step 9: Verificare build, suite e browser**
 
 ```bash
 npm run build:all && npm test -- --run
@@ -2688,7 +2688,7 @@ C'è un terzo caso, la seconda metà di D13: **l'aereo è nella flotta ma non sa
 
 **`Esc` ha un solo listener.** Oggi è in `src/ui/SidePanel.tsx:14-20` e chiude il pannello destro. Con pannello flotta, focus, ricerca e scheda aeroporto si arriverebbe a quattro listener sullo stesso tasto, tutti attivi insieme: premere `Esc` chiuderebbe quattro cose in una volta. Un listener in `AppShell`, una scala in `src/state/escape.ts`, **una cosa chiusa per pressione, la più interna per prima**. I Task 6 e 7 aggiungono i propri gradini a quella scala, ognuno con il proprio test.
 
-- [ ] **Step 1: Creare `tests/unit/globe/focus.test.ts`**
+- [x] **Step 1: Creare `tests/unit/globe/focus.test.ts`**
 
 ```ts
 import { describe, it, expect } from 'vitest';
@@ -2820,7 +2820,7 @@ describe('the fade and the count, at the frame where they meet', () => {
 });
 ```
 
-- [ ] **Step 2: Verificare il rosso**
+- [x] **Step 2: Verificare il rosso**
 
 ```bash
 npx vitest run tests/unit/globe/focus.test.ts
@@ -2828,7 +2828,7 @@ npx vitest run tests/unit/globe/focus.test.ts
 
 Expected: `Failed to resolve import "@/globe/focus"`. Zero test passati.
 
-- [ ] **Step 3: Creare `src/globe/focus.ts`**
+- [x] **Step 3: Creare `src/globe/focus.ts`**
 
 ```ts
 /**
@@ -2917,7 +2917,7 @@ export function createFocusFade(): FocusFade {
 }
 ```
 
-- [ ] **Step 4: Verificare il verde**
+- [x] **Step 4: Verificare il verde**
 
 ```bash
 npx vitest run tests/unit/globe/focus.test.ts
@@ -2925,7 +2925,7 @@ npx vitest run tests/unit/globe/focus.test.ts
 
 Expected: **9 passed**. Suite intera: 370.
 
-- [ ] **Step 5: Creare `tests/unit/state/flightFocus.test.ts`**
+- [x] **Step 5: Creare `tests/unit/state/flightFocus.test.ts`**
 
 ```ts
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -2975,7 +2975,7 @@ describe('leaveFlight — one act, one function', () => {
 });
 ```
 
-- [ ] **Step 6: Verificare il rosso**
+- [x] **Step 6: Verificare il rosso**
 
 ```bash
 npx vitest run tests/unit/state/flightFocus.test.ts
@@ -2983,7 +2983,7 @@ npx vitest run tests/unit/state/flightFocus.test.ts
 
 Expected: `Failed to resolve import "@/state/flightFocus"`. Zero test passati.
 
-- [ ] **Step 7: Creare `src/state/flightFocus.ts`**
+- [x] **Step 7: Creare `src/state/flightFocus.ts`**
 
 ```ts
 import { useSelectionStore } from './selectionStore';
@@ -3019,7 +3019,7 @@ npx vitest run tests/unit/state/flightFocus.test.ts
 
 Expected: **3 passed**. Suite intera: 373.
 
-- [ ] **Step 8: Creare `tests/unit/state/escape.test.ts`**
+- [x] **Step 8: Creare `tests/unit/state/escape.test.ts`**
 
 ```ts
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -3088,7 +3088,7 @@ describe('the Escape ladder', () => {
 });
 ```
 
-- [ ] **Step 9: Verificare il rosso**
+- [x] **Step 9: Verificare il rosso**
 
 ```bash
 npx vitest run tests/unit/state/escape.test.ts
@@ -3096,7 +3096,7 @@ npx vitest run tests/unit/state/escape.test.ts
 
 Expected: `Failed to resolve import "@/state/escape"`. Zero test passati.
 
-- [ ] **Step 10: Creare `src/state/escape.ts`**
+- [x] **Step 10: Creare `src/state/escape.ts`**
 
 ```ts
 import { useSelectionStore } from './selectionStore';
@@ -3141,7 +3141,7 @@ export function handleEscape(): boolean {
 }
 ```
 
-- [ ] **Step 11: Togliere il listener da `src/ui/SidePanel.tsx`**
+- [x] **Step 11: Togliere il listener da `src/ui/SidePanel.tsx`**
 
 Sostituire
 
@@ -3167,7 +3167,7 @@ e cancellare interamente il blocco
 
 `close` resta usato dalle righe `onClose={close}` sotto: non va rimosso dalle selezioni dello store.
 
-- [ ] **Step 12: Dare il listener a `src/ui/AppShell.tsx`**
+- [x] **Step 12: Dare il listener a `src/ui/AppShell.tsx`**
 
 Aggiungere agli import:
 
@@ -3191,7 +3191,7 @@ e, **prima** dello `useEffect` che monta la scena, il nuovo effetto:
   }, []);
 ```
 
-- [ ] **Step 13: Creare `tests/component/SidePanel.test.tsx`**
+- [x] **Step 13: Creare `tests/component/SidePanel.test.tsx`**
 
 ```tsx
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -3297,7 +3297,7 @@ describe('SidePanel — never an empty box', () => {
 });
 ```
 
-- [ ] **Step 14: Verificare il rosso**
+- [x] **Step 14: Verificare il rosso**
 
 ```bash
 npx vitest run tests/component/SidePanel.test.tsx
@@ -3305,7 +3305,7 @@ npx vitest run tests/component/SidePanel.test.tsx
 
 Expected: **1 passed, 6 failed**. Passa solo il primo: la `FlightCard` di oggi si rende. Falliscono i due del contatto perso (`Unable to find an element with the text: /contact lost/i`), quello del ripiego sul toggle (`Unable to find an accessible element with the role "button"`) e i due della posizione ignota (`Unable to find an element with the text: /position unknown/i`), perché oggi `src/ui/SidePanel.tsx:26-30` non ha nessun ramo per «`flight` senza aereo», nessuno per «aereo senza posizione», e l'`<aside>` resta semplicemente vuoto o muto. E fallisce quello della ✕ (`expected 'a1' to be null`), perché oggi quel bottone chiama `close()` e basta: il pannello si chiude, il focus resta acceso. Quei sei fallimenti **sono** il difetto, visto dal test.
 
-- [ ] **Step 15: Dare a `src/ui/SidePanel.tsx` i rami che mancano, e la riga che il globo non può dire da solo**
+- [x] **Step 15: Dare a `src/ui/SidePanel.tsx` i rami che mancano, e la riga che il globo non può dire da solo**
 
 Aggiungere agli import:
 
@@ -3413,7 +3413,7 @@ function LostContact({ icao24, onClose }: LostContactProps) {
 
 `LostContact` non porta classi nuove: `panel__header`, `panel__title-block`, `panel__callsign`, `panel__operator`, `route` e `panel__footer` esistono già in `src/ui/styles.css`, e il bottone `aria-label="Close"` è già vestito dalla regola di riga 156. La riga della posizione ignota ne vuole invece una sua, perché `panel__footer` ha `margin-top: auto` (riga 174) e dentro la colonna flex del pannello finirebbe spinta in fondo, lontana dalla scheda che sta commentando.
 
-- [ ] **Step 16: Aggiungere la regola della nota in `src/ui/styles.css`**
+- [x] **Step 16: Aggiungere la regola della nota in `src/ui/styles.css`**
 
 Sotto la riga `.panel__footer { … }` aggiungere:
 
@@ -3425,7 +3425,7 @@ Sotto la riga `.panel__footer { … }` aggiungere:
 .panel__note { font-size: 11px; opacity: 0.5; margin-top: var(--space-xs); }
 ```
 
-- [ ] **Step 17: Verificare il verde**
+- [x] **Step 17: Verificare il verde**
 
 ```bash
 npx vitest run tests/component/SidePanel.test.tsx
@@ -3433,7 +3433,7 @@ npx vitest run tests/component/SidePanel.test.tsx
 
 Expected: **7 passed**. Suite intera: 385.
 
-- [ ] **Step 18: Collegare la dissolvenza in `src/globe/scene.ts`**
+- [x] **Step 18: Collegare la dissolvenza in `src/globe/scene.ts`**
 
 Aggiungere agli import:
 
@@ -3471,7 +3471,7 @@ con
     aircraftLayer.update(aircraftMap.values(), selectedIcao, rule, othersBrightness);
 ```
 
-- [ ] **Step 19: Verificare build, suite e browser**
+- [x] **Step 19: Verificare build, suite e browser**
 
 ```bash
 npm run build:all && npm test -- --run

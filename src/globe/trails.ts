@@ -11,6 +11,8 @@ import {
 } from 'three';
 import type { Aircraft } from '@/types';
 import { GLOBE_RADIUS } from './geoHelpers';
+import { isAircraftVisible } from './visibility';
+import type { VisibilityRule } from './visibility';
 
 const CRUISING_BASE: [number, number, number] = [1.0, 0.902, 0.769];
 const SELECTED_BASE: [number, number, number] = [0.16, 0.59, 1.0];
@@ -44,7 +46,12 @@ const SCENE_BOUND_RADIUS = GLOBE_RADIUS + 0.5;
 
 export interface TrailsLayer {
   group: Group;
-  update: (aircraft: Iterable<Aircraft>, selectedIcao: string | null) => void;
+  /** Same `rule` the point layer obeys: a hidden aircraft leaves no trail. */
+  update: (
+    aircraft: Iterable<Aircraft>,
+    selectedIcao: string | null,
+    rule: VisibilityRule
+  ) => void;
 }
 
 /**
@@ -88,11 +95,19 @@ export function createTrailsLayer(): TrailsLayer {
   const group = new Group();
   group.add(lines);
 
-  function update(aircraft: Iterable<Aircraft>, selectedIcao: string | null): void {
+  function update(
+    aircraft: Iterable<Aircraft>,
+    selectedIcao: string | null,
+    rule: VisibilityRule
+  ): void {
     let vertCursor = 0; // next vertex index to write
 
     for (const ac of aircraft) {
       if (ac.latitude === null || ac.longitude === null) continue;
+      // A trail without its aircraft is a scratch on the globe that nothing
+      // explains. The selected aircraft keeps its trail even in focus,
+      // because the rule says it is the one thing visible.
+      if (!isAircraftVisible(ac, rule)) continue;
       if (ac.trail.length < 1) continue;
 
       const base = ac.icao24 === selectedIcao ? SELECTED_BASE : CRUISING_BASE;

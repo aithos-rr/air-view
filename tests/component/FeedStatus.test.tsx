@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { HudCounter } from '@/ui/HudCounter';
+import { FeedStatus } from '@/ui/FeedStatus';
 import { useAircraftStore } from '@/state/aircraftStore';
 
-describe('HudCounter', () => {
+describe('FeedStatus', () => {
   beforeEach(() =>
     useAircraftStore.setState({
       aircraft: new Map(),
@@ -14,7 +14,7 @@ describe('HudCounter', () => {
   );
 
   it('says nothing about freshness while the feed is fresh', () => {
-    render(<HudCounter />);
+    render(<FeedStatus />);
     expect(screen.queryByText(/feed stale/)).toBeNull();
   });
 
@@ -24,7 +24,7 @@ describe('HudCounter', () => {
     // cached snapshot, the client drew it like live traffic, and the only
     // way to notice was to know an aircraft that had landed.
     useAircraftStore.setState({ feedStale: true });
-    render(<HudCounter />);
+    render(<FeedStatus />);
     expect(screen.getByText(/feed stale/)).toBeInTheDocument();
   });
 });

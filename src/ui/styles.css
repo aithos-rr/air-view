@@ -107,6 +107,125 @@ html, body, #root {
   margin-left: var(--space-xs);
 }
 
+/* Fleet panel — the HUD counter with a drawer under it */
+.hud__summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+.hud__chevron { font-size: 10px; opacity: 0.5; }
+
+/* The live region, demoted from .hud to a row inside it. Exactly one
+   element carries .hud now: two would stack at the same fixed corner, and
+   page.locator('.hud') in tests/e2e/happy-path.spec.ts:6 would resolve to
+   two nodes, which Playwright's strict mode rejects outright. */
+.hud__feed { font-size: 12px; }
+.hud__feed .hud__status { margin-left: 0; }
+
+.fleet {
+  margin-top: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  width: 248px;
+  background: rgba(39, 39, 41, 0.78);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-md);
+}
+.fleet__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xxs) 0;
+  cursor: pointer;
+}
+.fleet__label { flex: 1; font-size: 13px; font-weight: 400; }
+.fleet__count { font-size: 13px; font-variant-numeric: tabular-nums; opacity: 0.8; }
+/* Used in two places on purpose: inside the drawer for the route-only
+   line, and directly under the counter for the two lines that explain the
+   globe, which must survive the drawer closing (D14). The max-width is
+   what the drawer gives it there — without it, a note outside the drawer
+   would stretch the fixed .hud box to the width of its own sentence. */
+.fleet__note {
+  margin-top: var(--space-xs);
+  max-width: 248px;
+  font-size: 11px;
+  font-weight: 400;
+  /* Explicit, and with no opacity over it. These lines were 11px at
+     opacity 0.5 inside a .hud already set to rgba(255,255,255,0.7): an
+     effective alpha of 0.35, which measures 3,1:1 on the page against the
+     4,5:1 WCAG AA asks of text under 18,66px — while "1 of 2 000 aircraft",
+     the claim these lines exist to correct, sits at 9,7:1. A correction
+     three times fainter than the claim is a correction in the DOM only.
+     0.78 is 11,9:1 on the page and 5,2:1 against the worst backdrop the
+     plate below can be over. */
+  color: rgba(255, 255, 255, 0.78);
+  letter-spacing: -0.1px;
+}
+
+/* The notes carry their own backdrop, like .fleet does.
+   The HUD is fixed at the top-left and the globe turns under it: over the
+   limb the same text measured 2,1:1, so legibility depended on where the
+   planet happened to be. :not(:empty) because the container is always in
+   the page — it is the aria-live region, and a live region announces
+   reliably only if it was there before the news arrived — and an empty
+   plate under the counter would be a box explaining nothing. */
+.fleet__notes:not(:empty) {
+  margin-top: var(--space-sm);
+  width: 248px;
+  padding: var(--space-sm) var(--space-md);
+  background: rgba(39, 39, 41, 0.78);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-md);
+}
+.fleet__notes > .fleet__note:first-of-type { margin-top: 0; }
+
+/* The control carries the colour of what it controls (spec §7.1) — except
+   that the user asked for the partial-data box to be red and translucent,
+   and red says "remove" where the aircraft grey would only have said
+   "these". Red appears ONLY here, never on the globe, so Action Blue keeps
+   its single meaning. */
+.fleet__box {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  position: relative;
+  flex: none;
+}
+.fleet__box[data-kind="complete"] {
+  border-color: rgba(255, 230, 196, 0.65);
+  background: rgba(255, 230, 196, 0.10);
+}
+.fleet__box[data-kind="complete"]:checked { background: rgba(255, 230, 196, 0.45); }
+.fleet__box[data-kind="partial"] {
+  border-color: rgba(255, 69, 58, 0.80);
+  background: rgba(255, 69, 58, 0.12);
+}
+.fleet__box[data-kind="partial"]:checked { background: rgba(255, 69, 58, 0.45); }
+.fleet__box:checked::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid rgba(0, 0, 0, 0.75);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
 .sr-only {
   position: absolute;
   width: 1px; height: 1px;
@@ -172,6 +291,11 @@ html, body, #root {
 .field__label { font-size: 10px; font-weight: 600; letter-spacing: 0.08em; opacity: 0.45; text-transform: uppercase; }
 .field__value { font-size: 17px; letter-spacing: -0.374px; font-variant-numeric: tabular-nums; }
 .panel__footer { margin-top: auto; padding-top: var(--space-lg); font-size: 12px; opacity: 0.35; }
+/* A line the PANEL says about the flight, not a field of the flight: why
+   the globe is not showing what the card names. Deliberately quiet — it is
+   a correction, not an alarm — and without the `margin-top: auto` of
+   .panel__footer, which would push it to the bottom of the panel. */
+.panel__note { font-size: 11px; opacity: 0.5; margin-top: var(--space-xs); }
 
 /* Aircraft list */
 .list-filter {

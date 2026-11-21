@@ -1,6 +1,8 @@
 import { Camera, Vector2, Vector3 } from 'three';
 import type { Aircraft } from '@/types';
 import { latLonAltToVec3 } from './geoHelpers';
+import { isAircraftVisible } from './visibility';
+import type { VisibilityRule } from './visibility';
 
 /**
  * Projects each aircraft to screen space and finds the one closest to the
@@ -14,7 +16,8 @@ export function findAircraftAtPointer(
   pointerNDC: Vector2,
   aircraft: Iterable<Aircraft>,
   camera: Camera,
-  canvas: HTMLCanvasElement
+  canvas: HTMLCanvasElement,
+  rule: VisibilityRule
 ): string | null {
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
@@ -25,6 +28,11 @@ export function findAircraftAtPointer(
   const projected: Array<{ icao: string; px: Vector2 }> = [];
   for (const ac of aircraft) {
     if (ac.latitude === null || ac.longitude === null) continue;
+    // An aircraft nobody can see must not answer a click. Under focus that
+    // leaves only the focused flight pickable, so a click anywhere else
+    // falls through to select(null) — which is the Esc-or-empty-space exit
+    // the spec §6.2 describes, obtained for free.
+    if (!isAircraftVisible(ac, rule)) continue;
     const world = latLonAltToVec3(ac.latitude, ac.longitude, ac.baroAltitudeFt ?? 38000);
     const acDir = world.clone().normalize();
     if (camDir.dot(acDir) <= 0.05) continue; // far hemisphere

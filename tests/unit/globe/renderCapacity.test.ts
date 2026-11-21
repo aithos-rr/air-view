@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { Object3D, Points } from 'three';
 import { createAircraftLayer } from '@/globe/aircraft';
 import { createTrailsLayer } from '@/globe/trails';
+import { SHOW_ALL } from '@/globe/visibility';
 import { makeAircraftRaw } from '../../helpers/aircraft';
 import type { Aircraft } from '@/types';
 
@@ -40,7 +41,7 @@ describe('aircraft layer capacity', () => {
   it('draws the whole fleet at the size the server actually serves', () => {
     // 20 000 is the number the server's own payload comment is measured on.
     const layer = createAircraftLayer();
-    layer.update(fleet(20_000), null);
+    layer.update(fleet(20_000), null, SHOW_ALL, 1);
     const geom = geometryOf(layer.group.children[0]);
     expect(geom.drawRange.count).toBe(20_000);
   });
@@ -49,7 +50,7 @@ describe('aircraft layer capacity', () => {
     // MAX_PAYLOAD_AIRCRAFT: the most records one body can ever contain, so
     // the most the client can ever be asked to draw.
     const layer = createAircraftLayer();
-    layer.update(fleet(24_000), null);
+    layer.update(fleet(24_000), null, SHOW_ALL, 1);
     const geom = geometryOf(layer.group.children[0]);
     expect(geom.drawRange.count).toBe(24_000);
     // A draw range is only metadata: assert the buffer really holds those
@@ -68,7 +69,7 @@ describe('trails layer capacity', () => {
     // Five trail points plus the current position is six points, i.e. five
     // segments and ten vertices per aircraft: 240 000 in all.
     const layer = createTrailsLayer();
-    layer.update(fleet(24_000, 5), null);
+    layer.update(fleet(24_000, 5), null, SHOW_ALL);
     const geom = geometryOf(layer.group.children[0]);
     expect(geom.drawRange.count).toBe(240_000);
     const pos = geom.getAttribute('position');

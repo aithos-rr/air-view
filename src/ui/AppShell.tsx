@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { mountScene } from '@/globe/scene';
 import { bootstrapData, teardownData } from '@/data/bootstrap';
 import { BrandWatermark } from './BrandWatermark';
-import { HudCounter } from './HudCounter';
+import { FleetPanel } from './FleetPanel';
 import { SidePanel } from './SidePanel';
 import { WebGLFallback } from './WebGLFallback';
+import { handleEscape } from '@/state/escape';
 import './styles.css';
 
 function detectWebGL2(): boolean {
@@ -21,6 +22,18 @@ export default function AppShell() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const leaderRef = useRef<SVGSVGElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+
+  // The only Escape listener in the application. See state/escape.ts for the
+  // order; it is here rather than in a panel because the key belongs to the
+  // page, not to whichever component happens to be mounted.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return;
+      if (handleEscape()) e.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   useEffect(() => {
     if (!supported) return;
@@ -45,7 +58,7 @@ export default function AppShell() {
       <canvas ref={canvasRef} className="app-canvas" />
       <svg ref={leaderRef} className="app-leader" />
       <BrandWatermark />
-      <HudCounter />
+      <FleetPanel />
       <SidePanel ref={panelRef} />
     </>
   );

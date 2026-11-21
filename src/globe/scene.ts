@@ -5,6 +5,7 @@ import { createAtmosphere } from './atmosphere';
 import { loadContinents } from './continents';
 import { createAircraftLayer } from './aircraft';
 import { createTrailsLayer } from './trails';
+import { createFocusFade } from './focus';
 import { LeaderLine } from './leaderLine';
 import { findAircraftAtPointer } from './raycaster';
 import { latLonAltToVec3, vec3ToLatLon, visibleCapRadiusNm } from './geoHelpers';
@@ -12,6 +13,7 @@ import { useAircraftStore } from '@/state/aircraftStore';
 import { useSelectionStore } from '@/state/selectionStore';
 import { usePanelStore } from '@/state/panelStore';
 import { useA11yStore } from '@/state/a11yStore';
+import { readVisibilityRule } from '@/state/sceneView';
 
 export interface ViewCentre {
   lat: number;
@@ -75,6 +77,7 @@ export function mountScene(
     .catch((e: unknown) => console.warn('Continents:', e));
 
   const leader = new LeaderLine(leaderSvg, () => canvas);
+  const focusFade = createFocusFade();
 
   // Click → select aircraft
   function onClick(event: MouseEvent): void {
@@ -87,7 +90,8 @@ export function mountScene(
       ndc,
       useAircraftStore.getState().aircraft.values(),
       camera,
-      canvas
+      canvas,
+      readVisibilityRule()
     );
     if (icao) {
       useSelectionStore.getState().select(icao);
@@ -132,10 +136,19 @@ export function mountScene(
     const aircraftMap = useAircraftStore.getState().aircraft;
     const selectedIcao = useSelectionStore.getState().selectedIcao;
 
+    const rule = readVisibilityRule();
+    // `time` is the rAF timestamp: monotonic by specification. Date.now()
+    // moves by ~528 ms every ~32 s on this machine, which would end a 300 ms
+    // fade before it began.
+    const othersBrightness = focusFade.sample(
+      rule.focusedIcao,
+      time,
+      useA11yStore.getState().prefersReducedMotion
+    );
     const tAC = performance.now();
-    aircraftLayer.update(aircraftMap.values(), selectedIcao);
+    aircraftLayer.update(aircraftMap.values(), selectedIcao, rule, othersBrightness);
     const tTr = performance.now();
-    trailsLayer.update(aircraftMap.values(), selectedIcao);
+    trailsLayer.update(aircraftMap.values(), selectedIcao, rule);
     const tLd = performance.now();
 
     // Leader line: only when an aircraft is selected and on the near hemisphere

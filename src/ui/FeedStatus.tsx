@@ -14,7 +14,7 @@ const ANNOUNCE_THRESHOLD = 100; // re-announce only on Δ > 100 (spec §13)
 const STALE_AGE_SECONDS = 120;
 const AGE_TICK_MS = 10_000;
 
-export function HudCounter() {
+export function FeedStatus() {
   const count = useAircraftStore((s) => s.aircraft.size);
   const status = useAircraftStore((s) => s.fetchStatus);
   const stale = useAircraftStore((s) => s.feedStale);
@@ -41,9 +41,22 @@ export function HudCounter() {
   const ageSeconds = Math.max(0, Math.floor(Date.now() / 1000) - feedFetchedAt);
 
   return (
-    <div className="hud" role="status" aria-live="polite" aria-atomic="true">
-      <span aria-hidden="true">{count.toLocaleString()} aircraft</span>
-      <span className="sr-only">{announceCount.toLocaleString()} aircraft</span>
+    <div className="hud__feed" role="status" aria-live="polite" aria-atomic="true">
+      {/* The visible number moved to the FleetPanel button, which is also
+          the disclosure control: one number on screen, not two that can
+          disagree. The screen-reader announcement stays here, because this
+          is the live region and an announcement is not a label — and the
+          .hud class went with the number, because the box is the panel now
+          and two nested nodes with that class is one ambiguous selector.
+
+          "in the feed", not "aircraft": this number is aircraft.size and
+          it does not move when a filter, a focus or a missing coordinate
+          takes aircraft off the globe. Announced bare it would say
+          "5 900 aircraft" into the ear of someone looking at 200 — the
+          family of D15 reaching the one user who cannot check the picture
+          against the words. The panel's own live region (FleetPanel) is
+          what announces how many are drawn and why. */}
+      <span className="sr-only">{announceCount.toLocaleString()} aircraft in the feed</span>
       {status === 'error' && (
         <span className="hud__status" aria-label="Signal interrupted, retrying">
           {' '}
