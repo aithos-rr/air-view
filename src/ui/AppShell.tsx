@@ -26,7 +26,9 @@ export default function AppShell() {
     if (!supported) return;
     if (!canvasRef.current || !leaderRef.current || !panelRef.current) return;
     const handle = mountScene(canvasRef.current, leaderRef.current, panelRef.current);
-    void bootstrapData().catch((e: unknown) => console.error('bootstrap:', e));
+    void bootstrapData(() => handle.viewCentre()).catch((e: unknown) =>
+      console.error('bootstrap:', e)
+    );
     return () => {
       handle.dispose();
       teardownData();

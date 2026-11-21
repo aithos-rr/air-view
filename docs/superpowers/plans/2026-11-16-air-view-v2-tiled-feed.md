@@ -4073,7 +4073,7 @@ Qui la finestra client sparisce del tutto: il payload del server **è** il mondo
 
 **Tre file importano ciò che questo task rinomina.** Il `git mv` rompe `src/data/aircraftStream.ts`, `tests/unit/data/statesClient.test.ts` **e** `tests/unit/data/aircraftStream.test.ts`, che fa `spyOn` sul modulo. Dimenticare il terzo impedisce alla suite di caricarsi.
 
-- [ ] **Step 1: Sostituire il blocco `describe('aircraftStore')` in `tests/unit/state/stores.test.ts`**
+- [x] **Step 1: Sostituire il blocco `describe('aircraftStore')` in `tests/unit/state/stores.test.ts`**
 
 Sostituire l'intero blocco `describe('aircraftStore', ...)` esistente con il seguente, lasciando invariati gli altri `describe` del file **e tutti gli import già in cima**. In particolare `makeAircraftRaw` è già importato da `tests/helpers/aircraft.ts`, dove l'ha messo il piano precedente. **Non ri-aggiungerlo**, sarebbe un identificatore duplicato.
 
@@ -4173,12 +4173,12 @@ describe('aircraftStore', () => {
 });
 ```
 
-- [ ] **Step 2: Eseguire il test e verificare che fallisca**
+- [x] **Step 2: Eseguire il test e verificare che fallisca**
 
 Run: `npx vitest run tests/unit/state/stores.test.ts`
 Expected: FAIL — `updateBatch` accetta un solo argomento, `feedFetchedAt`, `feedStale` e `feedAgeSeconds` non esistono
 
-- [ ] **Step 3: Riscrivere `src/state/aircraftStore.ts`**
+- [x] **Step 3: Riscrivere `src/state/aircraftStore.ts`**
 
 ```ts
 import { create } from 'zustand';
@@ -4256,12 +4256,12 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
 }));
 ```
 
-- [ ] **Step 4: Eseguire il test e verificare che passi**
+- [x] **Step 4: Eseguire il test e verificare che passi**
 
 Run: `npx vitest run tests/unit/state/stores.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Rinominare il client — TRE file da aggiornare**
+- [x] **Step 5: Rinominare il client — TRE file da aggiornare**
 
 ```bash
 git mv src/data/openSkyClient.ts src/data/statesClient.ts
@@ -4280,7 +4280,7 @@ Verificare che non ne restino:
 grep -rn "openSkyClient" src/ tests/ || echo "nessun riferimento residuo"
 ```
 
-- [ ] **Step 6: Portare il timestamp del batch attraverso lo stream**
+- [x] **Step 6: Portare il timestamp del batch attraverso lo stream**
 
 In `src/data/aircraftStream.ts`, cambiare la firma in `StreamOptions`:
 
@@ -4296,7 +4296,7 @@ In `src/data/aircraftStream.ts`, cambiare la firma in `StreamOptions`:
 
 e in `tick`, sostituire `opts.onBatch(result.aircraft);` con `opts.onBatch(result.aircraft, result.fetchedAt, result.stale);`.
 
-- [ ] **Step 7: Adeguare `aircraftStream.test.ts` ai nuovi argomenti**
+- [x] **Step 7: Adeguare `aircraftStream.test.ts` ai nuovi argomenti**
 
 `toHaveBeenCalledWith` verifica la lista **completa** degli argomenti, quindi **tre** asserzioni di questo file si rompono: una su `onBatch`, che passa da uno a tre argomenti, e due su `fetchStates`, che passa da uno a tre con lo Step 9. Si rompe anche il doppio di `fetchStates` nel `beforeEach`, e prima ancora non compila: `FetchResult` ha ora un campo `stale` obbligatorio, e senza quello `result.stale` arriverebbe `undefined` all'asserzione. Correggere tutto:
 
@@ -4334,7 +4334,7 @@ Nel test `passes null bbox when getBoundingBox is omitted`:
 
 Senza queste due ultime correzioni lo Step 11 non può passare: la suite si carica, ma due test diventano rossi.
 
-- [ ] **Step 8: Aggiornare `src/data/bootstrap.ts`**
+- [x] **Step 8: Aggiornare `src/data/bootstrap.ts`**
 
 Sostituire il callback `onBatch` con:
 
@@ -4355,7 +4355,7 @@ Sostituire il callback `onBatch` con:
     },
 ```
 
-- [ ] **Step 8a: Scrivere il test del raggio visibile**
+- [x] **Step 8a: Scrivere il test del raggio visibile**
 
 Il raggio che il client manda decide quali tile saltano la coda, e nessun test lo guardava: il valore spariva dentro un clamp del server e la revisione precedente ha potuto spedire un calcolo che non poteva produrre un numero operativo (vedi lo Step 9). Prima la misura, poi il codice.
 
@@ -4426,7 +4426,7 @@ describe('visibleCapRadiusNm', () => {
 Run: `npx vitest run tests/unit/globe/geoHelpers.test.ts`
 Expected: FAIL — `visibleCapRadiusNm` non esiste ancora.
 
-- [ ] **Step 9: Completare il lato client della priorità di viewport**
+- [x] **Step 9: Completare il lato client della priorità di viewport**
 
 Senza questo il blocco `lat`/`lon`/`radius` del Task 3 è **codice morto**: il client oggi costruisce solo query bbox e non ne passa nemmeno una. La promessa "la regione inquadrata è fresca" non sarebbe mantenuta.
 
@@ -4635,7 +4635,7 @@ con
 
 Deve essere una closure, non un valore già calcolato: lo stream interroga `getViewCentre` a ogni poll, e passare `handle.viewCentre()` congelerebbe per sempre l'inquadratura del mount — la priorità seguirebbe una camera che non si muove più.
 
-- [ ] **Step 9a: Blindare la lettura del flag `stale`**
+- [x] **Step 9a: Blindare la lettura del flag `stale`**
 
 Il lettore è già scritto — sta nel frammento di `fetchStates` dello Step 9 — ma era già stato scritto una volta e poi tolto, perché niente lo pretendeva. In `tests/unit/data/statesClient.test.ts` (il file rinominato allo Step 5), dentro il `describe('fetchStates', ...)` esistente:
 
@@ -4669,7 +4669,7 @@ Il lettore è già scritto — sta nel frammento di `fetchStates` dello Step 9 �
 Run: `npx vitest run tests/unit/data/statesClient.test.ts`
 Expected: PASS, 5 test. Qui il verde arriva prima del rosso, perché l'implementazione sta nello Step 9: per controllare che questi due test siano vivi e non decorativi, togliere `stale: data.stale === true` dal ritorno di `fetchStates` e verificare che diventino rossi, poi rimetterlo.
 
-- [ ] **Step 9b: Scrivere il test della HUD**
+- [x] **Step 9b: Scrivere il test della HUD**
 
 Creare `tests/component/HudCounter.test.tsx`. `vitest.config.ts` include già `tests/component/**/*.test.{ts,tsx}`, l'ambiente è jsdom e `@testing-library/jest-dom/vitest` è già caricato da `tests/setup.ts`: non serve configurazione nuova.
 
@@ -4709,7 +4709,7 @@ describe('HudCounter', () => {
 Run: `npx vitest run tests/component/HudCounter.test.tsx`
 Expected: FAIL — la HUD non dice nulla della freschezza.
 
-- [ ] **Step 9c: Far dire alla HUD quello che il server ha dichiarato**
+- [x] **Step 9c: Far dire alla HUD quello che il server ha dichiarato**
 
 In `src/ui/HudCounter.tsx`, accanto alle due letture dello store già presenti:
 
@@ -4761,7 +4761,7 @@ curl -s localhost:3000/health | python3 -c "import json,sys; print('zoom lontano
 
 Expected: **0** dopo la prima coppia — zoomati sul Pacifico non c'è niente di visibile da anticipare, e i turni prioritari restano alla rotazione — e un valore **maggiore di zero** (fino a 6) dopo la seconda, dove quelle tile sono davvero sullo schermo. Se i due numeri sono uguali il raggio non sta decidendo nulla, ed è esattamente lo stato da cui veniamo.
 
-- [ ] **Step 11: Verificare entrambi i programmi e l'intera suite**
+- [x] **Step 11: Verificare entrambi i programmi e l'intera suite**
 
 ```bash
 npm run build:all && npm test -- --run

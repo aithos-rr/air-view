@@ -15,16 +15,23 @@ import { GLOBE_RADIUS } from './geoHelpers';
 const CRUISING_BASE: [number, number, number] = [1.0, 0.902, 0.769];
 const SELECTED_BASE: [number, number, number] = [0.16, 0.59, 1.0];
 
-// Buffer pool sized for the global feed worst case (~14 000 aircraft + headroom).
+// Buffer pool sized from the server's ceiling, the same number as in
+// aircraft.ts: /api/states caps one body at MAX_PAYLOAD_AIRCRAFT = 24 000
+// (server/index.ts) and the accumulated fleet normally runs near 20 000,
+// both above the 18 000 v1 sized for a ~14 000 aircraft snapshot. A trail
+// dropped past the ceiling is invisible: the point is still drawn, the
+// history behind it simply disappears.
 // Each trail becomes (TRAIL_POINTS - 1) segments × 2 vertices each. Memory cost:
-//   positions: 18 000 × 5 × 2 × 3 × 4 B  ≈ 2.16 MB
-//   colors:    18 000 × 5 × 2 × 3 × 4 B  ≈ 2.16 MB
-// Trascurabile per un browser moderno; evita riallocazioni quando l'utente
-// torna sull'app dopo molte ore di trail history accumulata.
-const MAX_AIRCRAFT = 18000;
+//   positions: 24 000 × 5 × 2 × 3 × 4 B  ≈ 2.88 MB
+//   colors:    24 000 × 5 × 2 × 3 × 4 B  ≈ 2.88 MB
+// ~1,4 MB in più del vecchio pool, lo stesso ordine di grandezza che questo
+// file già accettava: trascurabile per un browser moderno, ed evita
+// riallocazioni quando l'utente torna sull'app dopo molte ore di trail
+// history accumulata.
+const MAX_AIRCRAFT = 24000;
 const MAX_TRAIL_POINTS = 6;
 const MAX_SEGMENTS_PER_AC = MAX_TRAIL_POINTS - 1;
-const MAX_VERTICES = MAX_AIRCRAFT * MAX_SEGMENTS_PER_AC * 2; // 180 000
+const MAX_VERTICES = MAX_AIRCRAFT * MAX_SEGMENTS_PER_AC * 2; // 240 000
 
 const POSITION_FLOATS = MAX_VERTICES * 3;
 const COLOR_FLOATS = MAX_VERTICES * 3;

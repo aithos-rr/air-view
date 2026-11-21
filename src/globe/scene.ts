@@ -7,14 +7,21 @@ import { createAircraftLayer } from './aircraft';
 import { createTrailsLayer } from './trails';
 import { LeaderLine } from './leaderLine';
 import { findAircraftAtPointer } from './raycaster';
-import { latLonAltToVec3 } from './geoHelpers';
+import { latLonAltToVec3, vec3ToLatLon, visibleCapRadiusNm } from './geoHelpers';
 import { useAircraftStore } from '@/state/aircraftStore';
 import { useSelectionStore } from '@/state/selectionStore';
 import { usePanelStore } from '@/state/panelStore';
 import { useA11yStore } from '@/state/a11yStore';
 
+export interface ViewCentre {
+  lat: number;
+  lon: number;
+  radiusNm: number;
+}
+
 export interface SceneHandle {
   dispose: () => void;
+  viewCentre: () => ViewCentre;
 }
 
 export function mountScene(
@@ -186,6 +193,20 @@ export function mountScene(
       canvas.removeEventListener('pointerdown', stopRotate);
       canvas.removeEventListener('wheel', stopRotate);
       renderer.dispose();
+    },
+    viewCentre: () => {
+      // The camera always looks at the origin, so the point under it is the
+      // normalised camera direction. The radius is what the lens actually
+      // shows — horizon AND frustum. With the horizon alone this returned
+      // between 3 602 and 4 886 NM across the entire zoom range, every value
+      // above the server's ceiling, so the server saw one constant and the
+      // zoom level never travelled.
+      const { lat, lon } = vec3ToLatLon(camera.position);
+      return {
+        lat,
+        lon,
+        radiusNm: visibleCapRadiusNm(camera.position.length(), camera.fov),
+      };
     },
   };
 }

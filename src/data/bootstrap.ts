@@ -3,6 +3,7 @@ import { loadAirportsFromBundle } from './airportLookup';
 import { startAircraftStream } from './aircraftStream';
 import { resolveFlight } from './resolveFlight';
 import { useAircraftStore } from '@/state/aircraftStore';
+import type { ViewQuery } from './statesClient';
 import type { Aircraft, RefreshState } from '@/types';
 
 // v1 final: fetch the global feed (~14 000 aircraft, 2 MB per fetch).
@@ -22,7 +23,7 @@ function getRefreshState(): RefreshState {
   return 'idle';
 }
 
-export async function bootstrapData(): Promise<void> {
+export async function bootstrapData(getViewCentre?: () => ViewQuery | null): Promise<void> {
   // Load static lookups in parallel (failures don't block — the UI just shows
   // less metadata)
   await Promise.allSettled([
@@ -39,17 +40,21 @@ export async function bootstrapData(): Promise<void> {
 
   stopStream = startAircraftStream({
     getRefreshState,
+    getViewCentre,
     // No getBoundingBox in v1 → server returns the global feed.
     // v2: pass a function that returns the camera-derived bbox.
-    onBatch: (raws) => {
+    onBatch: (raws, fetchedAt, stale, capped) => {
+      const batchUnix = Math.floor(fetchedAt.getTime() / 1000);
       const enriched: Aircraft[] = raws.map((r) => {
         const resolved = resolveFlight(r);
         const ac: Aircraft = { ...r, trail: [] };
         if (resolved) ac.resolved = resolved;
         return ac;
       });
-      useAircraftStore.getState().updateBatch(enriched);
-      useAircraftStore.getState().removeStale(Math.floor(Date.now() / 1000));
+      // The server says whether what it just served is stale; carrying that
+      // word to the store is what lets the HUD say it out loud instead of
+      // drawing old positions as if they were current.
+      useAircraftStore.getState().updateBatch(enriched, batchUnix, stale, capped);
       useAircraftStore.getState().setFetchStatus('idle');
     },
     onError: (e) => {

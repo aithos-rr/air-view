@@ -15,9 +15,15 @@ import { GLOBE_RADIUS } from './geoHelpers';
 const CRUISING_COLOR: [number, number, number] = [1.0, 0.902, 0.769]; // #ffe6c4
 const SELECTED_COLOR: [number, number, number] = [0.16, 0.59, 1.0]; // sky-leaning Action Blue
 const DEG = Math.PI / 180;
-// Sized for the global feed (~14 000 aircraft) + headroom.
-// Memory cost: 18 000 × (3 + 3 + 1) × 4 B ≈ 500 KB. Trascurabile.
-const MAX_AIRCRAFT = 18000;
+// Taken from the server's ceiling, not from a snapshot. /api/states serves
+// the whole ACCUMULATED fleet on every request and caps one body at
+// MAX_PAYLOAD_AIRCRAFT = 24 000 (server/index.ts), whose own sizing note is
+// measured on 20 000 records: the normal regime already sits above the
+// 18 000 v1 chose for a live snapshot of ~14 000. Past this ceiling aircraft
+// leave by a bare `continue` — no log, no flag — while the HUD goes on
+// counting aircraft.size, so the globe would be emptier than the UI claims.
+// Memory cost: 24 000 × (3 + 3 + 1) × 4 B ≈ 670 KB. Trascurabile.
+const MAX_AIRCRAFT = 24000;
 const SCENE_BOUND_RADIUS = GLOBE_RADIUS + 0.5;
 
 interface PointParams {
