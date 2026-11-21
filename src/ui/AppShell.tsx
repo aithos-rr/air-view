@@ -60,15 +60,39 @@ export default function AppShell() {
 
   return (
     <>
-      <a className="skip-link" href="#aircraft-list">
-        Skip to aircraft list
+      {/*
+        The target has to be something that is ALWAYS rendered. This link used
+        to point at #aircraft-list, which AircraftList mounts only while the
+        side panel is in list mode — so on the page a keyboard user actually
+        lands on, the anchor led nowhere. axe-core called it a skip-link whose
+        target does not exist; in this project's terms it was the interface
+        offering something that is not there.
+      */}
+      <a className="skip-link" href="#controls">
+        Skip to controls
       </a>
-      <canvas ref={canvasRef} className="app-canvas" />
-      <svg ref={leaderRef} className="app-leader" />
-      <div ref={markersRef} className="app-markers" />
-      <BrandWatermark />
-      <FleetPanel />
-      <FlightSearch />
+      {/*
+        A landmark around everything that is not the canvas. Without it a
+        screen-reader user browsing by region reached the side panel — its own
+        <aside> — and nothing else: not the fleet panel, not the search, not
+        the watermark. tabIndex -1 makes it a legal destination for the skip
+        link without putting it in the tab order.
+      */}
+      <main id="controls" tabIndex={-1} className="app-controls">
+        {/*
+          The globe is the page's content, so it belongs inside the landmark
+          too — axe-core counted the bare <canvas> as the last thing outside
+          one. DOM order is unchanged, and `display: contents` on the wrapper
+          means paint order and the fixed positioning of its siblings are
+          unchanged with it.
+        */}
+        <canvas ref={canvasRef} className="app-canvas" />
+        <svg ref={leaderRef} className="app-leader" />
+        <div ref={markersRef} className="app-markers" />
+        <BrandWatermark />
+        <FleetPanel />
+        <FlightSearch />
+      </main>
       <SidePanel ref={panelRef} />
     </>
   );

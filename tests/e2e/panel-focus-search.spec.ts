@@ -25,6 +25,20 @@ function aircraft(over: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
+/**
+ * Stops the globe turning, the way a user does.
+ *
+ * `scene.ts` starts with `controls.autoRotate = true` and drops it on the
+ * first pointerdown OR wheel on the canvas. A marker is reprojected every
+ * frame, so while the globe turns Playwright never sees it "stable" and
+ * `click()` waits until the test times out. A wheel is the right gesture
+ * here: a pointerdown on empty canvas also clears the selection, which would
+ * end the focus these tests are about.
+ */
+async function stopTheGlobe(page: Page): Promise<void> {
+  await page.locator('canvas').dispatchEvent('wheel', { deltaY: 1 });
+}
+
 async function withFleet(page: Page): Promise<void> {
   await page.route('**/api/states*', async (route) => {
     await route.fulfill({
@@ -80,8 +94,18 @@ test('searching a flight in the feed focuses it and plants D and A', async ({ pa
   await page.goto('/');
   await page.getByRole('searchbox').fill('BA274'); // the IATA spelling
   await page.getByRole('searchbox').press('Enter');
-  await expect(page.locator('.marker[data-end="origin"]')).toBeVisible();
-  await expect(page.locator('.marker[data-end="destination"]')).toBeVisible();
+  // Planted, named from the route, and on the globe's own terms.
+  //
+  // NOT asserted visible: the markers are reprojected from the airports' real
+  // positions every frame and hidden on the far hemisphere (D9), and nothing
+  // moves the camera when a flight is focused. LAS and LHR are behind the
+  // globe at the default view, so `toBeVisible()` here asserted something the
+  // design deliberately does not promise. What it does promise is that both
+  // ends exist and carry their airport.
+  const origin = page.locator('.marker[data-end="origin"]');
+  const destination = page.locator('.marker[data-end="destination"]');
+  await expect(origin).toHaveAttribute('aria-label', /LAS/);
+  await expect(destination).toHaveAttribute('aria-label', /LHR/);
   await expect(page.locator('.panel__callsign')).toContainText('BAW274');
 });
 
@@ -90,8 +114,21 @@ test('clicking a marker shows the airport, and no terminal is invented', async (
   await page.goto('/');
   await page.getByRole('searchbox').fill('BAW274');
   await page.getByRole('searchbox').press('Enter');
-  await page.locator('.marker[data-end="origin"]').click();
-  await expect(page.getByText(/Harry Reid International Airport/)).toBeVisible();
+  // `force`, because the marker tracks a rotating globe and Playwright waits
+  // for an element to stop moving. The auto-rotation only stops on a real
+  // pointerdown on the canvas (scene.ts), which a click on the marker is not.
+  // The point of the test is what the card says, not that the hit box settled.
+  // The DESTINATION end, not the origin. Markers are hidden on the far
+  // hemisphere (D9) and nothing moves the camera on focus, so LAS is behind
+  // the globe at the default view and genuinely cannot be clicked — which is
+  // correct. LHR sits near the prime meridian, in front of the camera. The
+  // earlier version clicked LAS and passed only when the auto-rotation
+  // happened to bring Las Vegas round inside the retry window.
+  await stopTheGlobe(page);
+  await page.locator('.marker[data-end="destination"]').click();
+  await expect(page.getByText(/London Heathrow Airport/)).toBeVisible();
+  // The row must be ABSENT, not empty: no source we use carries a terminal,
+  // and "Terminal —" would suggest one we do not have.
   await expect(page.getByText(/terminal/i)).toHaveCount(0);
 });
 
@@ -120,11 +157,12 @@ test('Escape walks back out one step per press', async ({ page }) => {
   await page.locator('.hud__summary').click();
   await page.getByRole('searchbox').fill('BAW274');
   await page.getByRole('searchbox').press('Enter');
-  await page.locator('.marker[data-end="origin"]').click();
+  await stopTheGlobe(page);
+  await page.locator('.marker[data-end="destination"]').click();
 
   await page.keyboard.press('Escape'); // the airport card
-  await expect(page.getByText(/Harry Reid/)).toHaveCount(0);
-  await expect(page.locator('.marker[data-end="origin"]')).toBeVisible();
+  await expect(page.getByText(/London Heathrow/)).toHaveCount(0);
+  await expect(page.locator('.marker[data-end="destination"]')).toBeVisible();
 
   await page.keyboard.press('Escape'); // the search, and with it the focus
   await expect(page.locator('.marker')).toHaveCount(0);

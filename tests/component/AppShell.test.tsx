@@ -77,3 +77,48 @@ describe('AppShell', () => {
     expect(mocks.teardownData).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * Two accessibility defects axe-core found on the live page, both of the
+ * family this project keeps meeting: the interface offers something that
+ * is not there.
+ *
+ * The skip link said "Skip to aircraft list" and pointed at #aircraft-list,
+ * which AircraftList renders only while the side panel is in list mode. On
+ * the page a keyboard user actually lands on, the target did not exist — a
+ * promise the markup could not keep. And nothing outside the side panel sat
+ * inside a landmark, so screen-reader users browsing by region never
+ * reached the globe's controls at all.
+ */
+describe('AppShell — a keyboard user can get off the canvas', () => {
+  let realGetContext2: (id: string) => unknown;
+  beforeEach(() => {
+    realGetContext2 = canvasProto.getContext;
+    canvasProto.getContext = (id: string) => (id === 'webgl2' ? {} : null);
+    mocks.mountScene.mockReturnValue({ dispose: mocks.dispose, viewCentre: mocks.viewCentre });
+    mocks.viewCentre.mockReturnValue({ lat: 50, lon: 8, radiusNm: 1299 });
+    mocks.bootstrapData.mockResolvedValue(undefined);
+  });
+  afterEach(() => {
+    cleanup();
+    canvasProto.getContext = realGetContext2;
+    vi.clearAllMocks();
+  });
+
+  it('points the skip link at something that is always there', () => {
+    const { container } = render(<AppShell />);
+    const link = container.querySelector('a.skip-link');
+    expect(link).not.toBeNull();
+    const href = link!.getAttribute('href') ?? '';
+    expect(href.startsWith('#')).toBe(true);
+    const target = container.querySelector(href);
+    expect(target).not.toBeNull();
+    // Focusable, or the skip is a jump to nowhere for the keyboard.
+    expect(target!.getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('puts the page content inside a landmark', () => {
+    const { container } = render(<AppShell />);
+    expect(container.querySelector('main')).not.toBeNull();
+  });
+});

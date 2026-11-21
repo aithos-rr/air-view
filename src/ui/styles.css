@@ -387,7 +387,19 @@ html, body, #root {
 .airport__name { font-size: 15px; font-weight: 600; }
 
 /* Flight search — always visible, never behind a shortcut (spec §6.3) */
+/*
+  The transparent parts of this box must not eat clicks meant for the globe.
+  A fixed, wrapping flex container is wider and taller than the controls you
+  can see — the gaps, the centring slack, the row the status message occupies
+  — and Playwright caught it intercepting a click on an airport marker
+  underneath: "<form role=\"search\"> intercepts pointer events". A user
+  searching a flight and then reaching for its D or A marker would have hit
+  the empty air beside the input instead.
+
+  So the chrome lets pointers through and each control takes them back.
+*/
 .search {
+  pointer-events: none;
   position: fixed;
   top: var(--space-xl);
   left: 50%;
@@ -398,6 +410,11 @@ html, body, #root {
   gap: var(--space-xxs);
   flex-wrap: wrap;
   justify-content: center;
+}
+.search__input,
+.search__clear,
+.search button {
+  pointer-events: auto;
 }
 .search__input {
   width: 190px;
@@ -423,4 +440,13 @@ html, body, #root {
   margin-top: var(--space-xxs);
   font-size: 11px;
   color: rgba(255, 255, 255, 0.65);
+}
+
+/*
+  A landmark, not a layout box. Its children are each position: fixed, so the
+  wrapper must not create a stacking or sizing context of its own, and must
+  not swallow pointer events over the canvas it sits above.
+*/
+.app-controls {
+  display: contents;
 }
