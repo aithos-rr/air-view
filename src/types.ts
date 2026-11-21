@@ -51,13 +51,6 @@ export interface Airport {
   timezone: string;                   // IANA, e.g. "Europe/London"
 }
 
-export interface Route {
-  airlineIata: string;
-  flightNumber: string;
-  originIata: string;
-  destinationIata: string;
-}
-
 export type PanelMode = 'closed' | 'flight' | 'list';
 export type RefreshState = 'active' | 'idle' | 'background';
 export type FetchStatus = 'idle' | 'fetching' | 'error';

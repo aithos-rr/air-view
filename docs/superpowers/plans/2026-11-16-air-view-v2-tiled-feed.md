@@ -3900,16 +3900,16 @@ Separato dal Task 5 perché un revisore potrebbe accettare le rotte vere e voler
 - Consumes: `FlightRouteLite` e `makeAircraftRaw` dal piano precedente
 - Produces: `resolveFlight(ac: AircraftRaw): ResolvedFlight | null` — prende l'aereo, non il solo callsign, perché la rotta arriva dal server dentro l'aereo.
 
-- [ ] **Step 1: Sostituire integralmente `tests/unit/data/resolveFlight.test.ts`**
+- [x] **Step 1: Sostituire integralmente `tests/unit/data/resolveFlight.test.ts`**
 
 Il test viene **prima** dell'implementazione: invertire l'ordine renderebbe impossibile vedere il rosso, perché dopo la riscrittura del modulo il test nuovo passerebbe subito. Il contenuto è nello Step 4.
 
-- [ ] **Step 2: Eseguire il test e verificare che fallisca**
+- [x] **Step 2: Eseguire il test e verificare che fallisca**
 
 Run: `npx vitest run tests/unit/data/resolveFlight.test.ts`
 Expected: FAIL — `resolveFlight` accetta ancora un callsign, non un `AircraftRaw`, quindi l'errore sarà di tipo o di argomento.
 
-- [ ] **Step 3: Riscrivere `src/data/resolveFlight.ts`**
+- [x] **Step 3: Riscrivere `src/data/resolveFlight.ts`**
 
 ```ts
 import type { AircraftRaw, ResolvedFlight } from '@/types';
@@ -3943,7 +3943,7 @@ export function resolveFlight(ac: AircraftRaw): ResolvedFlight | null {
 }
 ```
 
-- [ ] **Step 4: Contenuto del test dello Step 1**
+- [x] **Step 4: Contenuto del test dello Step 1**
 
 ```ts
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -4003,11 +4003,11 @@ describe('resolveFlight', () => {
 });
 ```
 
-- [ ] **Step 5: Aggiornare `src/data/bootstrap.ts`**
+- [x] **Step 5: Aggiornare `src/data/bootstrap.ts`**
 
 Rimuovere `import { loadRoutesFromBundle } from './routeLookup';` e togliere `loadRoutesFromBundle(),` dalla `Promise.allSettled`. Nel callback `onBatch`, sostituire `const resolved = resolveFlight(r.callsign);` con `const resolved = resolveFlight(r);`.
 
-- [ ] **Step 6: Rimuovere modulo, dati e tipo obsoleti**
+- [x] **Step 6: Rimuovere modulo, dati e tipo obsoleti**
 
 ```bash
 git rm src/data/routeLookup.ts public/data/openflights-routes.json
@@ -4019,7 +4019,7 @@ In `tests/unit/data/lookups.test.ts`, rimuovere l'import di `@/data/routeLookup`
 
 In `scripts/build-static-data.mjs`, rimuovere il blocco che genera `openflights-routes.json`. Individuarlo con `grep -n "routes" scripts/build-static-data.mjs`.
 
-- [ ] **Step 7: Verificare che non restino riferimenti**
+- [x] **Step 7: Verificare che non restino riferimenti**
 
 ```bash
 grep -rn "routeLookup\|openflights-routes\|initRoutes" src/ server/ tests/ scripts/ || echo "nessun riferimento residuo"

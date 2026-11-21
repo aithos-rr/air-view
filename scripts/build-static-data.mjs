@@ -29,23 +29,6 @@ for (const name of ['ne_50m_admin_0_countries', 'ne_50m_populated_places']) {
   console.log(`  ${name}.geojson  ${(text.length / 1024).toFixed(0)} KB`);
 }
 
-// 2. OpenFlights routes.dat → openflights-routes.json
-// Format CSV: airline,airline_id,source_iata,source_id,dest_iata,dest_id,codeshare,stops,equipment
-const routesCsv = await downloadText(`${OPENFLIGHTS}/routes.dat`);
-const routes = [];
-for (const line of routesCsv.split('\n')) {
-  if (!line.trim()) continue;
-  const cols = line.split(',');
-  if (cols.length < 5) continue;
-  const [airlineIata, , originIata, , destinationIata] = cols;
-  if (!airlineIata || airlineIata === '\\N') continue;
-  if (!originIata || originIata === '\\N' || originIata.length !== 3) continue;
-  if (!destinationIata || destinationIata === '\\N' || destinationIata.length !== 3) continue;
-  routes.push({ airlineIata, originIata, destinationIata });
-}
-await fs.writeFile(path.join(OUT, 'openflights-routes.json'), JSON.stringify(routes));
-console.log(`  openflights-routes.json  ${routes.length} routes`);
-
 // 3. OpenFlights airlines.dat → airlines.json (ICAO ↔ IATA mapping)
 const airlinesCsv = await downloadText(`${OPENFLIGHTS}/airlines.dat`);
 const airlines = [];

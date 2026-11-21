@@ -43,10 +43,17 @@ becomes camera-driven in v2.
 - **Antipodal ring uncovered.** adsb.lol's largest radius is 10 000 NM around
   any centre; Earth's max geodesic is ~10 800 NM, so a thin ring on the far
   side of (0, 0) — mostly empty South Pacific — is missing.
-- **Route & destination accuracy is imperfect.** Route lookup falls back to
-  OpenFlights' static `routes.dat` because adsb.lol doesn't ship scheduled
-  flight data. Charter, ferry, and military callsigns often resolve to
-  "Route unknown".
+- **Routes are looked up per flight, and admit when they don't know.**
+  adsb.lol ships no scheduled-flight data, so routes come from adsbdb, asked
+  for one specific callsign at a time. A callsign it does not know — charter,
+  ferry, business and military traffic — stays `null` and the aircraft is
+  shown as incomplete, rather than being given a plausible route.
+
+  v1 did the opposite, and it is worth recording why this changed. It fell
+  back to OpenFlights' static `routes.dat` through a lookup that ignored the
+  flight number and returned the airline's alphabetically first route: every
+  British Airways flight was displayed as Aalborg to Aarhus, and 49% of
+  aircraft carried an invented origin. That table and that lookup are gone.
 - **Static global fetch.** v1 always pulls the full feed (~9 000 aircraft).
   Aircraft outside the camera frustum still travel down the wire.
 
@@ -56,8 +63,9 @@ becomes camera-driven in v2.
 
 - **v2 — camera-driven bbox.** Derive a centre+radius from the camera
   viewpoint with a buffer ring, fetching only the visible region.
-- **Better airport / route resolution.** Either a paid scheduled-flight API
-  or a curated dataset for the top N busy callsigns.
+- **Wider route coverage.** adsbdb answers for scheduled traffic; business
+  and military callsigns stay unknown by design. A curated dataset for those
+  would raise coverage without reintroducing guesses.
 - **Secondary data source.** Fail over to adsb.fi or similar when adsb.lol
   rate-limits a region.
 - **Mobile polish.** Side panel becomes a bottom sheet, touch controls
@@ -108,14 +116,14 @@ healthcheck. Node 20+ is pinned via `package.json#engines` and `.nvmrc`.
 src/
 ├── globe/    Three.js scene — frosted glass shader, aircraft SDF + trails buffer pool,
 │             leader line projection, raycaster (a11y hit zones)
-├── data/     adsb.lol source, route + airport + airline lookups, adaptive refresh stream
+├── data/     ADS-B sources + tile grid, airport + airline lookups, adaptive refresh stream
 ├── state/    Zustand stores: aircraft, selection, panel, a11y (subscribable from both
 │             React UI and the Three.js render loop)
 └── ui/       React shell — AppShell, HudCounter, SidePanel, FlightCard, AircraftList,
               BrandWatermark
 
 server/index.ts   Fastify: /api/states + /health + static dist/
-public/data/      Bundled static data (Natural Earth, OpenFlights, OurAirports + tz)
+public/data/      Bundled static data (Natural Earth, OpenFlights airlines, OurAirports + tz)
 railway.toml      Railway build + deploy config
 docs/superpowers/ Original spec + implementation plan
 ```

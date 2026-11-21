@@ -1,39 +1,29 @@
-import type { ResolvedFlight } from '@/types';
+import type { AircraftRaw, ResolvedFlight } from '@/types';
 import { parseCallsign } from './callsign';
 import { lookupAirline } from './airlineLookup';
-import { lookupRoute } from './routeLookup';
 import { lookupAirport } from './airportLookup';
 
 /**
- * Parses a callsign and resolves it against the bundled static data.
+ * Builds the display record for an aircraft.
  *
- * Returns null only if the callsign is unparseable or the airline is unknown.
- * If the airline is known but the route lookup fails, returns a partial
- * ResolvedFlight with null origin / destination — the UI must handle this.
+ * The route now arrives from the server (adsbdb, real). The airline name
+ * still comes from the bundled OpenFlights airline table, which is a pure
+ * code-to-name mapping and therefore trustworthy — unlike the old route
+ * table, which was queried in a way that fabricated origins.
  */
-export function resolveFlight(callsign: string | null | undefined): ResolvedFlight | null {
-  const parsed = parseCallsign(callsign);
+export function resolveFlight(ac: AircraftRaw): ResolvedFlight | null {
+  const parsed = parseCallsign(ac.callsign);
   if (!parsed) return null;
 
   const airline = lookupAirline(parsed.airlineIcao);
-  if (!airline) return null;
-
-  const route = lookupRoute(airline.iata, parsed.flightNumber);
-  if (!route) {
-    return {
-      airlineIcao: airline.icao,
-      airlineName: airline.name,
-      flightNumber: parsed.flightNumber,
-      origin: null,
-      destination: null,
-    };
-  }
+  const airlineName = airline?.name ?? ac.route?.airlineName ?? null;
+  if (airlineName === null) return null;
 
   return {
-    airlineIcao: airline.icao,
-    airlineName: airline.name,
+    airlineIcao: parsed.airlineIcao,
+    airlineName,
     flightNumber: parsed.flightNumber,
-    origin: lookupAirport(route.originIata),
-    destination: lookupAirport(route.destinationIata),
+    origin: ac.route ? lookupAirport(ac.route.originIata) : null,
+    destination: ac.route ? lookupAirport(ac.route.destinationIata) : null,
   };
 }

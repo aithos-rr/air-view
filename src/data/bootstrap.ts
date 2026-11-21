@@ -1,5 +1,4 @@
 import { loadAirlinesFromBundle } from './airlineLookup';
-import { loadRoutesFromBundle } from './routeLookup';
 import { loadAirportsFromBundle } from './airportLookup';
 import { startAircraftStream } from './aircraftStream';
 import { resolveFlight } from './resolveFlight';
@@ -28,7 +27,6 @@ export async function bootstrapData(): Promise<void> {
   // less metadata)
   await Promise.allSettled([
     loadAirlinesFromBundle(),
-    loadRoutesFromBundle(),
     loadAirportsFromBundle(),
   ]);
 
@@ -45,7 +43,7 @@ export async function bootstrapData(): Promise<void> {
     // v2: pass a function that returns the camera-derived bbox.
     onBatch: (raws) => {
       const enriched: Aircraft[] = raws.map((r) => {
-        const resolved = resolveFlight(r.callsign);
+        const resolved = resolveFlight(r);
         const ac: Aircraft = { ...r, trail: [] };
         if (resolved) ac.resolved = resolved;
         return ac;
