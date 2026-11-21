@@ -56,3 +56,31 @@ export function shouldAbortRun(
 ): boolean {
   return consecutiveRefusals >= max;
 }
+
+/**
+ * How fast the RUNTIME resolver may drain its queue.
+ *
+ * These two together are the only place the runtime lookup rate is decided,
+ * and they are here rather than in server/index.ts so a test can read them:
+ * index.ts performs I/O at import time and cannot be loaded from the suite.
+ *
+ * The first version pumped ONE callsign every 10 s — ~360/hour — on the
+ * stated grounds that "the bulk of the cache comes from the seed file" and
+ * that this was "enough to absorb newly appearing callsigns". The end-to-end
+ * run measured both premises false. Of 5 621 callsigns airborne at once, 110
+ * were in a three-hour seed (2%), because the sampler had walked 130 tiles of
+ * 546 and traffic turns over. And the queue grew by ~9 660/hour against 280
+ * drained: 34 times faster than it emptied, so it would never converge and
+ * the complete/incomplete split the product is built around would stay at
+ * ~2% complete for ever.
+ *
+ * The budget this project declares for adsbdb is one request every 1.5 s.
+ * The resolver already spaces a pump internally at that interval; it was the
+ * pump WINDOW that wasted the allowance. Six per ten seconds uses 7.5 s of
+ * spacing inside a 10 s window — one request every 1.67 s, still under the
+ * declared ceiling, and ~2 160/hour instead of 360.
+ */
+export const ROUTE_PUMP_MS = 10_000;
+export const ROUTE_PUMP_BATCH = 6;
+/** The ceiling this project promises adsbdb. Nothing here may exceed it. */
+export const ADSBDB_MIN_INTERVAL_MS = 1_500;

@@ -63,3 +63,7 @@ coverage/
 test-results/
 playwright-report/
 playwright/.cache/
+# Learned while the server runs; the committed seed is server/data/route-cache.json
+server/data/route-cache.runtime.json
+server/data/route-cache.runtime.json.tmp
+server/data/.build-routes.lock

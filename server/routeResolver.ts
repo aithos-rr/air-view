@@ -65,6 +65,13 @@ export interface RouteResolver {
   get(callsign: string): FlightRoute | null;
   enqueue(callsigns: string[]): void;
   pump(fetchImpl?: typeof fetch): Promise<number>;
+  /**
+   * Everything learned so far, in the shape seed() consumes.
+   *
+   * Unknowns are included on purpose: a 404 cost a lookup against a provider
+   * that bans, and forgetting it means paying for the same answer again.
+   */
+  entries(): SeedRecord[];
   stats(): ResolverStats;
 }
 
@@ -263,6 +270,13 @@ export function createRouteResolver(opts: RouteResolverOptions = {}): RouteResol
         }
       }
       return count;
+    },
+
+    entries() {
+      const out: SeedRecord[] = [];
+      for (const [callsign, route] of resolved) out.push({ callsign, route });
+      for (const callsign of unknown) out.push({ callsign, route: null });
+      return out;
     },
 
     stats() {

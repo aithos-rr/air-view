@@ -24,3 +24,15 @@ export function readRouteCache(text: string): SeedRecord[] {
   }
   return [];
 }
+
+/**
+ * Writes the envelope the offline builder also writes, so one reader serves
+ * both files and neither format can drift from the other.
+ *
+ * `gridCursor` belongs to the offline sampler and means nothing here, but it
+ * stays in the envelope: a file missing it would be a second shape to support
+ * for no gain.
+ */
+export function serializeRouteCache(records: SeedRecord[], gridCursor = 0): string {
+  return JSON.stringify({ gridCursor, records });
+}

@@ -18,7 +18,8 @@
     "preview": "vite preview",
     "test": "vitest",
     "test:e2e": "playwright test",
-    "lint": "eslint src --max-warnings 0"
+    "lint": "eslint src --max-warnings 0",
+    "verify:feed": "node scripts/verify-feed.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",

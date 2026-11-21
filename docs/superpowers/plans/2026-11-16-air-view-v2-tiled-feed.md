@@ -4821,7 +4821,7 @@ Nessun mock. Prova che la catena funzioni contro il mondo, non contro i nostri d
 - Consumes: il server in esecuzione
 - Produces: `npm run verify:feed`, riusabile in locale e contro la produzione
 
-- [ ] **Step 1: Creare `scripts/verify-feed.mjs`**
+- [x] **Step 1: Creare `scripts/verify-feed.mjs`**
 
 ```js
 #!/usr/bin/env node
@@ -5025,7 +5025,7 @@ else if (worst) pass(`most common route ${worst[0]} appears ${worst[1]}x — no 
 console.log(process.exitCode ? '\nVERIFICATION FAILED' : '\nVERIFICATION PASSED');
 ```
 
-- [ ] **Step 2: Aggiungere lo script a `package.json`**
+- [x] **Step 2: Aggiungere lo script a `package.json`**
 
 Nel blocco `"scripts"`, aggiungere:
 
@@ -5033,7 +5033,7 @@ Nel blocco `"scripts"`, aggiungere:
     "verify:feed": "node scripts/verify-feed.mjs",
 ```
 
-- [ ] **Step 3: Eseguire la verifica in locale**
+- [x] **Step 3: Eseguire la verifica in locale** — ESEGUITO il 2026-11-21, `VERIFICATION PASSED`
 
 ```bash
 npm run server

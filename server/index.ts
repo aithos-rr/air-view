@@ -1,8 +1,8 @@
 // --- Local .env loader -------------------------------------------------------
 // Loads .env from the project root in non-production environments. Railway
 // injects env vars at the platform level, so this is a no-op in production.
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
 
 if (process.env.NODE_ENV !== 'production') {
   const envPath = resolve(process.cwd(), '.env');
@@ -65,7 +65,8 @@ import { registerHealthRoute } from './healthRoute.js';
 import { buildTileGrid, createTileScheduler, tilesNear, TILE_RADIUS_NM } from '../src/data/sources/tileGrid.js';
 import { createRouteResolver } from './routeResolver.js';
 import { enrichAndMark } from './enrich.js';
-import { readRouteCache } from './routeCache.js';
+import { readRouteCache, serializeRouteCache } from './routeCache.js';
+import { ROUTE_PUMP_MS, ROUTE_PUMP_BATCH } from './lookupPolicy.js';
 
 const feed = createFeedState();
 const fleet = createFleet();
@@ -73,11 +74,13 @@ const tiles = buildTileGrid();
 const scheduler = createTileScheduler(tiles);
 const WORLD_KEY = 'world';
 
-const routes = createRouteResolver();
-// Deliberately slow: the bulk of the cache comes from the seed file, and
-// adsbdb bans at a few requests per second. One lookup every 10 s is
-// ~360/hour, enough to absorb newly appearing callsigns.
-const ROUTE_PUMP_MS = 10_000;
+// Rate and batch live in lookupPolicy.ts, where a test can read them: the
+// first version pumped one lookup every 10 s on the stated grounds that the
+// seed file carried the rest, and the end-to-end run measured that premise
+// false — 2% of a live fleet, with the queue growing 34x faster than it
+// drained. See the comment there for the numbers.
+const routes = createRouteResolver({ maxPerPump: ROUTE_PUMP_BATCH });
+
 
 let lastCompleteCount = 0;
 let lastTotalCount = 0;
@@ -515,6 +518,24 @@ if (NODE_ENV === 'production') {
 // ----------------------------------------------------------------------------
 
 const seedPath = resolve(process.cwd(), 'server/data/route-cache.json');
+/**
+ * What this process has learned since it started, kept beside the committed
+ * seed rather than inside it.
+ *
+ * Measured end to end: a three-hour offline seed matched 2% of a live fleet,
+ * because the sampler had walked 130 tiles of 546 and traffic turns over. So
+ * almost every blue aircraft comes from what the server resolved while
+ * running — ~920 an hour — and holding that only in memory threw all of it
+ * away at the next restart. On Railway a restart is every deploy, so the
+ * complete/incomplete split would have reset to 2% for ever instead of
+ * accumulating.
+ *
+ * A separate file, and gitignored, for two reasons: the committed seed stays
+ * a reviewable artefact instead of churning on every run, and a corrupted
+ * runtime file can be deleted without losing the hours the offline builder
+ * spent against a provider that bans.
+ */
+const learnedPath = resolve(process.cwd(), 'server/data/route-cache.runtime.json');
 if (existsSync(seedPath)) {
   try {
     // Both shapes of the file — the `{ gridCursor, records }` envelope the
@@ -529,6 +550,39 @@ if (existsSync(seedPath)) {
 } else {
   app.log.warn('no route cache file — starting cold, most aircraft will be incomplete');
 }
+
+if (existsSync(learnedPath)) {
+  try {
+    const learned = readRouteCache(readFileSync(learnedPath, 'utf8'));
+    routes.seed(learned);
+    app.log.info({ callsigns: learned.length }, 'runtime route cache restored');
+  } catch (e) {
+    // Losing this file costs an hour of lookups, not the offline seed, so a
+    // bad one is reported and stepped over rather than being fatal.
+    app.log.warn({ err: e instanceof Error ? e.message : String(e) }, 'runtime route cache unreadable — ignoring it');
+  }
+}
+
+/**
+ * Written on a timer rather than on every lookup: the whole point is to
+ * survive a restart, and a file rewritten 920 times an hour buys nothing over
+ * one rewritten every few minutes. Writes to a temporary name and renames,
+ * so a process killed mid-write leaves the previous file intact instead of a
+ * truncated one the next boot would refuse.
+ */
+const LEARNED_SAVE_MS = 180_000;
+setInterval(() => {
+  const records = routes.entries();
+  if (records.length === 0) return;
+  const tmp = `${learnedPath}.tmp`;
+  try {
+    mkdirSync(dirname(learnedPath), { recursive: true });
+    writeFileSync(tmp, serializeRouteCache(records));
+    renameSync(tmp, learnedPath);
+  } catch (e) {
+    app.log.warn({ err: e instanceof Error ? e.message : String(e) }, 'could not save the runtime route cache');
+  }
+}, LEARNED_SAVE_MS).unref();
 
 // ----------------------------------------------------------------------------
 // Listen
