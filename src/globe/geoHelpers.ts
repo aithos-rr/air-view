@@ -3,6 +3,26 @@ import { Vector3 } from 'three';
 export const GLOBE_RADIUS = 1.5;
 
 /**
+ * The camera's travel, in WORLD UNITS — which is what OrbitControls
+ * compares against, and not what three comments in this repo call it.
+ * GLOBE_RADIUS is 1,5, so 1,9 to 10,0 units is 1,27 to 6,67 globe radii;
+ * geoHelpers.ts, airportMarkers.ts and server/index.ts have all said
+ * "radii" about these numbers at one time or another, and one declaration
+ * is how that stops happening a fourth time.
+ *
+ * The near end is not a matter of taste. At 1,9 the visible cap is 322 NM,
+ * and the tile grid guarantees that no covered point is more than 218,0 NM
+ * from the centre of a tile (src/data/sources/tileGrid.ts:60-62) — so
+ * tilesNear still names at least one tile and the region being looked at
+ * still jumps the poller's queue, which is the mechanism the dead
+ * reckoning ceiling is sized on. At 1,7 the cap is 159 NM and a viewer
+ * could sit somewhere whose nearest tile centre is 218 NM away: the thing
+ * on screen would be the first thing to go stale.
+ */
+export const CAMERA_NEAR_LIMIT = 1.9;
+export const CAMERA_FAR_LIMIT = 10.0;
+
+/**
  * Lat/lon (degrees) → 3D position on a sphere.
  * Convention: lon=0 lands on +Z (front), lat=90 lands on +Y (north pole),
  * lon=90 lands on +X (east). Matches the test contract in tests/unit/globe.
@@ -85,4 +105,29 @@ export function visibleCapRadiusNm(cameraDistance: number, fovDeg: number): numb
     capRad = Math.min(horizonRad, Math.atan2(across, along));
   }
   return Math.round(capRad * NM_PER_RADIAN);
+}
+
+/**
+ * Is this point on the side of the globe the camera can see?
+ *
+ * `dot(C, P) >= R²` is the exact condition for a point P to be on the near
+ * side of a sphere of radius R seen from C — the two vectors unnormalised,
+ * which is why it holds for an aircraft at altitude and for an airport on
+ * the surface without a second formula.
+ *
+ * It replaces `camDir.dot(acDir) <= 0.05`, which was cabled into
+ * raycaster.ts:38, leaderLine.ts:19 and airportMarkers.ts:57. That number
+ * is not an approximation of the right one: the true threshold is 0,0968
+ * at the far end of the camera's travel and 0,764 at the near end, so 0,05
+ * was too permissive at every distance and absurdly so once the travel
+ * reached 1,9 — where it would have let a viewer click an aircraft over
+ * Australia while looking at Milan.
+ *
+ * The vertex shader in aircraft.ts asks the SAME expression —
+ * `dot(cameraPosition, position) < uGlobeR2` — because a dot you can see
+ * and cannot click is the ghost D7 forbids, and two implementations of one
+ * rule are how it comes back.
+ */
+export function isOnNearSide(cameraPos: Vector3, worldPos: Vector3): boolean {
+  return cameraPos.dot(worldPos) >= GLOBE_RADIUS * GLOBE_RADIUS;
 }

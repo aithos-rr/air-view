@@ -25,9 +25,68 @@ export interface AircraftRaw {
   complete: boolean;                  // computed server-side by isComplete(); false from adapters
 }
 
+/**
+ * Everything the render loop needs to put an aircraft where it is NOW,
+ * worked out once per batch instead of once per frame.
+ *
+ * Declared here, beside Aircraft, and NOT next to the function that builds
+ * it: this file is in the include list of both TypeScript programs
+ * (tsconfig.server.json:14) and the server one is NodeNext, where the `@/`
+ * alias does not exist. A type imported from `@/globe/deadReckoning` would
+ * compile for the client and break `npm run build:server`. The interface is
+ * plain data and imports nothing, so it belongs here.
+ *
+ * `u` is the unit vector of the measured fix and `w` the unit tangent at
+ * that point in the direction of `headingDeg`. The plane of the great
+ * circle the aircraft is flying is spanned by those two, so advancing along
+ * it is a rotation inside that plane: one cos and one sin per frame,
+ * against the four trig calls the lat/lon round trip costs today
+ * (src/globe/aircraft.ts:177-191). At 11 625 aircraft and 60 fps that is
+ * the difference between 2,79 million transcendental calls a second and
+ * 205 thousand.
+ */
+export interface Motion {
+  /** Unit vector of the last measured position (same convention as latLonToVec3). */
+  ux: number;
+  uy: number;
+  uz: number;
+  /** Unit tangent towards headingDeg at that point; zero when not extrapolable. */
+  wx: number;
+  wy: number;
+  wz: number;
+  /** Globe-space radius for this aircraft's altitude, offset included. */
+  radius: number;
+  /** Radians of arc per second, from velocityKt. Zero is a real answer: it is an aircraft at rest. */
+  omegaPerS: number;
+  /**
+   * Age of the fix WHEN THE BATCH WAS ASSEMBLED, in seconds.
+   *
+   * A difference between two WALL instants — the provider's lastContact and
+   * our server's fetchedAt — taken once and then frozen. No monotonic clock
+   * can measure across two different clocks, and no wall clock may measure
+   * a duration (D21).
+   */
+  fixAgeAtBatchS: number;
+  /** False when lastContact, velocityKt or headingDeg was null (D18). */
+  extrapolable: boolean;
+  /** The drawing error being slid out, in globe space. Zero when there is none. */
+  offX: number;
+  offY: number;
+  offZ: number;
+  /** Monotonic ms at which that slide ends; 0 means there is no slide. */
+  offUntilMs: number;
+}
+
 // Aircraft enriched with trail + resolved flight info
 export interface Aircraft extends AircraftRaw {
   trail: Array<{ lon: number; lat: number; t: number }>; // last ~5s, interpolated
+  /**
+   * Optional because every Aircraft built outside updateBatch — which is
+   * every one in the unit suite — has no motion to carry. In production
+   * each record gets one, and a record without it is drawn where it was
+   * last seen and counted under `still.unmeasurable` (D18).
+   */
+  motion?: Motion | null;
   resolved?: ResolvedFlight;          // populated lazily by data/resolveFlight.ts
 }
 

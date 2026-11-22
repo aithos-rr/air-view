@@ -7,6 +7,7 @@ import {
   createAirportMarkers,
 } from '@/globe/airportMarkers';
 import type { MarkerSpec } from '@/globe/airportMarkers';
+import { CAMERA_FAR_LIMIT, CAMERA_NEAR_LIMIT } from '@/globe/geoHelpers';
 
 function camera(distance = 4.6): PerspectiveCamera {
   const c = new PerspectiveCamera(38, 800 / 600, 0.1, 100);
@@ -35,10 +36,19 @@ describe('airport markers', () => {
   });
 
   it('puts the label threshold inside the zoom range the controls allow', () => {
-    // OrbitControls in scene.ts hold the camera between 3,0 and 10,0 globe
-    // radii. A threshold outside that is a constant that can never fire.
-    expect(MARKER_LABEL_MAX_DISTANCE).toBeGreaterThan(3.0);
-    expect(MARKER_LABEL_MAX_DISTANCE).toBeLessThan(10.0);
+    // OrbitControls in scene.ts hold the camera between CAMERA_NEAR_LIMIT
+    // and CAMERA_FAR_LIMIT — WORLD UNITS, not globe radii, which is what
+    // this comment and two others in the repo used to call them (D24). A
+    // threshold outside the travel is a constant that can never fire, and
+    // named rather than written out it cannot be left behind when the
+    // travel moves, as it was when the near end went from 3,0 to 1,9.
+    expect(MARKER_LABEL_MAX_DISTANCE).toBeGreaterThan(CAMERA_NEAR_LIMIT);
+    expect(MARKER_LABEL_MAX_DISTANCE).toBeLessThan(CAMERA_FAR_LIMIT);
+  });
+
+  it('shows the label at the bottom of the travel and hides it at the top', () => {
+    expect(markerLabelVisible(CAMERA_NEAR_LIMIT)).toBe(true);
+    expect(markerLabelVisible(CAMERA_FAR_LIMIT)).toBe(false);
   });
 
   it('shows the IATA label only once the camera is close enough', () => {

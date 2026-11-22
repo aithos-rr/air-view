@@ -1,6 +1,6 @@
 import type { Camera } from 'three';
 import { Vector3 } from 'three';
-import { latLonToVec3 } from './geoHelpers';
+import { CAMERA_FAR_LIMIT, CAMERA_NEAR_LIMIT, isOnNearSide, latLonToVec3 } from './geoHelpers';
 import type { RouteEnd } from '@/data/airportInfo';
 
 /**
@@ -28,11 +28,13 @@ export interface MarkerPlacement {
 /**
  * Below this camera distance the IATA code appears beside the dot.
  *
- * OrbitControls hold the camera between 3,0 and 10,0 globe radii
- * (scene.ts:45-46), so 6,0 is the lower half of the travel: close enough
- * that two airports are far apart on screen and a label has room.
+ * The travel is CAMERA_NEAR_LIMIT..CAMERA_FAR_LIMIT world units — 1,9 to
+ * 10,0 — and this is its geometric midpoint, which keeps the label on the
+ * closer half of a travel that is now logarithmic rather than linear. The
+ * old value of 6,0 was described as "the lower half of 3,0 to 10,0 globe
+ * radii", and the travel was neither in radii nor from 3,0.
  */
-export const MARKER_LABEL_MAX_DISTANCE = 6.0;
+export const MARKER_LABEL_MAX_DISTANCE = Math.sqrt(CAMERA_NEAR_LIMIT * CAMERA_FAR_LIMIT);
 
 export function markerLabelVisible(cameraDistance: number): boolean {
   return cameraDistance <= MARKER_LABEL_MAX_DISTANCE;
@@ -53,11 +55,7 @@ export function projectMarker(
   height: number
 ): MarkerPlacement {
   const world = latLonToVec3(point.lat, point.lon);
-  // Far hemisphere: the same 0.05 cut-off leaderLine.ts and raycaster.ts
-  // use. Without it a marker floats over the near face of the globe while
-  // its airport is behind the planet.
-  const camDir = camera.position.clone().normalize();
-  if (camDir.dot(world.clone().normalize()) <= 0.05) {
+  if (!isOnNearSide(camera.position, world)) {
     return { x: 0, y: 0, visible: false };
   }
   const p = new Vector3().copy(world).project(camera);

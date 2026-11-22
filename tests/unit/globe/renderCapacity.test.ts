@@ -76,3 +76,79 @@ describe('trails layer capacity', () => {
     expect(pos.count).toBeGreaterThanOrEqual(240_000);
   });
 });
+
+import { vi } from 'vitest';
+import { deriveMotion } from '@/globe/deadReckoning';
+
+/**
+ * The cost, counted rather than timed.
+ *
+ * An assertion on milliseconds is a test that fails for the weather. The
+ * quantity that actually decides whether 12 000 aircraft fit in a 16,7 ms
+ * frame is the number of transcendental calls, and that is deterministic.
+ *
+ * The arithmetic this pins (D20): writeLatLonAlt costs FOUR trig calls per
+ * aircraft per frame — at 11 625 aircraft and 60 fps, 2,79 million a
+ * second, about 56 ms of CPU a second. The great-circle rotation costs TWO
+ * for an aircraft being carried forward and NONE for one drawn where it
+ * was measured, because its unit vector was worked out when the batch
+ * landed. With the ~14,7% of the fleet that is inside the ceiling at any
+ * instant (120 s of ceiling over an 819 s sweep), that is 205 thousand
+ * calls a second: the dead reckoning makes this loop cheaper than it was.
+ */
+function withMotion(n: number, lastContact: number): Aircraft[] {
+  const out: Aircraft[] = new Array<Aircraft>(n);
+  for (let i = 0; i < n; i++) {
+    const raw = makeAircraftRaw({
+      icao24: `a${i}`,
+      latitude: ((i * 37) % 170) - 85,
+      longitude: ((i * 53) % 358) - 179,
+      velocityKt: 450,
+      headingDeg: (i * 7) % 360,
+      lastContact,
+    });
+    out[i] = { ...raw, trail: [], motion: deriveMotion(raw, 1_000) };
+  }
+  return out;
+}
+
+describe('the per-frame cost of the dead reckoning', () => {
+  const FRAME = { nowMs: 0, elapsedSinceBatchS: 0, cameraDistance: 10, stale: false };
+
+  function trigCallsDuring(run: () => void): number {
+    const sin = vi.spyOn(Math, 'sin');
+    const cos = vi.spyOn(Math, 'cos');
+    run();
+    const total = sin.mock.calls.length + cos.mock.calls.length;
+    sin.mockRestore();
+    cos.mockRestore();
+    return total;
+  }
+
+  it('spends nothing on an aircraft it is not advancing', () => {
+    // The majority of any planet view: the fleet is assembled over an 819 s
+    // sweep, so most fixes are older than the ceiling. Their unit vector
+    // was computed when the batch landed and the frame is three multiplies.
+    const layer = createAircraftLayer();
+    const fleet = withMotion(12_000, 0); // ages beyond DR_CAP_S
+    layer.update(fleet, null, SHOW_ALL, 1, FRAME); // warm the buffers
+    const calls = trigCallsDuring(() => layer.update(fleet, null, SHOW_ALL, 1, FRAME));
+    expect(calls).toBeLessThan(12_000 * 0.1);
+  });
+
+  it('spends two calls on an aircraft it is advancing, not six', () => {
+    const layer = createAircraftLayer();
+    const fleet = withMotion(12_000, 1_000);
+    layer.update(fleet, null, SHOW_ALL, 1, FRAME);
+    const calls = trigCallsDuring(() => layer.update(fleet, null, SHOW_ALL, 1, FRAME));
+    expect(calls).toBeLessThanOrEqual(12_000 * 2 + 64);
+  });
+
+  it('still draws all 12 000 of them', () => {
+    // The cheapest loop in the world is the one that draws nothing.
+    const layer = createAircraftLayer();
+    const view = layer.update(withMotion(12_000, 1_000), null, SHOW_ALL, 1, FRAME);
+    expect(view.shown).toBe(12_000);
+    expect(view.moving).toBe(12_000);
+  });
+});

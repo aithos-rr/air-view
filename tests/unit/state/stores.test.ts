@@ -10,6 +10,7 @@ describe('aircraftStore', () => {
     useAircraftStore.setState({
       aircraft: new Map(),
       feedFetchedAt: 0,
+      feedStampMs: 0,
       feedStale: false,
       fetchStatus: 'idle',
     })
@@ -99,6 +100,132 @@ describe('aircraftStore', () => {
     store.updateBatch([makeAircraftRaw({ icao24: 'a' })], 160, false);
     expect(useAircraftStore.getState().feedStale).toBe(false);
   });
+
+  /** The server's instant for a batch that has just been built. */
+  const NOW = () => Math.floor(Date.now() / 1000);
+
+  it('gives every placeable record a motion, and none to the ones with no position', () => {
+    // The whole plan hangs on this: the render loop reads ac.motion and
+    // never recomputes it, because recomputing it per frame is 1,7 million
+    // transcendental calls a second (D20).
+    const at = NOW();
+    const store = useAircraftStore.getState();
+    store.updateBatch(
+      [
+        makeAircraftRaw({ icao24: 'a1', latitude: 50, longitude: -10, lastContact: at - 60 }),
+        makeAircraftRaw({ icao24: 'a2', latitude: null, lastContact: at - 60 }),
+      ],
+      at,
+      false
+    );
+    const fleet = useAircraftStore.getState().aircraft;
+    expect(fleet.get('a1')?.motion?.extrapolable).toBe(true);
+    expect(fleet.get('a1')?.motion?.fixAgeAtBatchS).toBe(60);
+    expect(fleet.get('a2')?.motion ?? null).toBeNull();
+  });
+
+  it('stamps the batch on a monotonic clock, not on the wall one', () => {
+    // feedFetchedAt is a wall INSTANT and stays one; feedStampMs is the
+    // origin of every DURATION measured afterwards. Date.now() moves by
+    // ~528 ms every ~32 s on this machine, which over a 30 s refresh is a
+    // 1,8% error on every age in the fleet (D21).
+    const at = NOW();
+    const before = performance.now();
+    useAircraftStore.getState().updateBatch([makeAircraftRaw({ icao24: 'a1' })], at, false);
+    const s = useAircraftStore.getState();
+    expect(s.feedFetchedAt).toBe(at);
+    // A body built this second is set back by at most the one second
+    // Math.floor can cost; it is never stamped in the future.
+    expect(s.feedStampMs).toBeGreaterThan(before - 1_500);
+    expect(s.feedStampMs).toBeLessThanOrEqual(performance.now());
+  });
+
+  it('keeps the clock running while the server serves the same body again', () => {
+    // The exact case the 120 s ceiling exists for, and the one case it
+    // could never see. The server stamps fetchedAt when it BUILDS the body
+    // and feedState.get() then hands that SAME body out for up to
+    // maxStaleMs = 600 s (server/feedState.ts). A client that re-stamped
+    // its monotonic clock on every arrival reset the age every 30 s, so
+    // the aircraft went on extrapolating for eight and a half minutes
+    // under a HUD that already said "feed stale · last known positions".
+    // An age must grow with the time that really passed (D31).
+    //
+    // Two bodies cannot share a fetchedAt: a cycle is 8 tiles at the 1,5 s
+    // floor plus TILE_CYCLE_GAP_MS (poller.ts:31, index.ts:185,621-631),
+    // so at least 11 s apart, and fetchedAt has one-second resolution.
+    const at = NOW();
+    const store = useAircraftStore.getState();
+    store.updateBatch([makeAircraftRaw({ icao24: 'a1' })], at, false);
+    const firstStamp = useAircraftStore.getState().feedStampMs;
+    const firstFleet = useAircraftStore.getState().aircraft;
+
+    store.updateBatch([makeAircraftRaw({ icao24: 'a1' })], at, true);
+    const after = useAircraftStore.getState();
+    expect(after.feedStampMs).toBe(firstStamp);
+    // The same photograph carries no new measurement, so nothing is
+    // re-derived — 11 625 records of six trig calls each, saved.
+    expect(after.aircraft).toBe(firstFleet);
+    // What DID arrive is the only thing that had changed.
+    expect(after.feedStale).toBe(true);
+  });
+
+  it('sets the stamp back by the age the body already had when it arrived', () => {
+    // fetchedAt is when the SERVER built the body, not when we received
+    // it, and the two differ by a poller cycle in health and by minutes
+    // during an outage — including on a first load, where there is no
+    // previous batch for the rule above to protect. One subtraction
+    // between two wall clocks, frozen, and it is the very quantity
+    // feedAgeSeconds() prints in the HUD: the words and the movement now
+    // come from one number (D21/D31).
+    const before = performance.now();
+    useAircraftStore.getState().updateBatch([makeAircraftRaw({ icao24: 'a1' })], NOW() - 45, false);
+    const stamp = useAircraftStore.getState().feedStampMs;
+    expect(before - stamp).toBeGreaterThan(44_000);
+    expect(before - stamp).toBeLessThan(47_000);
+  });
+
+  it('hands the new motion the error the previous one had accumulated', () => {
+    // A tile coming back must not teleport an aircraft by the few miles our
+    // own extrapolation had drifted (D22).
+    const at = NOW();
+    const store = useAircraftStore.getState();
+    const base = { latitude: 50, longitude: -10, velocityKt: 450, headingDeg: 90 };
+    store.updateBatch([makeAircraftRaw({ icao24: 'a1', ...base, lastContact: at })], at, false);
+    store.updateBatch(
+      [makeAircraftRaw({ icao24: 'a1', ...base, lastContact: at + 60, longitude: -9.8 })],
+      at + 60,
+      false
+    );
+    expect(useAircraftStore.getState().aircraft.get('a1')?.motion?.offUntilMs).toBeGreaterThan(0);
+  });
+
+  it('does not slide an aircraft that has been away for a quarter of an hour', () => {
+    const at = NOW();
+    const store = useAircraftStore.getState();
+    const base = { latitude: 50, longitude: -10, velocityKt: 450, headingDeg: 90 };
+    store.updateBatch([makeAircraftRaw({ icao24: 'a1', ...base, lastContact: at })], at, false);
+    store.updateBatch(
+      [makeAircraftRaw({ icao24: 'a1', ...base, lastContact: at + 900, longitude: 3 })],
+      at + 900,
+      false
+    );
+    expect(useAircraftStore.getState().aircraft.get('a1')?.motion?.offUntilMs).toBe(0);
+  });
+
+  it('snaps instead of sliding when the viewer asked for less motion', () => {
+    useA11yStore.setState({ prefersReducedMotion: true });
+    const at = NOW();
+    const store = useAircraftStore.getState();
+    const base = { latitude: 50, longitude: -10, velocityKt: 450, headingDeg: 90 };
+    store.updateBatch([makeAircraftRaw({ icao24: 'a1', ...base, lastContact: at })], at, false);
+    store.updateBatch(
+      [makeAircraftRaw({ icao24: 'a1', ...base, lastContact: at + 60, longitude: -9.8 })],
+      at + 60,
+      false
+    );
+    expect(useAircraftStore.getState().aircraft.get('a1')?.motion?.offUntilMs).toBe(0);
+    useA11yStore.setState({ prefersReducedMotion: false });
+  });
 });
 
 describe('selectionStore', () => {
@@ -129,6 +256,18 @@ describe('selectionStore', () => {
     useSelectionStore.setState({ selectedIcao: 'a1', openEnd: 'destination' });
     useSelectionStore.getState().select(null);
     expect(useSelectionStore.getState().openEnd).toBeNull();
+  });
+
+
+  it('forgets that the previous flight was behind the globe when another is picked', () => {
+    // A claim about where an aircraft is, left standing over a different
+    // aircraft, is a claim nobody measured — and the render loop would
+    // only correct it on the next frame, after the panel had already
+    // printed it (D15b/D32).
+    useSelectionStore.getState().select('a1');
+    useSelectionStore.getState().setFocusBehindGlobe(true);
+    useSelectionStore.getState().select('a2');
+    expect(useSelectionStore.getState().focusBehindGlobe).toBe(false);
   });
 });
 

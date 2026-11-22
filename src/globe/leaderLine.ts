@@ -1,5 +1,6 @@
 import type { Camera, Vector3 } from 'three';
 import { Vector3 as V3 } from 'three';
+import { isOnNearSide } from './geoHelpers';
 
 const LINE_COLOR = 'rgba(41, 151, 255, 0.55)'; // sky blue 55% alpha
 const DASH = '4 4';
@@ -13,10 +14,9 @@ export class LeaderLine {
   constructor(private svg: SVGElement, private getCanvas: () => HTMLCanvasElement) {}
 
   update(worldPos: Vector3, camera: Camera, panelTarget: PanelTarget): void {
-    // Hide if aircraft is on the far hemisphere of the globe
-    const camDir = camera.position.clone().normalize();
-    const acDir = worldPos.clone().normalize();
-    if (camDir.dot(acDir) <= 0.05) {
+    // One rule for "behind the planet", shared with the picker and the
+    // shader. The 0.05 this replaced was wrong at every camera distance.
+    if (!isOnNearSide(camera.position, worldPos)) {
       this.clear();
       return;
     }

@@ -1,11 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
 import { FleetPanel } from '@/ui/FleetPanel';
 import { useAircraftStore } from '@/state/aircraftStore';
 import { useFilterStore } from '@/state/filterStore';
 import { useSelectionStore } from '@/state/selectionStore';
 import { makeAircraftRaw } from '../helpers/aircraft';
 import type { Aircraft } from '@/types';
+import { DR_CAP_S, deriveMotion } from '@/globe/deadReckoning';
 
 const ROUTE = {
   originIata: 'JFK',
@@ -288,5 +289,315 @@ describe('FleetPanel', () => {
     expect(container.querySelectorAll('.hud')).toHaveLength(1);
     // ...and the live region is still inside it, warnings and all.
     expect(container.querySelector('.hud [role="status"]')).not.toBeNull();
+  });
+});
+
+/**
+ * A fleet as the store builds it: every record carries its own `motion`.
+ *
+ * Outside both describes because both need it — the first reads the
+ * sentences with the clock standing still, the second reads them again
+ * while it walks. `prefix` keeps the keys apart when a fleet is two groups
+ * of different ages.
+ */
+function withMotion(
+  n: number,
+  over: Partial<Parameters<typeof makeAircraftRaw>[0]> = {},
+  prefix = 'm'
+): Map<string, Aircraft> {
+  const m = new Map<string, Aircraft>();
+  for (let i = 0; i < n; i++) {
+    const raw = makeAircraftRaw({
+      icao24: `${prefix}${i}`, latitude: 50, longitude: -10, velocityKt: 450,
+      headingDeg: 90, lastContact: 1_000, ...over,
+    });
+    m.set(raw.icao24, { ...raw, trail: [], motion: deriveMotion(raw, 1_000) });
+  }
+  return m;
+}
+
+describe('FleetPanel — the globe moves some of them and remembers the rest', () => {
+  // The first describe's beforeEach does not reach here, and these tests
+  // read both switches and the selection: without this they would depend on
+  // whatever the last test above them happened to leave standing.
+  beforeEach(() => {
+    useFilterStore.setState({ showComplete: true, showPartial: true, panelOpen: false });
+    useSelectionStore.setState({ selectedIcao: null });
+  });
+
+  it('says how many are moving and how many are where they were last seen', () => {
+    const fleet = withMotion(3);
+    for (const [k, v] of withMotion(2, { lastContact: 1_000 - DR_CAP_S - 10 }, 's')) {
+      fleet.set(k, v);
+    }
+    useAircraftStore.setState({ aircraft: fleet, feedFetchedAt: 1_000, feedStale: false });
+    render(<FleetPanel />);
+    expect(screen.getByText(/3 moving on their last reported track/i)).toBeInTheDocument();
+    expect(screen.getByText(/2 shown where last seen — no contact for over 2 min/i)).toBeInTheDocument();
+  });
+
+  it('keeps a missing heading apart from an old contact', () => {
+    // Two absences, two sentences. Merging them is the half-truth D15b
+    // forbids, and the two have different remedies: one is the feed
+    // catching up, the other never will (D18).
+    useAircraftStore.setState({
+      aircraft: withMotion(2, { headingDeg: null }),
+      feedFetchedAt: 1_000,
+      feedStale: false,
+    });
+    render(<FleetPanel />);
+    expect(
+      screen.getByText(/2 shown where last seen — no heading or speed reported/i)
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/no contact for over/i)).not.toBeInTheDocument();
+  });
+
+  it('blames the stopped feed rather than each aircraft when the server says so', () => {
+    // The contradiction this plan had on one screen: the HUD saying "feed
+    // stale · last known positions" while the dots glided on. Now the feed
+    // flag stops the reckoning, and the line names the cause that is
+    // actually in force — these aircraft were heard from seconds ago; what
+    // is old is the body we are holding (D31).
+    useAircraftStore.setState({
+      aircraft: withMotion(3),
+      feedFetchedAt: 1_000,
+      feedStale: true,
+    });
+    render(<FleetPanel />);
+    expect(screen.getByText(/3 shown where last seen — the feed has stopped/i)).toBeInTheDocument();
+    expect(screen.queryByText(/moving on their last reported track/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no contact for over/i)).not.toBeInTheDocument();
+  });
+
+  it('says nothing about motion when every aircraft is moving', () => {
+    // A line that is always on screen is furniture, and furniture is not
+    // read. These appear only when there is something to say.
+    useAircraftStore.setState({ aircraft: withMotion(4), feedFetchedAt: 1_000, feedStale: false });
+    render(<FleetPanel />);
+    expect(screen.queryByText(/shown where last seen/i)).not.toBeInTheDocument();
+  });
+
+  it('keeps the motion lines out of the live region', () => {
+    // They change every 30 s with the feed, and a polite live region would
+    // announce them twice a minute for ever. D15a asks for the declaration
+    // to be ON SCREEN without opening anything, not for it to be spoken.
+    useAircraftStore.setState({
+      aircraft: withMotion(2, { headingDeg: null }),
+      feedFetchedAt: 1_000,
+      feedStale: false,
+    });
+    const { container } = render(<FleetPanel />);
+    // The PANEL's own live region, selected the way the suite above
+    // already selects it. A bare [aria-live] matches FeedStatus first —
+    // it renders before these notes and carries a region of its own —
+    // so the assertion would have been about the feed line instead of
+    // about the shortfall notes, and would have held whatever this
+    // component did with the motion lines.
+    const live = container.querySelector('.fleet__notes[role="status"]');
+    expect(live?.textContent ?? '').not.toMatch(/shown where last seen/i);
+    expect(screen.getByText(/shown where last seen/i)).toBeInTheDocument();
+  });
+});
+
+describe('FleetPanel — the clock moves even when the feed does not', () => {
+  /**
+   * The monotonic clock, in the test's hand.
+   *
+   * Spied and not faked: vi.useFakeTimers() in vitest 2.1 does NOT fake
+   * `performance` — its default toFake is setTimeout, clearTimeout,
+   * setInterval, clearInterval, setImmediate, clearImmediate and Date
+   * (vitest/dist/config.js) — and this panel measures on performance.now(),
+   * because Date.now() jumps ~528 ms every ~32 s on this machine (D21).
+   * The fake timers are here to fire the interval; the spy decides what
+   * that interval reads.
+   */
+  let clockMs = 0;
+
+  beforeEach(() => {
+    clockMs = 10_000;
+    vi.spyOn(performance, 'now').mockImplementation(() => clockMs);
+    vi.useFakeTimers();
+    useFilterStore.setState({ showComplete: true, showPartial: true, panelOpen: false });
+    useSelectionStore.setState({ selectedIcao: null });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    // The stamp is the one piece of store state only these tests write:
+    // left behind, it would measure somebody else's fleet against this
+    // file's clock.
+    useAircraftStore.setState({ feedStampMs: 0 });
+  });
+
+  function putOnGlobe(fleet: Map<string, Aircraft>): void {
+    useAircraftStore.setState({
+      aircraft: fleet, feedFetchedAt: 1_000, feedStampMs: clockMs, feedStale: false,
+    });
+  }
+
+  /**
+   * Time passes and NOTHING arrives — the case the panel got wrong.
+   *
+   * Not one dependency of the walk is touched here: same Map, same rule,
+   * same selection, same stamp, same flag. This is the 30 s of an ordinary
+   * cycle, the 120 s of a backgrounded tab, or for ever if the fetch keeps
+   * failing — and all that time the render loop is reading this very clock
+   * sixty times a second.
+   */
+  function tick(seconds: number): void {
+    act(() => {
+      clockMs += seconds * 1_000;
+      vi.advanceTimersByTime(seconds * 1_000);
+    });
+  }
+
+  it('freezes the same aircraft the globe freezes, with no batch in between', () => {
+    // THE defect this describe exists for. The globe ages at 60 fps; the
+    // panel's walk was recomputed only when a batch landed. Three dots
+    // stopped dead at the ceiling under a line still calling them moving —
+    // D15's two readers separated again, one holding a clock and the other
+    // holding an instant.
+    putOnGlobe(withMotion(3, { lastContact: 1_000 - 60 }));
+    render(<FleetPanel />);
+    // 60 s old, inside the ceiling: all three are being carried forward,
+    // and a panel with nothing to contrast says nothing at all.
+    expect(screen.queryByText(/shown where last seen/i)).not.toBeInTheDocument();
+
+    tick(61); // 121 s of age, and not one byte has arrived
+    expect(
+      screen.getByText(/3 shown where last seen — no contact for over 2 min/i)
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/moving on their last reported track/i)).not.toBeInTheDocument();
+  });
+
+  it('moves the split between the two sentences as the clock passes the ceiling', () => {
+    // The line is a measurement and not a label: one fleet, two different
+    // pictures 25 s apart, and the picture changes on the globe whether or
+    // not the sentence follows it.
+    const fleet = withMotion(2, { lastContact: 1_000 });
+    for (const [k, v] of withMotion(2, { lastContact: 1_000 - 100 }, 'o')) fleet.set(k, v);
+    putOnGlobe(fleet);
+    render(<FleetPanel />);
+    expect(screen.queryByText(/shown where last seen/i)).not.toBeInTheDocument();
+
+    tick(25); // the two 100 s fixes cross 120 s; the fresh pair is 25 s old
+    expect(screen.getByText(/2 moving on their last reported track/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/2 shown where last seen — no contact for over 2 min/i)
+    ).toBeInTheDocument();
+  });
+
+  it('stops reading the clock once nothing is left to carry forward', () => {
+    // An age only grows, and advanceFor is monotone in it: an aircraft
+    // goes from moving to still and never back without a new batch — and a
+    // new batch re-renders this panel through its own subscriptions. So
+    // `moving === 0` is not a guess, it is the proof that no further
+    // reading of the clock can change a word here. Without the stop, a
+    // feed that has died leaves the panel walking the whole fleet once a
+    // second for ever in a tab nobody is looking at.
+    //
+    // FeedStatus keeps one interval of its own for the age line, which is
+    // why this counts a DIFFERENCE and not a zero.
+    putOnGlobe(withMotion(3, { lastContact: 1_000 }));
+    render(<FleetPanel />);
+    const whileCarrying = vi.getTimerCount();
+
+    tick(DR_CAP_S + 1);
+    expect(screen.getByText(/3 shown where last seen/i)).toBeInTheDocument();
+    expect(vi.getTimerCount()).toBe(whileCarrying - 1);
+  });
+
+  it('does not turn the live region into the metronome it was kept out of', () => {
+    // The motion lines were kept out of the live region because they change
+    // with every cycle; a panel that now re-renders every second must not
+    // have put anything INTO that region which the clock can touch. It has
+    // not, and by construction: every number in there counts what is drawn
+    // or why it is not, and `draw` counts a record the same whether it is
+    // carried forward or left at its fix. A filter is switched off so the
+    // region has real text to be identical to.
+    const fleet = withMotion(2, { lastContact: 1_000 });
+    for (const [k, v] of withMotion(1, { lastContact: 1_000, complete: true }, 'c')) {
+      fleet.set(k, v);
+    }
+    putOnGlobe(fleet);
+    useFilterStore.setState({ showComplete: false, showPartial: true, panelOpen: false });
+    const { container } = render(<FleetPanel />);
+    // The PANEL's own live region, selected the way the suite above
+    // already selects it. A bare [aria-live] matches FeedStatus first —
+    // it renders before these notes and carries a region of its own —
+    // so the assertion would have been about the feed line instead of
+    // about the shortfall notes, and would have held whatever this
+    // component did with the motion lines.
+    const spoken =
+      container.querySelector('.fleet__notes[role="status"]')?.textContent ?? '';
+    expect(spoken).toMatch(/1 hidden by filters/i);
+
+    tick(DR_CAP_S + 1);
+    expect(
+      container.querySelector('.fleet__notes[role="status"]')?.textContent ?? ''
+    ).toBe(spoken);
+    expect(screen.getByText(/2 shown where last seen/i)).toBeInTheDocument();
+  });
+});
+
+describe('FleetPanel — the one aircraft on the globe can be behind it (D32)', () => {
+  // Both switches on explicitly: this describe is outside the one with the
+  // beforeEach above, and a filter left off by another test would empty the
+  // globe for a reason that has nothing to do with the camera.
+  beforeEach(() => {
+    useFilterStore.setState({ showComplete: true, showPartial: true, panelOpen: false });
+  });
+
+  function oneInFocus() {
+    const raw = makeAircraftRaw({ icao24: 'f1', latitude: 50, longitude: -10 });
+    useAircraftStore.setState({
+      aircraft: new Map([[raw.icao24, { ...raw, trail: [] }]]),
+      feedFetchedAt: 1_000,
+      feedStale: false,
+      feedCapped: false,
+    });
+    useSelectionStore.setState({ selectedIcao: 'f1' });
+  }
+
+  it('says so when the only aircraft drawn is on the far side', () => {
+    // The globe empties with no act of the user at all: it auto-rotates
+    // until someone touches the canvas, and focusing a flight from this
+    // very panel does not. The cull of D25 then takes the one dot there
+    // was, while the row above goes on saying it is shown.
+    oneInFocus();
+    useSelectionStore.setState({ focusBehindGlobe: true });
+    render(<FleetPanel />);
+    expect(screen.getByText(/behind the globe — drag to bring it round/i)).toBeInTheDocument();
+  });
+
+  it('says nothing while the flight in focus is in view', () => {
+    // And this is the assertion that keeps the remedy valid whichever way
+    // the open question about the camera is answered: a camera that
+    // followed the focused flight would keep the subject on the near side
+    // for ever, and this line would simply never appear (D32).
+    oneInFocus();
+    useSelectionStore.setState({ focusBehindGlobe: false });
+    render(<FleetPanel />);
+    expect(screen.queryByText(/behind the globe/i)).not.toBeInTheDocument();
+  });
+
+  it('never says it about a sky with more than one aircraft in it', () => {
+    // For the whole fleet the far hemisphere IS framing, and a line about
+    // it would be noise that changes while the globe turns (D25).
+    const fleet = new Map<string, Aircraft>();
+    for (const id of ['a1', 'a2']) {
+      const raw = makeAircraftRaw({ icao24: id, latitude: 50, longitude: -10 });
+      fleet.set(id, { ...raw, trail: [] });
+    }
+    useAircraftStore.setState({
+      aircraft: fleet,
+      feedFetchedAt: 1_000,
+      feedStale: false,
+      feedCapped: false,
+    });
+    useSelectionStore.setState({ selectedIcao: null, focusBehindGlobe: true });
+    render(<FleetPanel />);
+    expect(screen.queryByText(/behind the globe/i)).not.toBeInTheDocument();
   });
 });

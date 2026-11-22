@@ -1,4 +1,5 @@
 import type { Aircraft } from '@/types';
+import { advanceFor } from './deadReckoning';
 
 export interface VisibilityRule {
   showComplete: boolean;
@@ -90,6 +91,39 @@ export interface VisibleFleet {
    * under `focus`, and a fifth key would break the identity above.
    */
   releasedByLeavingFocus: number;
+  /**
+   * Of `shown`, how many are being carried forward from their last fix.
+   *
+   * `moving + still.unmeasurable + still.stale === shown`, by construction:
+   * every drawn record increments exactly one of the three and then leaves
+   * the iteration, the same way the four shortfalls partition what is not
+   * drawn.
+   *
+   * NOT a fifth member of `hidden`, for the same reason
+   * releasedByLeavingFocus is not: these aircraft ARE on the globe. They
+   * are a partition of what is drawn, not an account of what is missing,
+   * and folding them into `hidden` would break the identity above it.
+   */
+  moving: number;
+  /**
+   * The two reasons a dot is drawn where it was measured instead of where
+   * it should be now — kept apart because they are different absences and
+   * D15b forbids one word for two causes (D18).
+   *
+   * `unmeasurable`: the record has no lastContact, no velocityKt or no
+   * headingDeg. The compass track covers 89,6% of the fleet and the ground
+   * speed 97,8% (spec §5.1), so about a tenth of any sky is here and
+   * always will be, whatever the feed does.
+   *
+   * `stale`: every field is there and the measurement is too old to carry
+   * forward. Two routes to it, one sentence: the fix is older than
+   * DR_CAP_S (D16), or the server has declared the whole body a cached
+   * photograph (D31). Past either point advancing it would be painting
+   * over a failure of ours rather than bridging a gap between two
+   * measurements — and in the second case the HUD is already saying so
+   * three centimetres away.
+   */
+  still: { unmeasurable: number; stale: number };
 }
 
 /**
@@ -146,11 +180,37 @@ export function describeVisibleFleet(
   aircraft: Iterable<Aircraft>,
   rule: VisibilityRule,
   selectedIcao: string | null,
-  onDraw?: (ac: Aircraft, target: DrawTarget, slot: number) => void,
+  onDraw?: (
+    ac: Aircraft,
+    target: DrawTarget,
+    slot: number,
+    advanceS: number,
+    still: boolean
+  ) => void,
   // The settled state of the rule in hand, which is what the panel means
   // when it passes nothing: the crowd out under a focus, lit without one.
   othersBrightness = rule.focusedIcao !== null ? 0 : 1,
-  caps: { perCategory: number; selected: number } = RENDER_CAPS
+  caps: { perCategory: number; selected: number } = RENDER_CAPS,
+  /**
+   * A MONOTONIC duration: the rAF timestamp minus aircraftStore
+   * .feedStampMs. The panel passes the same quantity from performance.now()
+   * — the two clocks share performance.timeOrigin — and 0 means "at the
+   * instant the batch was BUILT", which is the only honest default for a
+   * caller that has no frame clock (D21).
+   *
+   * Built and not received: the store sets feedStampMs back by the age the
+   * body already had on arrival and does not re-stamp a fetchedAt it has
+   * seen before, so this number keeps growing while the server re-serves
+   * the same photograph (D31). Nothing here has to know that.
+   */
+  elapsedSinceBatchS = 0,
+  /**
+   * What the SERVER said about the body in hand. True means it served a
+   * cached photograph, and nothing is carried forward from a photograph
+   * (D31). The default is "the feed is live", which is the honest answer
+   * for a caller that has no feed at all — every existing unit test.
+   */
+  feedStale = false
 ): VisibleFleet {
   const hidden: Record<Shortfall, number> = {
     filtered: 0, focus: 0, noPosition: 0, rendererFull: 0,
@@ -164,6 +224,39 @@ export function describeVisibleFleet(
   let nSelected = 0;
   let nComplete = 0;
   let nPartial = 0;
+
+  let moving = 0;
+  const still = { unmeasurable: 0, stale: 0 };
+
+  /**
+   * The one place a drawn record is classified, counted and handed over.
+   *
+   * The renderer does not decide for itself whether an aircraft moves: it
+   * is TOLD how many seconds to carry it, and `0` with `still` is a dot at
+   * its fix. The number the panel prints and the distance the dot travels
+   * therefore come out of the same line, which is the whole of D19 — and
+   * the same argument that made onDraw the draw loop in the first place.
+   */
+  const draw = (ac: Aircraft, target: DrawTarget, slot: number): void => {
+    const m = ac.motion ?? null;
+    // advanceFor and not advanceSeconds: the picker and the leader line
+    // ask the same function, so a dot can never be drawn where the hit
+    // test does not look (D29), and the stale feed stops all three at once
+    // (D31).
+    const adv = advanceFor(m, elapsedSinceBatchS, feedStale);
+    if (adv < 0) {
+      // A record with no motion has a measured position and no way to
+      // advance it — the same absence as a missing heading, and said with
+      // the same word.
+      if (m !== null && m.extrapolable) still.stale += 1;
+      else still.unmeasurable += 1;
+      onDraw?.(ac, target, slot, 0, true);
+    } else {
+      moving += 1;
+      onDraw?.(ac, target, slot, adv, false);
+    }
+    shown += 1;
+  };
 
   for (const ac of aircraft) {
     total += 1;
@@ -184,9 +277,8 @@ export function describeVisibleFleet(
         hidden.rendererFull += 1;
         continue;
       }
-      onDraw?.(ac, 'selected', nSelected);
+      draw(ac, 'selected', nSelected);
       nSelected += 1;
-      shown += 1;
       continue;
     }
 
@@ -215,22 +307,21 @@ export function describeVisibleFleet(
         hidden.rendererFull += 1;
         continue;
       }
-      onDraw?.(ac, 'complete', nComplete);
+      draw(ac, 'complete', nComplete);
       nComplete += 1;
     } else {
       if (nPartial >= caps.perCategory) {
         hidden.rendererFull += 1;
         continue;
       }
-      onDraw?.(ac, 'partial', nPartial);
+      draw(ac, 'partial', nPartial);
       nPartial += 1;
     }
-    shown += 1;
   }
 
   let reason: Shortfall | null = null;
   for (const k of SHORTFALL_ORDER) {
     if (hidden[k] > 0 && (reason === null || hidden[k] > hidden[reason])) reason = k;
   }
-  return { total, shown, hidden, reason, releasedByLeavingFocus };
+  return { total, shown, hidden, reason, releasedByLeavingFocus, moving, still };
 }
