@@ -69,11 +69,22 @@ test('an aircraft with a fresh fix actually moves between two frames', async ({ 
       const w = window as unknown as { __airViewProbe?: () => number[] };
       return w.__airViewProbe ? w.__airViewProbe() : [];
     });
-  await page.waitForTimeout(100);
+  // Wait for a REAL position, not merely for a non-empty array. The buffer
+  // starts zeroed, so `[0, 0, 0]` has length 3 and sails through a
+  // `length > 0` guard: the first version of this test read at 100 ms, got
+  // zeros, and then passed or failed on whether the first batch happened to
+  // land inside the next 1 500 ms. Green on a race is not green.
+  await expect
+    .poll(async () => (await read()).some((n) => n !== 0), { timeout: 15_000 })
+    .toBe(true);
+
   const a = await read();
   await page.waitForTimeout(1500);
   const b = await read();
-  if (a.length > 0 && b.length > 0) expect(b).not.toEqual(a);
+  // 472 kt for 1.5 s is 0.197 NM — about 6e-5 of the globe's radius. Small,
+  // and the point is precisely that it is not zero: this is the sentence the
+  // whole project started from, "iconcine che sembrano non spostarsi mai".
+  expect(b).not.toEqual(a);
 });
 
 test('zooming in separates two aircraft instead of magnifying them together', async ({ page }) => {
