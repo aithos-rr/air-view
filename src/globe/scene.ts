@@ -1,22 +1,38 @@
 import { PerspectiveCamera, Scene, Vector2, Vector3, WebGLRenderer } from 'three';
+import type { LineSegments } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { createGlobe } from './globe';
 import { createAtmosphere } from './atmosphere';
-import { loadContinents } from './continents';
+import { loadContinents, setCoarseOpacity } from './continents';
 import { createAircraftLayer } from './aircraft';
 import type { FrameState } from './aircraft';
 import { createTrailsLayer } from './trails';
 import { createFocusFade } from './focus';
 import { attachUserTakeover, createFocusCamera } from './focusCamera';
 import { createRouteArcLayer } from './routeArc';
-import { createAirportMarkers } from './airportMarkers';
+import {
+  FINE_BUILD_CHUNK_VERTICES,
+  FINE_PREFETCH_DISTANCE,
+  FINE_SWITCH_DISTANCE,
+  createFineCoastline,
+  crossfade,
+  loadFineCoastline,
+} from './coastlineFine';
+import { createAirportMarkers, projectMarker } from './airportMarkers';
+import { LABEL_BOX_H, LABEL_BOX_W, createCityLabels } from './cityLabels';
+import { loadCityPlaces } from '@/data/cityPlaces';
+import type { CityPlace } from '@/data/cityPlaces';
 import { LeaderLine } from './leaderLine';
 import { findAircraftAtPointer } from './raycaster';
 import { advanceFor, positionAt } from './deadReckoning';
 import {
   CAMERA_FAR_LIMIT,
+  CAMERA_FAR_PLANE,
+  CAMERA_MOUNT_POSITION,
   CAMERA_NEAR_LIMIT,
+  CAMERA_NEAR_PLANE,
   latLonAltToVec3,
+  shellThicknessUnits,
   vec3ToLatLon,
   visibleCapRadiusNm,
 } from './geoHelpers';
@@ -24,6 +40,7 @@ import { useAircraftStore } from '@/state/aircraftStore';
 import { useSelectionStore } from '@/state/selectionStore';
 import { usePanelStore } from '@/state/panelStore';
 import { useA11yStore } from '@/state/a11yStore';
+import { useDetailStore } from '@/state/detailStore';
 import { readVisibilityRule, readFocusAct, readFocusView, markerSpecs } from '@/state/sceneView';
 
 export interface ViewCentre {
@@ -41,12 +58,22 @@ export function mountScene(
   canvas: HTMLCanvasElement,
   leaderSvg: SVGElement,
   panelEl: HTMLElement,
-  markersEl: HTMLElement
+  markersEl: HTMLElement,
+  citiesEl: HTMLElement
 ): SceneHandle {
   const scene = new Scene();
 
-  const camera = new PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 100);
-  camera.position.set(-1.2, 0.6, 4.6);
+  // near and far come from geoHelpers, beside the travel they are sized on:
+  // 0,1 cut the aircraft shell already at d = 1,675 and the coastline and
+  // the route arc below that, and 100 was a literal with no reason behind
+  // it. The RATIO is still 1 000, so depth precision is unchanged (D37).
+  const camera = new PerspectiveCamera(
+    38,
+    window.innerWidth / window.innerHeight,
+    CAMERA_NEAR_PLANE,
+    CAMERA_FAR_PLANE
+  );
+  camera.position.set(...CAMERA_MOUNT_POSITION);
   camera.lookAt(0, 0, 0);
 
   const renderer = new WebGLRenderer({ canvas, antialias: true, alpha: true });
@@ -105,15 +132,58 @@ export function mountScene(
   scene.add(trailsLayer.group);
   const arcLayer = createRouteArcLayer();
   scene.add(arcLayer.group);
+  // City names. The file is 84 KB, so unlike the fine coastline it is
+  // fetched at mount: nothing is gained by waiting, and a name that appears
+  // a second after the zoom reaches it would read as a glitch (D43).
+  const cityLabels = createCityLabels(citiesEl);
+  let cityPlaces: CityPlace[] = [];
+  void loadCityPlaces().then((places) => {
+    cityPlaces = places;
+  });
+
   const markers = createAirportMarkers(markersEl, (end) => {
     useSelectionStore.getState().openAirport(end);
     usePanelStore.getState().open('flight');
   });
 
-  // Continents (async)
+  // Continents (async). The coarse outline is a fact about the screen, so it
+  // is declared in BOTH directions: 'coarse' when it is in the scene,
+  // 'none' when it is not. This catch used to be a console.warn and nothing
+  // else, so a 404 after a deploy drew a globe with no coasts and said
+  // nothing — the oldest D15 hole in this file, and not one Plan 4 opened.
+  //
+  // The console.warn STAYS: the line on screen is for whoever is looking,
+  // the console is for whoever is repairing, and which fetch and which HTTP
+  // status do not belong in a HUD.
+  let coarseCoastline: LineSegments | null = null;
   void loadContinents()
-    .then((c) => scene.add(c))
-    .catch((e: unknown) => console.warn('Continents:', e));
+    .then((c) => {
+      coarseCoastline = c;
+      scene.add(c);
+      useDetailStore.getState().setCoastline('coarse');
+    })
+    .catch((e: unknown) => {
+      console.warn('Continents:', e);
+      useDetailStore.getState().setCoastline('none');
+    });
+
+  // The fine level. Nothing is fetched until the camera comes down to
+  // FINE_PREFETCH_DISTANCE: 1,91 MB spent on a viewer who never zooms is
+  // 1,91 MB spent for nothing (D41).
+  const fineCoastline = createFineCoastline();
+  scene.add(fineCoastline.group);
+  // 'failed' is terminal, and that is the whole point of it. The gate below
+  // is `finePhase === 'idle' && close enough`, true for as long as the user
+  // stays zoomed in — so sending the phase back to 'idle' on a failure asked
+  // for 1,91 MB again on the very next frame, for ever, and loadFineCoastline
+  // opens with setCoastline('loading'), which made the line that explains the
+  // coarse outline blink out and back at the rate the server could refuse.
+  // A missing or malformed static asset does not heal on a retry; a reload
+  // is the retry, and the screen says what happened in the meantime (D49).
+  let finePhase: 'idle' | 'loading' | 'building' | 'ready' | 'failed' = 'idle';
+  // The rAF timestamp the crossfade started on. Never Date.now(): that clock
+  // jumps about 528 ms every 32 s on this machine.
+  let fineSwapStartedMs = 0;
 
   const leader = new LeaderLine(leaderSvg, () => canvas);
   const focusFade = createFocusFade();
@@ -196,6 +266,26 @@ export function mountScene(
      * tell the two halves of D34 apart.
      */
     __airViewCamera?: () => { lat: number; lon: number; distance: number };
+    /**
+     * Put the camera at a distance, in world units, without synthesising a
+     * wheel gesture.
+     *
+     * One reader, tests/e2e/globe-detail.spec.ts. A zoom driven by input
+     * would be a test of OrbitControls, and what the detail levels do once
+     * the camera is close is a different question — one no DOM event can
+     * ask. Clamped to the travel, so this hook cannot put the camera
+     * somewhere the user could not.
+     */
+    __airViewZoomTo?: (distance: number) => void;
+    /**
+     * Which coastline the globe says it is drawing — useDetailStore's word,
+     * not a second opinion about it.
+     *
+     * tests/e2e/globe-detail.spec.ts reads it to tell "the coarse level is
+     * still there" from "the coarse level is all there ever was", which the
+     * HUD line alone cannot distinguish.
+     */
+    __airViewCoastline?: () => string;
   }
   const profileWindow = window as ProfileWindow;
   // Behind the profiler's own switch, so a page that has turned the
@@ -208,6 +298,12 @@ export function mountScene(
       ...vec3ToLatLon(camera.position),
       distance: camera.position.length(),
     });
+    profileWindow.__airViewZoomTo = (distance) => {
+      const d = Math.min(Math.max(distance, CAMERA_NEAR_LIMIT), CAMERA_FAR_LIMIT);
+      camera.position.normalize().multiplyScalar(d);
+      controls.update();
+    };
+    profileWindow.__airViewCoastline = () => useDetailStore.getState().coastline;
   }
   let frames = 0;
   let lastFpsLog = performance.now();
@@ -226,6 +322,56 @@ export function mountScene(
   function animate(time: number): void {
     rafId = requestAnimationFrame(animate);
     controls.update();
+
+    // --- The fine coastline (D41) -------------------------------------------
+    // After controls.update(), so the distance read here is the one this
+    // frame draws: a prefetch decided on last frame's camera is a prefetch
+    // that fires one frame late at the bottom of a fast zoom.
+    const cameraDistanceNow = camera.position.length();
+    if (finePhase === 'idle' && cameraDistanceNow <= FINE_PREFETCH_DISTANCE) {
+      finePhase = 'loading';
+      void loadFineCoastline().then((rings) => {
+        if (rings === null) {
+          // The coarse outline is still there and still correct: this is ONE
+          // level failing, not the globe. Task 6 gives it a word on screen,
+          // and 'failed' keeps that word still instead of asking again.
+          finePhase = 'failed';
+          return;
+        }
+        fineCoastline.accept(rings);
+        finePhase = 'building';
+      });
+    }
+    if (finePhase === 'building') {
+      // 64 000 vertices is 4,0 ms measured, a quarter of a 16,7 ms frame.
+      // One 65,1 ms pass would be four dropped frames at the exact moment
+      // the user is zooming.
+      if (!fineCoastline.feedChunk(FINE_BUILD_CHUNK_VERTICES)) {
+        finePhase = 'ready';
+        fineSwapStartedMs = 0;
+      }
+    }
+    if (finePhase === 'ready') {
+      const wantsFine = cameraDistanceNow <= FINE_SWITCH_DISTANCE;
+      if (wantsFine) {
+        if (fineSwapStartedMs === 0) fineSwapStartedMs = time;
+        const mix = crossfade(
+          time - fineSwapStartedMs,
+          !useA11yStore.getState().prefersReducedMotion
+        );
+        fineCoastline.setOpacity(mix.fine);
+        if (coarseCoastline !== null) setCoarseOpacity(coarseCoastline, mix.coarse);
+      } else {
+        fineSwapStartedMs = 0;
+        fineCoastline.setOpacity(0);
+        if (coarseCoastline !== null) setCoarseOpacity(coarseCoastline, 1);
+      }
+      fineCoastline.update(
+        camera.position.clone().normalize(),
+        visibleCapRadiusNm(cameraDistanceNow, camera.fov) / 3440.065
+      );
+    }
+
     const t = time / 1000;
     globe.setTime(t);
     atmosphere.setTime(t);
@@ -249,6 +395,12 @@ export function mountScene(
       stale: feed.feedStale,
     };
 
+    // One log and one pow for the whole frame, read by the dots, the
+    // trails and the route arc. A second shellThicknessUnits in the same
+    // frame would be a second authority on where things above the ground
+    // are, which is exactly what this plan removed three of (D36).
+    const shell = shellThicknessUnits(frame.cameraDistance);
+
     const rule = readVisibilityRule();
 
     const subject = rule.focusedIcao === null ? null : aircraftMap.get(rule.focusedIcao);
@@ -258,7 +410,12 @@ export function mountScene(
     // is no subject to speak about.
     const subjectWorld =
       subject != null && subject.latitude !== null && subject.longitude !== null
-        ? latLonAltToVec3(subject.latitude, subject.longitude, subject.baroAltitudeFt ?? 38000)
+        ? latLonAltToVec3(
+            subject.latitude,
+            subject.longitude,
+            subject.baroAltitudeFt ?? 38000,
+            frame.cameraDistance
+          )
         : null;
 
     // --- The camera brings the flight into view (D34) ------------------------
@@ -310,10 +467,26 @@ export function mountScene(
     const tAC = performance.now();
     aircraftLayer.update(aircraftMap.values(), selectedIcao, rule, othersBrightness, frame);
     const tTr = performance.now();
-    trailsLayer.update(aircraftMap.values(), selectedIcao, rule);
+    trailsLayer.update(aircraftMap.values(), selectedIcao, rule, shell);
     const focusView = readFocusView();
-    arcLayer.update(focusView?.arc ?? null);
-    markers.update(markerSpecs(focusView), camera, canvas.clientWidth, canvas.clientHeight);
+    arcLayer.update(focusView?.arc ?? null, shell);
+    const specs = markerSpecs(focusView);
+    markers.update(specs, camera, canvas.clientWidth, canvas.clientHeight);
+    // The markers' boxes go in FIRST and are never evicted: a city is
+    // geography, a D/A marker is the route the user asked for (D43).
+    const takenBoxes = [];
+    for (const spec of specs) {
+      const at = projectMarker(spec, camera, canvas.clientWidth, canvas.clientHeight);
+      if (at.visible) takenBoxes.push({ x: at.x, y: at.y, w: LABEL_BOX_W, h: LABEL_BOX_H });
+    }
+    cityLabels.update(
+      cityPlaces,
+      camera,
+      canvas.clientWidth,
+      canvas.clientHeight,
+      camera.fov,
+      takenBoxes
+    );
     const tLd = performance.now();
 
     // Leader line: only when an aircraft is selected and on the near hemisphere
@@ -328,12 +501,18 @@ export function mountScene(
         // aircraft is on this frame (D29/D31).
         let world: Vector3;
         if (ac.motion == null) {
-          world = latLonAltToVec3(ac.latitude, ac.longitude, ac.baroAltitudeFt ?? 38000);
+          world = latLonAltToVec3(
+            ac.latitude,
+            ac.longitude,
+            ac.baroAltitudeFt ?? 38000,
+            frame.cameraDistance
+          );
         } else {
           positionAt(
             ac.motion,
             advanceFor(ac.motion, frame.elapsedSinceBatchS, frame.stale),
             time,
+            shell,
             leaderScratch
           );
           world = new Vector3(leaderScratch.x, leaderScratch.y, leaderScratch.z);
@@ -387,6 +566,7 @@ export function mountScene(
       canvas.removeEventListener('click', onClick);
       releaseToUser();
       markers.dispose();
+      cityLabels.dispose();
       renderer.dispose();
     },
     viewCentre: () => {

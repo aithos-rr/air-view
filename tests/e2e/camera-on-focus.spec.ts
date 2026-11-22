@@ -194,9 +194,12 @@ test('the turn rotates over time, and never changes the zoom', async ({ page }) 
     const w = window as unknown as {
       __airViewCamera?: () => CameraReading;
       __camTrack?: string[];
+      __camStop?: boolean;
     };
     w.__camTrack = [];
+    w.__camStop = false;
     const tick = (): void => {
+      if (w.__camStop === true) return;
       const c = w.__airViewCamera?.();
       if (c) w.__camTrack?.push(`${c.lat.toFixed(4)},${c.lon.toFixed(4)}`);
       requestAnimationFrame(tick);
@@ -208,14 +211,25 @@ test('the turn rotates over time, and never changes the zoom', async ({ page }) 
   await page.getByRole('searchbox').press('Enter');
   await expectCameraOver(page, FAR);
 
-  const track = await page.evaluate(() => {
-    const w = window as unknown as { __camTrack?: string[] };
-    return [...new Set(w.__camTrack ?? [])];
+  const { distinct, frames } = await page.evaluate(() => {
+    const w = window as unknown as { __camTrack?: string[]; __camStop?: boolean };
+    w.__camStop = true; // bound the still frames between arrival and this read
+    const t = w.__camTrack ?? [];
+    return { distinct: new Set(t).size, frames: t.length };
   });
-  // A cut would leave two: where it was, and where it ended. 900 ms of
-  // rotation leaves tens of them. Ten is far below what sixty frames a
-  // second produces and far above what any instant jump could.
-  expect(track.length).toBeGreaterThan(10);
+  // A cut would leave two: where it was, and where it ended.
+  //
+  // It used to demand more than TEN distinct positions, and ten is a
+  // statement about the host's frame rate, not about the turn: 900 ms at
+  // sixty frames a second leaves about fifty, and the same correct turn on
+  // this machine under the full suite — software GL, measured at 9 fps —
+  // leaves eight, so the test went red on a slow browser and green on a
+  // fast one while the code never changed. What distinguishes a turn from a
+  // cut at ANY frame rate is that the camera moved on nearly every frame
+  // that was drawn: a cut leaves 2 out of however many.
+  expect(frames).toBeGreaterThan(4);
+  expect(distinct).toBeGreaterThan(4);
+  expect(distinct / frames).toBeGreaterThan(0.5);
 
   // Rotate, never zoom: how much world to show is the user's choice, and
   // the turn answers "where", never "how close".

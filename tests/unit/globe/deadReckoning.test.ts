@@ -9,7 +9,7 @@ import {
   positionAt,
   reconcile,
 } from '@/globe/deadReckoning';
-import { GLOBE_RADIUS, latLonAltToVec3, vec3ToLatLon } from '@/globe/geoHelpers';
+import { shellThicknessUnits, CAMERA_FAR_LIMIT, GLOBE_RADIUS, latLonAltToVec3, vec3ToLatLon } from '@/globe/geoHelpers';
 import { makeAircraftRaw } from '../../helpers/aircraft';
 import type { Motion } from '@/types';
 import { Vector3 } from 'three';
@@ -26,7 +26,7 @@ function motion(over: Parameters<typeof makeAircraftRaw>[0] = {}, fetchedAt = 1_
 /** Where positionAt puts this aircraft, back in degrees. */
 function atDeg(m: Motion, advanceS: number, nowMs = 0): { lat: number; lon: number } {
   const out = { x: 0, y: 0, z: 0 };
-  positionAt(m, advanceS, nowMs, out);
+  positionAt(m, advanceS, nowMs, shellThicknessUnits(CAMERA_FAR_LIMIT), out);
   return vec3ToLatLon(new Vector3(out.x, out.y, out.z));
 }
 
@@ -43,9 +43,9 @@ describe('deriveMotion', () => {
     // One convention, two formulas: if they ever disagree the aircraft
     // leaves its own trail behind on the first frame.
     const m = motion({ latitude: 50, longitude: -10, baroAltitudeFt: 38_000 });
-    const expected = latLonAltToVec3(50, -10, 38_000);
+    const expected = latLonAltToVec3(50, -10, 38_000, CAMERA_FAR_LIMIT);
     const out = { x: 0, y: 0, z: 0 };
-    positionAt(m, 0, 0, out);
+    positionAt(m, 0, 0, shellThicknessUnits(CAMERA_FAR_LIMIT), out);
     expect(out.x).toBeCloseTo(expected.x, 6);
     expect(out.y).toBeCloseTo(expected.y, 6);
     expect(out.z).toBeCloseTo(expected.z, 6);
@@ -136,9 +136,9 @@ describe('positionAt — the great circle, not the rhumb line', () => {
     // 450 kt for 120 s is 15,0 NM. Measured as travelled arc, which is
     // what a great circle gives and a lat/lon interpolation does not.
     const m = motion({ latitude: 50, longitude: -10, velocityKt: 450, headingDeg: 90 });
-    const before = latLonAltToVec3(50, -10, 38_000).normalize();
+    const before = latLonAltToVec3(50, -10, 38_000, CAMERA_FAR_LIMIT).normalize();
     const p = atDeg(m, 120);
-    const after = latLonAltToVec3(p.lat, p.lon, 38_000).normalize();
+    const after = latLonAltToVec3(p.lat, p.lon, 38_000, CAMERA_FAR_LIMIT).normalize();
     const nm = Math.acos(Math.min(1, before.dot(after))) * NM_PER_RADIAN;
     expect(nm).toBeCloseTo(15.0, 1);
   });
@@ -207,9 +207,9 @@ describe('positionAt — the great circle, not the rhumb line', () => {
   it('keeps the aircraft on its own altitude shell while it moves', () => {
     const m = motion({ latitude: 20, longitude: 30, baroAltitudeFt: 41_000, velocityKt: 500 });
     const out = { x: 0, y: 0, z: 0 };
-    positionAt(m, 0, 0, out);
+    positionAt(m, 0, 0, shellThicknessUnits(CAMERA_FAR_LIMIT), out);
     const r0 = Math.hypot(out.x, out.y, out.z);
-    positionAt(m, 100, 0, out);
+    positionAt(m, 100, 0, shellThicknessUnits(CAMERA_FAR_LIMIT), out);
     expect(Math.hypot(out.x, out.y, out.z)).toBeCloseTo(r0, 9);
     expect(r0).toBeGreaterThan(GLOBE_RADIUS);
   });

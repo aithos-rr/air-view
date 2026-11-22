@@ -54,8 +54,17 @@ export interface Motion {
   wx: number;
   wy: number;
   wz: number;
-  /** Globe-space radius for this aircraft's altitude, offset included. */
-  radius: number;
+  /**
+   * The quota as a fraction of the 0 → 41 000 ft shell.
+   *
+   * NOT a radius. The shell's THICKNESS now depends on how far out the
+   * camera is (D36), so a radius frozen when the batch was built could
+   * never follow the zoom. The draw loop composes
+   * `GLOBE_RADIUS + shell(d) × (1/3 + 2/3 × altFrac)` from a thickness it
+   * computes ONCE per frame: two multiplications per aircraft, no
+   * transcendental call, strictly less than what was being spent.
+   */
+  altFrac: number;
   /** Radians of arc per second, from velocityKt. Zero is a real answer: it is an aircraft at rest. */
   omegaPerS: number;
   /**

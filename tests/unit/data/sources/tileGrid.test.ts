@@ -1,5 +1,31 @@
 import { describe, it, expect } from 'vitest';
-import { buildTileGrid, createTileScheduler, tilesNear, TILE_RADIUS_NM } from '@/data/sources/tileGrid';
+import {
+  buildTileGrid,
+  createTileScheduler,
+  nearestCoveringTile,
+  tilesNear,
+  viewPriorityTiles,
+  TILE_RADIUS_NM,
+} from '@/data/sources/tileGrid';
+import type { GeoPoint } from '@/data/sources/types';
+
+/**
+ * The ten declared boxes, read by the coverage test and by
+ * farthestCoveredSample below. One list, because two lists would be two
+ * ideas of what this grid claims to cover.
+ */
+const SAMPLE_BOXES: Array<[number, number, number, number]> = [
+  [25, 60, -130, -60], // north-america
+  [35, 62, -11, 32], // europe
+  [20, 46, 100, 146], // east-asia
+  [-10, 22, 95, 128], // southeast-asia
+  [6, 33, 68, 90], // india
+  [12, 32, 34, 60], // gulf
+  [-45, -10, 113, 179], // oceania
+  [-35, 12, -75, -35], // south-america
+  [-35, -20, 16, 33], // southern-africa
+  [28, 42, -9, 45], // north-africa
+];
 
 describe('buildTileGrid', () => {
   it('stays under the 250 NM ceiling every provider enforces', () => {
@@ -42,23 +68,11 @@ describe('buildTileGrid', () => {
     // produce: the margin is 230 - 216 = 14 NM. Distance is to the nearest
     // centre of the WHOLE grid, which is how coverage works — the poller
     // fetches every tile, so a tile covers a point whatever box it came from.
-    const boxes: Array<[number, number, number, number]> = [
-      [25, 60, -130, -60], // north-america
-      [35, 62, -11, 32], // europe
-      [20, 46, 100, 146], // east-asia
-      [-10, 22, 95, 128], // southeast-asia
-      [6, 33, 68, 90], // india
-      [12, 32, 34, 60], // gulf
-      [-45, -10, 113, 179], // oceania
-      [-35, 12, -75, -35], // south-america
-      [-35, -20, 16, 33], // southern-africa
-      [28, 42, -9, 45], // north-africa
-    ];
     const grid = buildTileGrid();
     let sampled = 0;
     let uncovered = 0;
     let worst = 0;
-    for (const [latMin, latMax, lonMin, lonMax] of boxes) {
+    for (const [latMin, latMax, lonMin, lonMax] of SAMPLE_BOXES) {
       for (let lat = latMin; lat <= latMax + 1e-9; lat += 0.5) {
         for (let lon = lonMin; lon <= lonMax + 1e-9; lon += 0.5) {
           sampled++;
@@ -614,5 +628,119 @@ describe('createTileScheduler — the priority credit must not become a bank', (
     });
     // Uptime must not be what decides whether the rotation advances.
     expect(agedAfter.rotationTiles).toBeGreaterThanOrEqual(control.rotationTiles - 8);
+  });
+});
+
+/** The covered point farthest from any tile centre: the 218,0 NM worst case. */
+function farthestCoveredSample(grid: ReturnType<typeof buildTileGrid>): GeoPoint {
+  let worst = { lat: 0, lon: 0 };
+  let worstD = -1;
+  for (const [latMin, latMax, lonMin, lonMax] of SAMPLE_BOXES) {
+    for (let lat = latMin; lat <= latMax + 1e-9; lat += 0.5) {
+      for (let lon = lonMin; lon <= lonMax + 1e-9; lon += 0.5) {
+        let nearest = Infinity;
+        for (const t of grid) {
+          const d = haversineNm({ lat, lon }, t.centre);
+          if (d < nearest) nearest = d;
+        }
+        if (nearest > worstD) {
+          worstD = nearest;
+          worst = { lat, lon };
+        }
+      }
+    }
+  }
+  return worst;
+}
+
+describe('nearestCoveringTile — which tile CONTAINS what is being looked at', () => {
+  const grid = buildTileGrid();
+
+  it('names a tile for every covered point, at any view radius', () => {
+    // This is the assertion that used to live in pointSize.test.ts as a
+    // floor under the camera. The grid guarantee — no covered point more
+    // than 218,0 NM from a centre, on 1 224 760 samples (tileGrid.ts:60-62)
+    // — stops being a constraint on the zoom and becomes the PROOF that
+    // this function never comes back empty over a covered region (D38).
+    for (const sample of [
+      { lat: 45.46, lon: 9.19 },   // Milano
+      { lat: 40.71, lon: -74.0 },  // New York
+      { lat: 1.35, lon: 103.82 },  // Singapore
+      { lat: -33.87, lon: 151.21 },// Sydney
+      { lat: 19.07, lon: 72.88 },  // Mumbai
+    ]) {
+      const tile = nearestCoveringTile(grid, sample);
+      expect(tile, `${sample.lat},${sample.lon}`).not.toBeNull();
+      expect(haversineNm(sample, tile!.centre)).toBeLessThanOrEqual(TILE_RADIUS_NM);
+    }
+  });
+
+  it('refuses rather than naming a tile that covers nothing on screen', () => {
+    // Mid-Pacific: the nearest centre is thousands of NM away and
+    // prioritising it would spend a slot on a tile nobody can see. Null is
+    // the truth here, not a shortfall — there is no data to refresh.
+    expect(nearestCoveringTile(grid, { lat: 0, lon: -150 })).toBeNull();
+  });
+
+  it('agrees with tilesNear whenever tilesNear says anything at all', () => {
+    const centre = { lat: 45.46, lon: 9.19 };
+    const wide = tilesNear(grid, centre, 400);
+    expect(wide.length).toBeGreaterThan(0);
+    expect(nearestCoveringTile(grid, centre)!.id).toBe(wide[0]!.id);
+  });
+
+  it('is what a 39,6 NM viewport gets when tilesNear gets nothing', () => {
+    // The whole point. At the new zoom floor the cap is 39,6 NM and a
+    // viewer can sit 218 NM from the nearest centre: tilesNear returns
+    // nothing and, before this, the region on screen silently stopped
+    // jumping the queue.
+    const lonely = farthestCoveredSample(grid);
+    expect(tilesNear(grid, lonely, 39.6)).toHaveLength(0);
+    expect(nearestCoveringTile(grid, lonely)).not.toBeNull();
+  });
+});
+
+describe('viewPriorityTiles — the union, where a unit test can reach it', () => {
+  const grid = buildTileGrid();
+
+  it('puts the covering tile FIRST when the radius missed it', () => {
+    // This is the assertion the plan used to put in a
+    // tests/unit/server/viewPriority.test.ts that no step ever created —
+    // a path on a `git add` line that matched nothing, which exits 1 and
+    // takes the commit with it. The union belongs in a pure function, and
+    // then it belongs in this file.
+    const lonely = farthestCoveredSample(grid);
+    const ids = viewPriorityTiles(grid, lonely, 39.6, 6);
+    expect(ids).toHaveLength(1);
+    expect(ids[0]).toBe(nearestCoveringTile(grid, lonely)!.id);
+  });
+
+  it('does not name the covering tile twice when the radius already had it', () => {
+    const centre = { lat: 45.46, lon: 9.19 };
+    const ids = viewPriorityTiles(grid, centre, 400, 6);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids[0]).toBe(nearestCoveringTile(grid, centre)!.id);
+  });
+
+  it('honours the limit, because half of each poller batch is the rotation', () => {
+    expect(viewPriorityTiles(grid, { lat: 45.46, lon: 9.19 }, 2000, 6)).toHaveLength(6);
+  });
+
+  it('returns nothing at all over the mid-Pacific, which is the truth there', () => {
+    // No tile covers it and none is within the radius: prioritising the
+    // nearest centre thousands of NM away would spend a slot on a tile
+    // nobody can see. Empty is not a shortfall (D38).
+    expect(viewPriorityTiles(grid, { lat: 0, lon: -150 }, 39.6, 6)).toEqual([]);
+  });
+
+  it('never inflates the radius it was given', () => {
+    // D15 applied to a protocol: the client declares what it is looking at
+    // and the server answers that, rather than the client declaring more
+    // so the old arithmetic keeps working.
+    const centre = { lat: 45.46, lon: 9.19 };
+    const narrow = viewPriorityTiles(grid, centre, 39.6, 6);
+    const wide = viewPriorityTiles(grid, centre, 400, 6);
+    expect(narrow.length).toBeLessThan(wide.length);
+    expect(narrow.every((id) => wide.includes(id))).toBe(true);
   });
 });

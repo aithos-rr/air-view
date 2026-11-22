@@ -24,6 +24,7 @@ export default function AppShell() {
   const leaderRef = useRef<SVGSVGElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const markersRef = useRef<HTMLDivElement>(null);
+  const citiesRef = useRef<HTMLDivElement>(null);
 
   // The only Escape listener in the application. See state/escape.ts for the
   // order; it is here rather than in a panel because the key belongs to the
@@ -39,13 +40,20 @@ export default function AppShell() {
 
   useEffect(() => {
     if (!supported) return;
-    if (!canvasRef.current || !leaderRef.current || !panelRef.current || !markersRef.current)
+    if (
+      !canvasRef.current ||
+      !leaderRef.current ||
+      !panelRef.current ||
+      !markersRef.current ||
+      !citiesRef.current
+    )
       return;
     const handle = mountScene(
       canvasRef.current,
       leaderRef.current,
       panelRef.current,
-      markersRef.current
+      markersRef.current,
+      citiesRef.current
     );
     void bootstrapData(() => handle.viewCentre()).catch((e: unknown) =>
       console.error('bootstrap:', e)
@@ -88,6 +96,10 @@ export default function AppShell() {
         */}
         <canvas ref={canvasRef} className="app-canvas" />
         <svg ref={leaderRef} className="app-leader" />
+        {/* Under .app-markers in the stacking order, on purpose: where a
+            city name and a D/A marker meet, the marker wins, because the
+            marker is the route the user asked for (D43). */}
+        <div ref={citiesRef} className="app-cities" />
         <div ref={markersRef} className="app-markers" />
         <BrandWatermark />
         <FleetPanel />

@@ -33,11 +33,29 @@ export const MAX_ARC_SAMPLES = 256;
 const FLOWN_BRIGHTNESS = 0.3;
 const AHEAD_BRIGHTNESS = 1.0;
 
-/** Just clear of the surface, and of the continent hairlines at R * 1.003. */
-const ARC_BASE_OFFSET = 0.018;
-/** How far the arc bows out at its apex, in proportion to its own length. */
-const ARC_APEX_MIN = 0.012;
-const ARC_APEX_RANGE = 0.055;
+/**
+ * How high the arc rides, as FRACTIONS of the per-frame altitude shell.
+ *
+ * These were three absolute offsets — 0,018, 0,012 and 0,055 — chosen when
+ * the camera could not come closer than 1,9 and nothing above the surface
+ * had to move. At 1,55 they put the apex of a short hop 0,019044 from the
+ * camera, i.e. INSIDE a near plane of 0,02, and the apex of a near
+ * antipodal route 0,033871 BEHIND it: the user asks to be taken to a
+ * flight, arrives, and the route they asked for is not drawn (§2.7, D46).
+ *
+ * As ratios of SHELL_UNITS_FAR = 0,075 they are 0,24 / 0,16 / 11:15, and at
+ * CAMERA_FAR_LIMIT the products are 0,018, 0,012 and 0,055 EXACTLY — not
+ * nearly: the test asserts === and not toBeCloseTo.
+ *
+ * 0,24 is below the shell's own 1/3 floor on purpose. An arc has to pass
+ * UNDER the aeroplane flying it and OVER the coastline (D47), which is a
+ * different shape from the aircraft shell on the same thickness — so this
+ * file does not call shellOffset, it takes shellUnits and states its own
+ * shape, once.
+ */
+export const ARC_BASE_FRAC = 0.018 / 0.075;
+export const ARC_APEX_MIN_FRAC = 0.012 / 0.075;
+export const ARC_APEX_RANGE_FRAC = 0.055 / 0.075;
 
 /** Angle at the centre of the Earth between two points, in radians. */
 export function greatCircleRad(a: GeoPointDeg, b: GeoPointDeg): number {
@@ -96,14 +114,18 @@ export function arcDegeneracy(a: GeoPointDeg, b: GeoPointDeg): ArcDegeneracy | n
  * lives in arcDegeneracy() — ONE rule, so that whoever decides whether to
  * offer an arc and whoever draws it cannot disagree.
  */
-export function geodesicPoints(a: GeoPointDeg, b: GeoPointDeg): Vector3[] | null {
+export function geodesicPoints(
+  a: GeoPointDeg,
+  b: GeoPointDeg,
+  shellUnits: number
+): Vector3[] | null {
   if (arcDegeneracy(a, b) !== null) return null;
   const omega = greatCircleRad(a, b);
 
   const va = latLonToVec3(a.lat, a.lon, 1).normalize();
   const vb = latLonToVec3(b.lat, b.lon, 1).normalize();
   const samples = arcSampleCount(omega);
-  const apex = ARC_APEX_MIN + ARC_APEX_RANGE * (omega / Math.PI);
+  const apexFrac = ARC_APEX_MIN_FRAC + ARC_APEX_RANGE_FRAC * (omega / Math.PI);
 
   // One scratch direction for the whole arc: slerpUnit writes in place, and
   // the sample itself is the allocation this loop cannot avoid.
@@ -115,7 +137,8 @@ export function geodesicPoints(a: GeoPointDeg, b: GeoPointDeg): Vector3[] | null
     // is in focus: letting slerpUnit recompute it would be an acos per
     // vertex, 256 of them, sixty times a second, for a number already here.
     slerpUnit(va, vb, t, omega, dir);
-    const radius = GLOBE_RADIUS + ARC_BASE_OFFSET + apex * Math.sin(Math.PI * t);
+    const radius =
+      GLOBE_RADIUS + shellUnits * (ARC_BASE_FRAC + apexFrac * Math.sin(Math.PI * t));
     out.push(new Vector3(dir.x * radius, dir.y * radius, dir.z * radius));
   }
   return out;
@@ -137,7 +160,12 @@ export function flownFraction(a: GeoPointDeg, b: GeoPointDeg, at: GeoPointDeg): 
 
 export interface RouteArcLayer {
   group: Group;
-  update: (arc: DrawableArc | null) => void;
+  /**
+   * @param shellUnits the shell thickness for THIS frame, the same number
+   *   the dots and the trails ride. The arc's own shape is stated in this
+   *   file; the thickness it is scaled by has one author (D46).
+   */
+  update: (arc: DrawableArc | null, shellUnits: number) => void;
 }
 
 /**
@@ -184,12 +212,12 @@ export function createRouteArcLayer(): RouteArcLayer {
     colors[i * 3 + 2] = ARC_COLOR[2] * brightness;
   }
 
-  function update(arc: DrawableArc | null): void {
+  function update(arc: DrawableArc | null, shellUnits: number): void {
     if (arc === null) {
       geom.setDrawRange(0, 0);
       return;
     }
-    const pts = geodesicPoints(arc.origin, arc.destination);
+    const pts = geodesicPoints(arc.origin, arc.destination, shellUnits);
     if (pts === null) {
       geom.setDrawRange(0, 0);
       return;

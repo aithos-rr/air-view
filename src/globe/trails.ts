@@ -10,7 +10,7 @@ import {
   Vector3,
 } from 'three';
 import type { Aircraft } from '@/types';
-import { GLOBE_RADIUS } from './geoHelpers';
+import { GLOBE_RADIUS, altitudeFraction, shellOffset } from './geoHelpers';
 import { isAircraftVisible } from './visibility';
 import type { VisibilityRule } from './visibility';
 
@@ -47,10 +47,18 @@ const SCENE_BOUND_RADIUS = GLOBE_RADIUS + 0.5;
 export interface TrailsLayer {
   group: Group;
   /** Same `rule` the point layer obeys: a hidden aircraft leaves no trail. */
+  /**
+   * @param shellUnits the shell thickness for THIS frame, the same number
+   *   the dots are drawn on. Not optional and not defaulted: a trail on a
+   *   different shell from its own aircraft is 107,7 px of separation at
+   *   d = 1,9, and a default would hide every caller that had not been
+   *   looked at (D36).
+   */
   update: (
     aircraft: Iterable<Aircraft>,
     selectedIcao: string | null,
-    rule: VisibilityRule
+    rule: VisibilityRule,
+    shellUnits: number
   ) => void;
 }
 
@@ -98,7 +106,8 @@ export function createTrailsLayer(): TrailsLayer {
   function update(
     aircraft: Iterable<Aircraft>,
     selectedIcao: string | null,
-    rule: VisibilityRule
+    rule: VisibilityRule,
+    shellUnits: number
   ): void {
     let vertCursor = 0; // next vertex index to write
 
@@ -157,13 +166,13 @@ export function createTrailsLayer(): TrailsLayer {
         const alpha = computeAlpha(i, usedPoints);
 
         // Write segment: prev → current
-        writeLatLonAlt(positions, vertCursor * 3, prevLat, prevLon, altFt);
+        writeLatLonAlt(positions, vertCursor * 3, prevLat, prevLon, altFt, shellUnits);
         colors[vertCursor * 3] = baseR * prevAlpha;
         colors[vertCursor * 3 + 1] = baseG * prevAlpha;
         colors[vertCursor * 3 + 2] = baseB * prevAlpha;
         vertCursor++;
 
-        writeLatLonAlt(positions, vertCursor * 3, lat, lon, altFt);
+        writeLatLonAlt(positions, vertCursor * 3, lat, lon, altFt, shellUnits);
         colors[vertCursor * 3] = baseR * alpha;
         colors[vertCursor * 3 + 1] = baseG * alpha;
         colors[vertCursor * 3 + 2] = baseB * alpha;
@@ -197,9 +206,14 @@ function writeLatLonAlt(
   offset: number,
   lat: number,
   lon: number,
-  altFt: number
+  altFt: number,
+  shellUnits: number
 ): void {
-  const radius = GLOBE_RADIUS + 0.025 + (Math.max(0, altFt) / 41000) * 0.05;
+  // The third copy of the shell formula lived on this line. The inline stays
+  // — it is what keeps this loop allocation-free — but the arithmetic now
+  // comes from the one function that owns it, so a trail can no longer end
+  // up on a different shell from the aircraft flying it (D36).
+  const radius = GLOBE_RADIUS + shellOffset(shellUnits, altitudeFraction(altFt));
   const phi = (90 - lat) * (Math.PI / 180);
   const theta = lon * (Math.PI / 180);
   const sinPhi = Math.sin(phi);

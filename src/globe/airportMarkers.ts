@@ -28,8 +28,11 @@ export interface MarkerPlacement {
 /**
  * Below this camera distance the IATA code appears beside the dot.
  *
- * The travel is CAMERA_NEAR_LIMIT..CAMERA_FAR_LIMIT world units — 1,9 to
- * 10,0 — and this is its geometric midpoint, which keeps the label on the
+ * The travel is CAMERA_NEAR_LIMIT..CAMERA_FAR_LIMIT world units — 1,55 to
+ * 10,0 — and this is its geometric midpoint, sqrt(1,55 × 10) = 3,937,
+ * where it was 4,359 while the travel ended at 1,9 (D35). It recomputes
+ * itself, which is exactly what Plan 2 wrote it as a geometric mean for.
+ * It keeps the label on the
  * closer half of a travel that is now logarithmic rather than linear. The
  * old value of 6,0 was described as "the lower half of 3,0 to 10,0 globe
  * radii", and the travel was neither in radii nor from 3,0.

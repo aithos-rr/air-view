@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { CAMERA_FAR_LIMIT, shellThicknessUnits } from '@/globe/geoHelpers';
 import { readFocusAct, readVisibilityRule } from '@/state/sceneView';
 import { readFocusView, markerSpecs, arcSubject, arcVerdict } from '@/state/sceneView';
 import { geodesicPoints } from '@/globe/routeArc';
@@ -310,7 +311,11 @@ describe('readFocusView — a flight that ends where it began', () => {
     const view = readFocusView();
     expect(view).not.toBeNull();
     expect(
-      geodesicPoints({ lat: CDG.lat, lon: CDG.lon }, { lat: CDG.lat, lon: CDG.lon })
+      geodesicPoints(
+        { lat: CDG.lat, lon: CDG.lon },
+        { lat: CDG.lat, lon: CDG.lon },
+        shellThicknessUnits(CAMERA_FAR_LIMIT)
+      )
     ).toBeNull();
     expect(view?.arc).toBeNull();
   });

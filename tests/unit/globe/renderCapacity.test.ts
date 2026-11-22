@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { CAMERA_FAR_LIMIT, shellThicknessUnits } from '@/globe/geoHelpers';
 import type { Object3D, Points } from 'three';
 import { createAircraftLayer } from '@/globe/aircraft';
 import { createTrailsLayer } from '@/globe/trails';
@@ -69,7 +70,7 @@ describe('trails layer capacity', () => {
     // Five trail points plus the current position is six points, i.e. five
     // segments and ten vertices per aircraft: 240 000 in all.
     const layer = createTrailsLayer();
-    layer.update(fleet(24_000, 5), null, SHOW_ALL);
+    layer.update(fleet(24_000, 5), null, SHOW_ALL, shellThicknessUnits(CAMERA_FAR_LIMIT));
     const geom = geometryOf(layer.group.children[0]);
     expect(geom.drawRange.count).toBe(240_000);
     const pos = geom.getAttribute('position');

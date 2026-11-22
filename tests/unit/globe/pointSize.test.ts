@@ -1,6 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { pointSizePx, POINT_SCALE_COMPLETE, POINT_SCALE_SELECTED } from '@/globe/aircraft';
-import { CAMERA_FAR_LIMIT, CAMERA_NEAR_LIMIT, visibleCapRadiusNm } from '@/globe/geoHelpers';
+import {
+  CAMERA_FAR_LIMIT,
+  CAMERA_MOUNT_DISTANCE,
+  CAMERA_NEAR_LIMIT,
+  CAMERA_NEAR_LIMIT_BEFORE_DETAIL,
+  CAMERA_NEAR_PLANE,
+  GLOBE_RADIUS,
+  altitudeToOffset,
+  visibleCapRadiusNm,
+} from '@/globe/geoHelpers';
 
 /** The viewport the measurements in the plan are taken on. */
 const SCREEN_H = 1080;
@@ -52,17 +61,47 @@ describe('pointSizePx — the symbol stops growing with the geography', () => {
 });
 
 describe('the camera travel is one declaration', () => {
-  it('stops where the tile grid can still name a tile under the viewer', () => {
-    // tilesNear takes tiles whose CENTRE is inside the radius, and no
-    // covered point is more than 218,0 NM from a centre (tileGrid.ts:60-62).
-    // Below that the region on screen would quietly stop jumping the
-    // queue, which is the mechanism D16 sizes the ceiling on.
-    expect(visibleCapRadiusNm(CAMERA_NEAR_LIMIT, 38)).toBeGreaterThan(218);
+  it('no longer depends on the tile grid, because the server stopped needing it to', () => {
+    // Plan 2 asserted visibleCapRadiusNm(NEAR) > 218 here, and that was
+    // right while tilesNear was the only way a viewport reached the
+    // scheduler. nearestCoveringTile prioritises the tile that CONTAINS the
+    // centre whatever the radius, so the floor is free to follow the
+    // separation arithmetic instead (D38). The assertion that replaces it is
+    // in tests/unit/data/sources/tileGrid.test.ts — the path that actually
+    // exists; an earlier draft of this plan named it one directory too high
+    // and put that non-path on a `git add` line, where a pathspec matching
+    // nothing exits 1 and takes the && chain, and the commit, with it.
+    expect(visibleCapRadiusNm(CAMERA_NEAR_LIMIT, 38)).toBeGreaterThan(0);
   });
 
   it('leaves the aircraft shell in front of the near plane', () => {
-    // Aircraft sit at most at 1,5 + 0,075 = 1,575 (geoHelpers.ts:23-25) and
-    // the camera's near plane is 0,1 (scene.ts:39).
-    expect(CAMERA_NEAR_LIMIT - 1.575).toBeGreaterThan(0.1);
+    // The shell is no longer a constant 0,075: it thins with the zoom, so
+    // the clearance is checked against the shell AT this distance (D36/D37).
+    const top = GLOBE_RADIUS + altitudeToOffset(41_000, CAMERA_NEAR_LIMIT);
+    expect(CAMERA_NEAR_LIMIT - top).toBeGreaterThan(CAMERA_NEAR_PLANE);
+  });
+});
+
+describe('the new stretch of travel is a tail, not a rescaling', () => {
+  /** aircraft.ts in the deployed build, where the floor was 1,9. */
+  const shipped = (d: number): number => {
+    const c = Math.min(Math.max(d, 1.9), CAMERA_FAR_LIMIT);
+    const t = Math.log(CAMERA_FAR_LIMIT / c) / Math.log(CAMERA_FAR_LIMIT / 1.9);
+    return 7 + (14 - 7) * t;
+  };
+
+  it('keeps the symbol the size it was at every distance the camera could already reach', () => {
+    // Normalising on log(FAR / 1,55) instead of log(FAR / 1,9) moved the
+    // symbol at every distance except exactly 10,0 — 10,101 px to 9,762 px
+    // at the mount, 3,4 % smaller, on a view the user was told would not
+    // change (D48).
+    for (const d of [1.9, 2.5, 3, 4, CAMERA_MOUNT_DISTANCE, 6, 8, CAMERA_FAR_LIMIT]) {
+      expect(Math.abs(pointSizePx(d) - shipped(d))).toBeLessThan(1e-12);
+    }
+  });
+
+  it('stops growing below the old floor, so the geography separates and the symbol does not', () => {
+    expect(pointSizePx(CAMERA_NEAR_LIMIT)).toBe(pointSizePx(CAMERA_NEAR_LIMIT_BEFORE_DETAIL));
+    expect(pointSizePx(CAMERA_NEAR_LIMIT)).toBe(14);
   });
 });

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAircraftStore } from '@/state/aircraftStore';
+import { useDetailStore } from '@/state/detailStore';
 
 const ANNOUNCE_THRESHOLD = 100; // re-announce only on Δ > 100 (spec §13)
 /**
@@ -20,6 +21,8 @@ export function FeedStatus() {
   const stale = useAircraftStore((s) => s.feedStale);
   const capped = useAircraftStore((s) => s.feedCapped);
   const feedFetchedAt = useAircraftStore((s) => s.feedFetchedAt);
+  const coastline = useDetailStore((s) => s.coastline);
+  const cities = useDetailStore((s) => s.cities);
   const lastAnnounced = useRef(0);
   const [announceCount, setAnnounceCount] = useState(0);
 
@@ -79,6 +82,37 @@ export function FeedStatus() {
         <span className="hud__status" aria-label="Feed stale, showing last known positions">
           {' '}
           · feed stale · last known positions
+        </span>
+      )}
+      {/* The cartography comes AFTER the feed: a stopped feed is the more
+          urgent news, and this div is already aria-live="polite", so the
+          reading order is the DOM order.
+
+          Nothing is said about a level that IS there, nor about one on its
+          way: a HUD that narrates its successes is a HUD nobody is still
+          reading when it narrates a failure (D42). The aria-labels spell
+          "1 to 50 million" because a screen reader reads "1:50 M" as
+          "one two points fifty em". No CSS: .hud__status already exists,
+          and "keep the same graphics" holds for the HUD too. */}
+      {coastline === 'none' && (
+        <span className="hud__status" aria-label="No coastline, the map data did not load">
+          {' '}
+          · no coastline · map data did not load
+        </span>
+      )}
+      {coastline === 'coarse-only' && (
+        <span
+          className="hud__status"
+          aria-label="Fine coastline unavailable, showing the 1 to 50 million outline"
+        >
+          {' '}
+          · fine coastline unavailable · showing the 1:50 M outline
+        </span>
+      )}
+      {cities === 'unavailable' && (
+        <span className="hud__status" aria-label="City names unavailable">
+          {' '}
+          · city names unavailable
         </span>
       )}
     </div>

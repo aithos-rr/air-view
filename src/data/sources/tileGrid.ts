@@ -158,6 +158,66 @@ export function tilesNear(grid: Tile[], centre: GeoPoint, radiusNm: number): Til
     .map((x) => x.tile);
 }
 
+/**
+ * The tile that CONTAINS this point, or null when none does.
+ *
+ * tilesNear answers "which tile centres fall inside my radius", which was
+ * the right question while the camera could not frame less than 322 NM. At
+ * 39,6 NM it is the wrong one: a viewer 218 NM from the nearest centre
+ * names nothing and the region on screen quietly stops jumping the poller's
+ * queue. The honest fix is not to inflate the radius the client declares —
+ * that is D15 applied to a protocol — but to ask the question that was
+ * always meant: which tile covers what I am looking at (D38).
+ *
+ * TILE_RADIUS_NM, not the nearest centre unconditionally: over the
+ * mid-Pacific the nearest centre is thousands of NM away, covers nothing on
+ * screen, and prioritising it would spend a slot — half of each poller
+ * batch — on a tile nobody can see.
+ */
+export function nearestCoveringTile(grid: Tile[], centre: GeoPoint): Tile | null {
+  let best: Tile | null = null;
+  let bestD = TILE_RADIUS_NM;
+  for (const tile of grid) {
+    const d = distanceNm(centre, tile.centre);
+    if (d <= bestD) {
+      bestD = d;
+      best = tile;
+    }
+  }
+  return best;
+}
+
+/**
+ * The tiles to prioritise for a viewer at `centre` framing `radiusNm`.
+ *
+ * The union lives HERE, and not inside the request handler, for one
+ * mechanical reason: a `server/index.ts` route is reachable only by starting
+ * a server, so an assertion about it can only be written by a test that
+ * boots one. An earlier draft of this plan declared exactly such a test —
+ * tests/unit/server/viewPriority.test.ts — listed it as new, never wrote a
+ * step that created it, and then put it on a `git add` line, where a
+ * pathspec matching nothing exits 1 and takes the commit with it. Four
+ * sentences in a pure function cost nothing and can be asserted.
+ *
+ * The tile that COVERS the centre always comes first; the radius decides
+ * only how many more follow. `limit` is the caller's policy, not this
+ * module's: server/index.ts reserves half of each poller batch for the
+ * rotation, which is why it passes 6.
+ */
+export function viewPriorityTiles(
+  grid: Tile[],
+  centre: GeoPoint,
+  radiusNm: number,
+  limit: number
+): string[] {
+  const wanted = tilesNear(grid, centre, radiusNm);
+  const covering = nearestCoveringTile(grid, centre);
+  if (covering !== null && !wanted.some((t) => t.id === covering.id)) {
+    wanted.unshift(covering);
+  }
+  return wanted.slice(0, limit).map((t) => t.id);
+}
+
 const DEFAULT_DORMANT_AFTER = 3;
 const DEFAULT_RETRY_EVERY = 20;
 const DEFAULT_MAX_PRIORITY_QUEUE = 12;

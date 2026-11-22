@@ -8,8 +8,10 @@ import {
   isInView,
   isOnNearSide,
   CAMERA_FAR_LIMIT,
+  CAMERA_MOUNT_DISTANCE,
   CAMERA_NEAR_LIMIT,
   GLOBE_RADIUS,
+  SHELL_FULL_DISTANCE,
 } from '@/globe/geoHelpers';
 
 describe('latLonToVec3', () => {
@@ -32,17 +34,17 @@ describe('latLonToVec3', () => {
 
 describe('altitudeToOffset', () => {
   it('returns small offset for 0 ft (ground)', () => {
-    expect(altitudeToOffset(0)).toBeCloseTo(0.025, 5);
+    expect(altitudeToOffset(0, CAMERA_FAR_LIMIT)).toBeCloseTo(0.025, 5);
   });
   it('returns larger offset for 41000 ft (cruise)', () => {
-    expect(altitudeToOffset(41000)).toBeCloseTo(0.075, 5);
+    expect(altitudeToOffset(41000, CAMERA_FAR_LIMIT)).toBeCloseTo(0.075, 5);
   });
 });
 
 describe('latLonAltToVec3', () => {
   it('produces vector with magnitude = GLOBE_RADIUS + altitude offset', () => {
-    const v = latLonAltToVec3(0, 0, 38000);
-    expect(v.length()).toBeCloseTo(GLOBE_RADIUS + altitudeToOffset(38000), 5);
+    const v = latLonAltToVec3(0, 0, 38000, CAMERA_FAR_LIMIT);
+    expect(v.length()).toBeCloseTo(GLOBE_RADIUS + altitudeToOffset(38000, CAMERA_FAR_LIMIT), 5);
   });
 });
 
@@ -103,12 +105,12 @@ describe('isInView — the frame, not the hemisphere', () => {
 
   it('refuses a point on the visible side that the lens does not reach', () => {
     // The whole reason this exists. At the near end of the travel the
-    // visible SIDE reaches 37,9 degrees off the view axis and the frame
-    // reaches 5,4: four fifths of what isOnNearSide calls visible is off
+    // visible SIDE reaches 22,5 degrees off the view axis and the frame
+    // reaches 0,67: all but a thirtieth of what isOnNearSide calls visible is off
     // screen. Anything deciding whether the user can SEE something has to
     // ask the second question, not the first.
     const zoomedIn = new Vector3(0, 0, CAMERA_NEAR_LIMIT);
-    const rightSideWrongPlace = latLonAltToVec3(0, 20, 38000);
+    const rightSideWrongPlace = latLonAltToVec3(0, 20, 38000, CAMERA_FAR_LIMIT);
     expect(isOnNearSide(zoomedIn, rightSideWrongPlace)).toBe(true);
     expect(isInView(zoomedIn, rightSideWrongPlace, FOV)).toBe(false);
   });
@@ -128,7 +130,7 @@ describe('isInView — the frame, not the hemisphere', () => {
   it('widens as the user zooms out, which is what the hemisphere never did', () => {
     // One point, two zoom levels, two answers. isOnNearSide says the same
     // thing at both: that is the defect in one line.
-    const tenDegreesOff = latLonAltToVec3(0, 10, 38000);
+    const tenDegreesOff = latLonAltToVec3(0, 10, 38000, CAMERA_FAR_LIMIT);
     expect(isInView(new Vector3(0, 0, CAMERA_NEAR_LIMIT), tenDegreesOff, FOV)).toBe(false);
     expect(isInView(new Vector3(0, 0, 3.0), tenDegreesOff, FOV)).toBe(true);
     expect(isOnNearSide(new Vector3(0, 0, CAMERA_NEAR_LIMIT), tenDegreesOff)).toBe(true);
@@ -151,8 +153,53 @@ describe('isInView — the frame, not the hemisphere', () => {
   it('is always true straight ahead, and never true straight behind', () => {
     for (const d of [CAMERA_NEAR_LIMIT, 3.0, CAMERA_FAR_LIMIT]) {
       const cam = new Vector3(0, 0, d);
-      expect(isInView(cam, latLonAltToVec3(0, 0, 38000), FOV)).toBe(true);
-      expect(isInView(cam, latLonAltToVec3(0, 180, 38000), FOV)).toBe(false);
+      expect(isInView(cam, latLonAltToVec3(0, 0, 38000, CAMERA_FAR_LIMIT), FOV)).toBe(true);
+      expect(isInView(cam, latLonAltToVec3(0, 180, 38000, CAMERA_FAR_LIMIT), FOV)).toBe(false);
     }
+  });
+});
+
+/**
+ * The user's constraint, in their own words: "vorrei mantenere la stessa
+ * grafica, lo stesso stile".
+ *
+ * The shell is allowed to thin as the camera comes down — that is D36, and
+ * it is a correction, not a restyling. What it may not do is thin at the
+ * distance the page OPENS at, which is the only view anybody compares
+ * against the one they remember. The first version of this suite asserted
+ * the identity at CAMERA_FAR_LIMIT and nowhere else, so it stayed green
+ * while the mount view fell to 28 % of the old offset: an aircraft at
+ * 38 000 ft drawn 14,67 px lower on the limb of an 800 px canvas (D48).
+ */
+describe('planet view is the one that shipped', () => {
+  /** geoHelpers.ts in the deployed build: a shell of constant thickness. */
+  const shipped = (altFt: number): number => 0.025 + (Math.max(0, altFt) / 41000) * 0.05;
+
+  it('opens inside the stretch where the shell is at full thickness', () => {
+    // Not "4,79 is bigger than 4,75" written out by hand in two places: both
+    // sides are read from the module, so moving the camera closer has to be
+    // a decision taken here rather than a change nobody sees.
+    expect(CAMERA_MOUNT_DISTANCE).toBeGreaterThanOrEqual(SHELL_FULL_DISTANCE);
+  });
+
+  it('draws every altitude exactly where it used to, from there outwards', () => {
+    for (const d of [SHELL_FULL_DISTANCE, CAMERA_MOUNT_DISTANCE, 5.5, 7, 9, CAMERA_FAR_LIMIT]) {
+      for (const altFt of [0, 10_000, 38_000, 41_000]) {
+        // A couple of ulp, not toBeCloseTo's default: the regression this
+        // catches is 5e-2, fifteen orders of magnitude above the noise.
+        expect(Math.abs(altitudeToOffset(altFt, d) - shipped(altFt))).toBeLessThan(1e-15);
+      }
+    }
+  });
+
+  it('thins only below it, and goes on thinning all the way down', () => {
+    const ds = [CAMERA_NEAR_LIMIT, 1.7, 1.9, 2.5, 3.5, 4.5, SHELL_FULL_DISTANCE];
+    for (let i = 1; i < ds.length; i++) {
+      expect(altitudeToOffset(38_000, ds[i]!)).toBeGreaterThan(altitudeToOffset(38_000, ds[i - 1]!));
+    }
+    // And by the old floor of the travel it is already most of the way
+    // down: 107,7 px of displacement at 1,9 was the measurement D36 began
+    // from, and this is what is left of it.
+    expect(altitudeToOffset(38_000, 1.9)).toBeLessThan(shipped(38_000) * 0.2);
   });
 });

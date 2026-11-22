@@ -63,7 +63,12 @@ import { rootCause } from './errorChain.js';
 import { createTilePoller } from './poller.js';
 import { registerHealthRoute } from './healthRoute.js';
 import { registerRouteQueryRoute } from './routeQuery.js';
-import { buildTileGrid, createTileScheduler, tilesNear, TILE_RADIUS_NM } from '../src/data/sources/tileGrid.js';
+import {
+  buildTileGrid,
+  createTileScheduler,
+  viewPriorityTiles,
+  TILE_RADIUS_NM,
+} from '../src/data/sources/tileGrid.js';
 import { createRouteResolver } from './routeResolver.js';
 import { enrichAndMark } from './enrich.js';
 import { readRouteCache, serializeRouteCache } from './routeCache.js';
@@ -444,10 +449,17 @@ app.get('/api/states', async (req, reply) => {
     const radius = Number.isFinite(viewRadius)
       ? Math.min(Math.max(viewRadius, 0), MAX_VIEW_RADIUS_NM)
       : DEFAULT_VIEW_RADIUS_NM;
-    const wanted = tilesNear(tiles, { lat: viewLat, lon: viewLon }, radius);
+    // The tile UNDER the camera always jumps the queue; the radius only
+    // decides how many more do. Below a 218 NM cap tilesNear can return
+    // nothing at all while the viewer is staring straight at a covered
+    // region, and the client must never inflate its declared radius to work
+    // around that (D38).
+    //
     // Six, not twelve: the scheduler reserves half of each batch for the
     // rotation, so asking for more only grows a queue that cannot be served.
-    scheduler.prioritise(wanted.slice(0, 6).map((t) => t.id));
+    // The number is the server's policy and stays here; the union is
+    // viewPriorityTiles' and stays where a unit test can reach it.
+    scheduler.prioritise(viewPriorityTiles(tiles, { lat: viewLat, lon: viewLon }, radius, 6));
   }
 
   const cached = feed.get(WORLD_KEY);

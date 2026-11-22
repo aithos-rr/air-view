@@ -1,5 +1,5 @@
 import type { AircraftRaw, Motion } from '@/types';
-import { GLOBE_RADIUS, altitudeToOffset } from './geoHelpers';
+import { GLOBE_RADIUS, altitudeFraction, shellOffset } from './geoHelpers';
 
 /**
  * How long after a fix we are still willing to say where an aircraft is.
@@ -125,9 +125,10 @@ export function deriveMotion(ac: AircraftRaw, batchFetchedAtUnix: number): Motio
     wx,
     wy,
     wz,
-    // The same shell aircraft.ts:184 puts the point on, through the one
-    // function that states it (geoHelpers.ts:23-25) rather than a third copy.
-    radius: GLOBE_RADIUS + altitudeToOffset(ac.baroAltitudeFt ?? 38000),
+    // The shell's thickness belongs to the camera, not to the batch: see
+    // Motion.altFrac. The 38 000 ft default for a missing quota stays here,
+    // in the one place that has ever stated it.
+    altFrac: altitudeFraction(ac.baroAltitudeFt ?? 38000),
     omegaPerS,
     fixAgeAtBatchS,
     extrapolable,
@@ -204,8 +205,19 @@ function smoothstep01(t: number): number {
  * @param advanceS what advanceFor returned; STILL and 0 both mean "at the
  *   fix", and they differ only in what the panel says about them.
  * @param nowMs the monotonic frame clock, for the correction being slid out.
+ * @param shellUnits the shell thickness for THIS frame, from
+ *   shellThicknessUnits(cameraDistance). Passed in rather than computed
+ *   here because it is one log and one pow for the whole fleet, and a
+ *   per-aircraft call would be 24 000 of each per frame (D36).
  */
-export function positionAt(m: Motion, advanceS: number, nowMs: number, out: Xyz): void {
+export function positionAt(
+  m: Motion,
+  advanceS: number,
+  nowMs: number,
+  shellUnits: number,
+  out: Xyz
+): void {
+  const radius = GLOBE_RADIUS + shellOffset(shellUnits, m.altFrac);
   if (advanceS > 0 && m.omegaPerS > 0) {
     // u cos δ + w sin δ IS the great circle through u in the direction of
     // w, by definition. Interpolating lat/lon instead would draw the rhumb
@@ -214,13 +226,13 @@ export function positionAt(m: Motion, advanceS: number, nowMs: number, out: Xyz)
     const delta = m.omegaPerS * advanceS;
     const c = Math.cos(delta);
     const s = Math.sin(delta);
-    out.x = (m.ux * c + m.wx * s) * m.radius;
-    out.y = (m.uy * c + m.wy * s) * m.radius;
-    out.z = (m.uz * c + m.wz * s) * m.radius;
+    out.x = (m.ux * c + m.wx * s) * radius;
+    out.y = (m.uy * c + m.wy * s) * radius;
+    out.z = (m.uz * c + m.wz * s) * radius;
   } else {
-    out.x = m.ux * m.radius;
-    out.y = m.uy * m.radius;
-    out.z = m.uz * m.radius;
+    out.x = m.ux * radius;
+    out.y = m.uy * radius;
+    out.z = m.uz * radius;
   }
   // One compare for the overwhelming majority of frames: offUntilMs is 0
   // except in the 300 ms after a batch has moved this aircraft.
@@ -272,8 +284,35 @@ export function reconcile(
 
   const was: Xyz = { x: 0, y: 0, z: 0 };
   const now: Xyz = { x: 0, y: 0, z: 0 };
-  positionAt(previous, advanceSeconds(previous, elapsedOnPreviousS), nowMs, was);
-  positionAt(fresh, advanceSeconds(fresh, elapsedOnFreshS), nowMs, now);
+  // 0, not the frame's shell, and the two reasons are different in kind.
+  //
+  // The first is availability: reconcile runs inside updateBatch, in the
+  // store, OUTSIDE the render loop. There is no camera there, and giving
+  // the store one — threading shellUnits through reconcile and down from
+  // aircraftStore.ts:152 — would make a batch arrival depend on where the
+  // camera happens to be pointing, which is a dependency this application
+  // has never had and does not need.
+  //
+  // The second is correctness, and it is the better one. What reconcile
+  // measures is an ANGULAR error: how far from the fix we were drawing an
+  // aircraft when a new one arrived. Measuring it on the globe's own
+  // surface makes `gapNm = |was − now| / GLOBE_RADIUS × NM_PER_RADIAN`
+  // exactly what it already claimed to be, and it removes a defect that
+  // was there before this plan: with the OLD per-aircraft radius an
+  // aircraft climbing 8 000 ft between two batches moved 0,0098 units
+  // radially, which reads as 22,4 NM of "gap" against a 15 NM budget — so
+  // every climbing aircraft failed the budget test and SNAPPED instead of
+  // sliding, for a climb, not for a drawing error.
+  //
+  // The price, measured: the offset is taken on the surface and then added
+  // unchanged to a point one shell higher, so it is short by exactly
+  // shell/GLOBE_RADIUS — 5 % at planet view, 0,2 % at the bottom of the
+  // travel. On the largest correction that can exist, one DR_CAP_S of
+  // travel at 450 kt = 15 NM, that is 0,75 NM = 0,06 px at planet view and
+  // 0,03 NM = 0,3 px at 1,55, on a correction that is gone in 300 ms.
+  // Sub-pixel at BOTH ends, which is why it is a price and not a defect.
+  positionAt(previous, advanceSeconds(previous, elapsedOnPreviousS), nowMs, 0, was);
+  positionAt(fresh, advanceSeconds(fresh, elapsedOnFreshS), nowMs, 0, now);
 
   const dx = was.x - now.x;
   const dy = was.y - now.y;

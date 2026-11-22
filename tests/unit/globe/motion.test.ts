@@ -6,7 +6,7 @@ import { createTrailsLayer } from '@/globe/trails';
 import { findAircraftAtPointer } from '@/globe/raycaster';
 import { SHOW_ALL } from '@/globe/visibility';
 import { DR_CAP_S, STILL_DIM, deriveMotion } from '@/globe/deadReckoning';
-import { latLonAltToVec3 } from '@/globe/geoHelpers';
+import { shellThicknessUnits, CAMERA_FAR_LIMIT, latLonAltToVec3 } from '@/globe/geoHelpers';
 import { makeAircraftRaw } from '../../helpers/aircraft';
 import type { Aircraft, AircraftRaw } from '@/types';
 
@@ -50,7 +50,7 @@ describe('the aircraft layer draws where the aircraft is now', () => {
     const layer = createAircraftLayer();
     const fleet = [ac({ lastContact: 1_000 - DR_CAP_S - 10 })];
     layer.update(fleet, null, SHOW_ALL, 1, { ...FRAME, elapsedSinceBatchS: 0 });
-    const expected = latLonAltToVec3(50, -10, 38_000);
+    const expected = latLonAltToVec3(50, -10, 38_000, CAMERA_FAR_LIMIT);
     expect(head(layer).distanceTo(expected)).toBeLessThan(1e-6);
     layer.update(fleet, null, SHOW_ALL, 1, { ...FRAME, elapsedSinceBatchS: 300 });
     expect(head(layer).distanceTo(expected)).toBeLessThan(1e-6);
@@ -94,7 +94,7 @@ describe('the aircraft layer draws where the aircraft is now', () => {
     const layer = createAircraftLayer();
     const raw = makeAircraftRaw({ latitude: 12, longitude: 34 });
     layer.update([{ ...raw, trail: [] }], null, SHOW_ALL, 1, FRAME);
-    expect(head(layer).distanceTo(latLonAltToVec3(12, 34, 38_000))).toBeLessThan(1e-6);
+    expect(head(layer).distanceTo(latLonAltToVec3(12, 34, 38_000, CAMERA_FAR_LIMIT))).toBeLessThan(1e-6);
   });
 });
 
@@ -107,7 +107,7 @@ describe('the scia stays a document (D28)', () => {
     const trails = createTrailsLayer();
     const a = ac({ latitude: 50, longitude: -10 });
     a.trail = [{ lat: 49.9, lon: -10.2, t: 940 }];
-    trails.update([a], null, SHOW_ALL);
+    trails.update([a], null, SHOW_ALL, shellThicknessUnits(CAMERA_FAR_LIMIT));
     const g = geometryOf(trails.group.children[0]);
     const p = g.getAttribute('position');
     const last = new Vector3(
@@ -115,14 +115,14 @@ describe('the scia stays a document (D28)', () => {
       p.getY(g.drawRange.count - 1),
       p.getZ(g.drawRange.count - 1)
     );
-    expect(last.distanceTo(latLonAltToVec3(50, -10, 38_000))).toBeLessThan(1e-6);
+    expect(last.distanceTo(latLonAltToVec3(50, -10, 38_000, CAMERA_FAR_LIMIT))).toBeLessThan(1e-6);
   });
 });
 
 describe('the click follows the dot, not the fix (D29)', () => {
   it('picks an aircraft under the cursor after it has been carried forward', () => {
     const camera = new PerspectiveCamera(38, 1.6, 0.1, 100);
-    camera.position.copy(latLonAltToVec3(50, -10, 0).normalize().multiplyScalar(4));
+    camera.position.copy(latLonAltToVec3(50, -10, 0, CAMERA_FAR_LIMIT).normalize().multiplyScalar(4));
     camera.lookAt(0, 0, 0);
     camera.updateMatrixWorld(true);
     const canvas = { clientWidth: 800, clientHeight: 500 } as HTMLCanvasElement;

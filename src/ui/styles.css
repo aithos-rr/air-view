@@ -465,3 +465,31 @@ html, body, #root {
 .app-controls {
   display: contents;
 }
+
+/* City names — the same family, size and shadow as .marker__label, because
+   "keep the same graphics" is the constraint. The colour is the difference:
+   a city is geography and a D/A marker is the route the user asked for, and
+   the two must not be confusable. --color-body-muted is #cccccc, 12,0 : 1
+   on #0a0a14, so the contrast is not a judgement call. */
+.app-cities { position: fixed; inset: 0; z-index: 4; pointer-events: none; }
+.city {
+  position: absolute; top: 0; left: 0;
+  display: flex; align-items: center; gap: 5px;
+  color: var(--color-body-muted);
+  font-family: var(--font-stack);
+}
+.city__dot {
+  width: 3px; height: 3px; border-radius: var(--radius-pill);
+  background: var(--color-body-muted); opacity: 0.8;
+}
+.city__name {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+}
+
+/* z-index 4, under .app-markers at 5: where a city and a marker meet, the
+   marker wins, which is the order of importance. The aircraft are on the
+   canvas at z-index 1 and so draw UNDER the names — that is the price D44
+   states out loud. The alternative would be querying 24 000 points a frame
+   against a screen-space grid no test could pin down. */

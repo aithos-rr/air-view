@@ -10,6 +10,7 @@ import {
 import type { CameraView } from '@/globe/cameraTurn';
 import type { FocusSightline } from '@/state/selectionStore';
 import {
+  CAMERA_FAR_LIMIT,
   CAMERA_NEAR_LIMIT,
   isInView,
   isOnNearSide,
@@ -31,7 +32,7 @@ function defaultCamera(): Vector3 {
 
 /** A flight roughly at the antipode of that view — the whole globe away. */
 function farSideFlight(): Vector3 {
-  return latLonAltToVec3(10, 170, 38000);
+  return latLonAltToVec3(10, 170, 38000, CAMERA_FAR_LIMIT);
 }
 
 /**
@@ -195,17 +196,20 @@ describe('createCameraTurn — when it runs, and when it gives up', () => {
     // helping itself.
     const turn = createCameraTurn();
     const start = defaultCamera();
-    const underTheCamera = latLonAltToVec3(7, -15, 38000);
+    const underTheCamera = latLonAltToVec3(7, -15, 38000, CAMERA_FAR_LIMIT);
     expect(isInView(start, underTheCamera, FOV)).toBe(true);
     expect(turn.begin(view(start), underTheCamera, 1000, false)).toBe(false);
     expect(turn.active).toBe(false);
     expect(turn.sample(1000, true)).toBeNull();
 
     // And the same at the near end of the travel, where the frame is a
-    // 321 NM cap: 2 degrees off the view axis is 120 NM, comfortably
-    // inside it, and still nothing moves.
+    // 40 NM cap: 0,3 degrees off the view axis is 18 NM, comfortably
+    // inside it, and still nothing moves. It was 2 degrees against a
+    // 321 NM cap while the travel ended at 1,9 — the same sentence, at
+    // the distance the travel actually ends at now (D35).
     const zoomedIn = new Vector3(0, 0, CAMERA_NEAR_LIMIT);
-    expect(turn.begin(view(zoomedIn), latLonAltToVec3(0, 2, 38000), 1000, false)).toBe(false);
+    const justOffAxis = latLonAltToVec3(0, 0.3, 38000, CAMERA_FAR_LIMIT);
+    expect(turn.begin(view(zoomedIn), justOffAxis, 1000, false)).toBe(false);
     expect(turn.active).toBe(false);
   });
 
@@ -213,14 +217,17 @@ describe('createCameraTurn — when it runs, and when it gives up', () => {
     // THE DEFECT the hemisphere gate carried. The visible SIDE is very
     // much larger than the FRAME at every zoom closer than the
     // mount distance: at the near end of the travel the near side reaches
-    // ~38 degrees off the view axis and the frame reaches 5,4. So a
+    // 22,5 degrees off the view axis and the frame reaches 0,67 — so the
+    // 20 degrees below is inside the cone with 2,5 degrees to spare, where
+    // it used to have 21. That margin is what somebody would consume one
+    // day without knowing, which is why it is written down here. So a
     // flight can be on the right side of the globe — isOnNearSide true,
     // old gate satisfied, camera refusing to move — and be on screen
     // nowhere at all. The user searches a flight, the card appears, the
     // globe shows nothing, which is the exact case the camera exists for.
     const turn = createCameraTurn();
     const zoomedIn = new Vector3(0, 0, CAMERA_NEAR_LIMIT);
-    const rightSideWrongPlace = latLonAltToVec3(0, 20, 38000);
+    const rightSideWrongPlace = latLonAltToVec3(0, 20, 38000, CAMERA_FAR_LIMIT);
     expect(isOnNearSide(zoomedIn, rightSideWrongPlace)).toBe(true);
     expect(isInView(zoomedIn, rightSideWrongPlace, FOV)).toBe(false);
 
@@ -253,19 +260,22 @@ describe('createCameraTurn — when it runs, and when it gives up', () => {
     // each. The margins are chosen so that a cap half or twice this wide
     // falls on the other side of both.
     const cases = [
-      // 1,9 units out: the near end of the travel. The frame reaches 5,36
-      // degrees off the view axis, a half lens 2,57 and a double lens
-      // 13,24 — and the near SIDE reaches 37,9, which is what makes the
-      // hemisphere the wrong question.
-      { distance: CAMERA_NEAR_LIMIT, inside: 4.8, outside: 6 },
-      // 3,0 units out: 21,64 degrees, against 9,78 and 60,0.
+      // 1,55 units out: the near end of the travel. The frame reaches
+      // 0,666 degrees off the view axis, a half lens 0,317 and a double
+      // lens 1,516 — and the near SIDE reaches 22,5, which is what makes
+      // the hemisphere the wrong question. These were 4,8 and 6 against a
+      // 5,363 degree frame while the travel ended at 1,9; the margins are
+      // re-measured, the sentence is the same.
+      { distance: CAMERA_NEAR_LIMIT, inside: 0.5, outside: 0.9 },
+      // 3,0 units out: 21,64 degrees, against 9,78 and 60,0. Untouched —
+      // nothing in this row depends on where the travel ends.
       { distance: 3, inside: 20, outside: 24 },
     ];
 
     for (const { distance, inside, outside } of cases) {
       const camera = new Vector3(0, 0, distance);
-      const onScreen = latLonAltToVec3(0, inside, 38000);
-      const offScreen = latLonAltToVec3(0, outside, 38000);
+      const onScreen = latLonAltToVec3(0, inside, 38000, CAMERA_FAR_LIMIT);
+      const offScreen = latLonAltToVec3(0, outside, 38000, CAMERA_FAR_LIMIT);
 
       // Both are on the near side of the planet. The difference between
       // them is the FRAME, and nothing else.

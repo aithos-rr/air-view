@@ -10,7 +10,15 @@ import {
   Vector3,
 } from 'three';
 import type { Aircraft } from '@/types';
-import { CAMERA_FAR_LIMIT, CAMERA_NEAR_LIMIT, GLOBE_RADIUS } from './geoHelpers';
+import {
+  CAMERA_FAR_LIMIT,
+  CAMERA_NEAR_LIMIT,
+  CAMERA_NEAR_LIMIT_BEFORE_DETAIL,
+  GLOBE_RADIUS,
+  altitudeFraction,
+  shellOffset,
+  shellThicknessUnits,
+} from './geoHelpers';
 import { describeVisibleFleet } from './visibility';
 import type { VisibilityRule, VisibleFleet } from './visibility';
 import { STILL_DIM, positionAt } from './deadReckoning';
@@ -55,7 +63,15 @@ const SELECTED_COLOR: [number, number, number] = [0.16, 0.59, 1.0]; // sky-leani
  */
 export function pointSizePx(cameraDistance: number): number {
   const d = Math.min(Math.max(cameraDistance || CAMERA_NEAR_LIMIT, CAMERA_NEAR_LIMIT), CAMERA_FAR_LIMIT);
-  const t = Math.log(CAMERA_FAR_LIMIT / d) / Math.log(CAMERA_FAR_LIMIT / CAMERA_NEAR_LIMIT);
+  // Anchored at the OLD floor and clamped there. Every distance the camera
+  // could already reach gets exactly the size it got before; across the new
+  // stretch the symbol stops growing while the geography goes on spreading,
+  // which is the direction that separates aircraft rather than the one that
+  // packs them (D48).
+  const t = Math.min(
+    1,
+    Math.log(CAMERA_FAR_LIMIT / d) / Math.log(CAMERA_FAR_LIMIT / CAMERA_NEAR_LIMIT_BEFORE_DETAIL)
+  );
   return POINT_PX_FAR + (POINT_PX_NEAR - POINT_PX_FAR) * t;
 }
 const POINT_PX_FAR = 7;
@@ -265,9 +281,14 @@ function writeLatLonAlt(
   offset: number,
   lat: number,
   lon: number,
-  altFt: number
+  altFt: number,
+  shellUnits: number
 ): void {
-  const radius = GLOBE_RADIUS + 0.025 + (Math.max(0, altFt) / 41000) * 0.05;
+  // Still inline and still allocation-free — that was always the right
+  // reason for this helper — but no longer with an opinion of its own about
+  // where an aircraft is. This line used to spell the whole shell out by
+  // hand, which made it the second of three copies (D36).
+  const radius = GLOBE_RADIUS + shellOffset(shellUnits, altitudeFraction(altFt));
   const phi = (90 - lat) * (Math.PI / 180);
   const theta = lon * (Math.PI / 180);
   const sinPhi = Math.sin(phi);
@@ -410,14 +431,15 @@ export function createAircraftLayer(): AircraftLayer {
     colour: [number, number, number],
     advanceS: number,
     still: boolean,
-    frame: FrameState
+    frame: FrameState,
+    shellUnits: number
   ): void {
     if (ac.motion != null) {
       // The hot path: two trig calls for an aircraft that is moving and
       // none at all for one that is not, against the four writeLatLonAlt
       // spends below (D20). The decision of HOW FAR is not taken here —
       // describeVisibleFleet took it, and this writes where it said.
-      positionAt(ac.motion, advanceS, frame.nowMs, scratch);
+      positionAt(ac.motion, advanceS, frame.nowMs, shellUnits, scratch);
       set.positions[i * 3] = scratch.x;
       set.positions[i * 3 + 1] = scratch.y;
       set.positions[i * 3 + 2] = scratch.z;
@@ -426,7 +448,7 @@ export function createAircraftLayer(): AircraftLayer {
       // every Aircraft the unit suite builds by hand. In production there
       // are none.
       const altFt = ac.baroAltitudeFt ?? 38000;
-      writeLatLonAlt(set.positions, i * 3, ac.latitude!, ac.longitude!, altFt);
+      writeLatLonAlt(set.positions, i * 3, ac.latitude!, ac.longitude!, altFt, shellUnits);
     }
     set.colors[i * 3] = colour[0];
     set.colors[i * 3 + 1] = colour[1];
@@ -464,6 +486,10 @@ export function createAircraftLayer(): AircraftLayer {
     // One reading of the camera per frame for the whole layer, three
     // uniforms written. The ratios are the hierarchy (D27).
     const px = pointSizePx(frame.cameraDistance);
+    // One reading for the whole fleet: one log and one pow a frame, where a
+    // per-aircraft call would be 24 000 of each. The dots, the trails and
+    // the route arc all ride the shell this number names (D36).
+    const shell = shellThicknessUnits(frame.cameraDistance);
     partialMat.pointPx.value = px;
     completeMat.pointPx.value = px * POINT_SCALE_COMPLETE;
     selectedMat.pointPx.value = px * POINT_SCALE_SELECTED;
@@ -480,13 +506,13 @@ export function createAircraftLayer(): AircraftLayer {
       selectedIcao,
       (ac, target, slot, advanceS, still) => {
         if (target === 'selected') {
-          writePoint(selectedSet, slot, ac, SELECTED_COLOR, advanceS, still, frame);
+          writePoint(selectedSet, slot, ac, SELECTED_COLOR, advanceS, still, frame, shell);
           selectedCount = slot + 1;
         } else if (target === 'complete') {
-          writePoint(completeSet, slot, ac, COMPLETE_COLOR, advanceS, still, frame);
+          writePoint(completeSet, slot, ac, COMPLETE_COLOR, advanceS, still, frame, shell);
           completeCount = slot + 1;
         } else {
-          writePoint(partialSet, slot, ac, PARTIAL_COLOR, advanceS, still, frame);
+          writePoint(partialSet, slot, ac, PARTIAL_COLOR, advanceS, still, frame, shell);
           partialCount = slot + 1;
         }
       },

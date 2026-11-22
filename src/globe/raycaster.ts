@@ -1,6 +1,6 @@
 import { Camera, Vector2, Vector3 } from 'three';
 import type { Aircraft } from '@/types';
-import { isOnNearSide, latLonAltToVec3 } from './geoHelpers';
+import { isOnNearSide, latLonAltToVec3, shellThicknessUnits } from './geoHelpers';
 import { isAircraftVisible } from './visibility';
 import type { VisibilityRule } from './visibility';
 import { advanceFor, positionAt } from './deadReckoning';
@@ -78,7 +78,12 @@ const scratch = { x: 0, y: 0, z: 0 };
 /** Where this aircraft is drawn on this frame, by the same arithmetic the layer uses. */
 function worldOf(ac: Aircraft, frame: FrameState): Vector3 {
   if (ac.motion == null) {
-    return latLonAltToVec3(ac.latitude!, ac.longitude!, ac.baroAltitudeFt ?? 38000);
+    return latLonAltToVec3(
+      ac.latitude!,
+      ac.longitude!,
+      ac.baroAltitudeFt ?? 38000,
+      frame.cameraDistance
+    );
   }
   // advanceFor, the same call describeVisibleFleet makes: if it says STILL
   // because the ceiling is past or because the server declared the body a
@@ -88,6 +93,7 @@ function worldOf(ac: Aircraft, frame: FrameState): Vector3 {
     ac.motion,
     advanceFor(ac.motion, frame.elapsedSinceBatchS, frame.stale),
     frame.nowMs,
+    shellThicknessUnits(frame.cameraDistance),
     scratch
   );
   return new Vector3(scratch.x, scratch.y, scratch.z);

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { CAMERA_FAR_LIMIT, shellThicknessUnits } from '@/globe/geoHelpers';
 import type { Object3D, Points } from 'three';
 import { PerspectiveCamera, Vector2 } from 'three';
 import { createAircraftLayer, COMPLETE_COLOR, PARTIAL_COLOR } from '@/globe/aircraft';
@@ -115,7 +116,7 @@ describe('trails layer — a hidden aircraft leaves no trail', () => {
       complete: false,
       trail: [{ lat: 1, lon: 1, t: 1 }, { lat: 2, lon: 2, t: 2 }],
     });
-    layer.update([grey], null, rule);
+    layer.update([grey], null, rule, shellThicknessUnits(CAMERA_FAR_LIMIT));
     expect(geometryOf(layer.group.children[0]).drawRange.count).toBe(0);
   });
 
@@ -126,7 +127,7 @@ describe('trails layer — a hidden aircraft leaves no trail', () => {
       complete: true,
       trail: [{ lat: 1, lon: 1, t: 1 }, { lat: 2, lon: 2, t: 2 }],
     });
-    layer.update([warm], null, SHOW_ALL);
+    layer.update([warm], null, SHOW_ALL, shellThicknessUnits(CAMERA_FAR_LIMIT));
     expect(geometryOf(layer.group.children[0]).drawRange.count).toBeGreaterThan(0);
   });
 });

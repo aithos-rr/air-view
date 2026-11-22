@@ -5,7 +5,12 @@ import {
   LineBasicMaterial,
   LineSegments,
 } from 'three';
-import { latLonToVec3, GLOBE_RADIUS } from './geoHelpers';
+import {
+  COASTLINE_LIFT,
+  COASTLINE_MAX_SEGMENT_DEG,
+  GLOBE_RADIUS,
+  latLonToVec3,
+} from './geoHelpers';
 
 interface GeoJsonFeature {
   type: 'Feature';
@@ -21,7 +26,12 @@ interface GeoJsonCollection {
 
 export function buildContinentsFromGeoJSON(geojson: GeoJsonCollection): LineSegments {
   const vertices: number[] = [];
-  const radius = GLOBE_RADIUS * 1.003;
+  // R × 1,003 was 0,0045 units — 19,1 km of apparent altitude, taller than
+  // the whole corrected aircraft shell, and 41,24 px of displacement at the
+  // edge of the frame at the bottom of the camera's travel. COASTLINE_LIFT
+  // is the sag of the longest chord addRing may draw, measured at the radius
+  // that chord is drawn on (D47).
+  const radius = GLOBE_RADIUS + COASTLINE_LIFT;
   for (const f of geojson.features) {
     if (f.properties.CONTINENT === 'Antarctica') continue;
     if (f.geometry.type === 'Polygon') {
@@ -49,6 +59,20 @@ export function buildContinentsFromGeoJSON(geojson: GeoJsonCollection): LineSegm
   return lines;
 }
 
+/**
+ * The COARSE level's share of the picture, 0..1.
+ *
+ * 0,45 is the opacity this outline has always been drawn at, and it stays
+ * the full-strength value: a crossfade scales it, it does not redefine it.
+ * "Keep the same graphics" means the coarse level at `value = 1` is bit for
+ * bit the globe the user has today (D41).
+ */
+export function setCoarseOpacity(lines: LineSegments, value: number): void {
+  const mat = lines.material as LineBasicMaterial;
+  mat.opacity = 0.45 * Math.min(1, Math.max(0, value));
+  mat.visible = mat.opacity > 0;
+}
+
 function addRing(vertices: number[], ring: number[][], radius: number): void {
   for (let i = 0; i < ring.length - 1; i++) {
     const a = ring[i];
@@ -61,7 +85,11 @@ function addRing(vertices: number[], ring: number[][], radius: number): void {
     const dLat = lat2 - lat1;
     const dLon = lon2 - lon1;
     const arc = Math.hypot(dLat, dLon);
-    const steps = arc > 2.0 ? Math.ceil(arc / 2.0) : 1;
+    // The same constant COASTLINE_LIFT is derived from, read and not
+    // repeated: longer chords would sag back inside the planet while the
+    // lift stayed where it was (D47).
+    const steps =
+      arc > COASTLINE_MAX_SEGMENT_DEG ? Math.ceil(arc / COASTLINE_MAX_SEGMENT_DEG) : 1;
     for (let s = 0; s < steps; s++) {
       const ta = s / steps;
       const tb = (s + 1) / steps;

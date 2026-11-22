@@ -13,8 +13,8 @@ function ac(icao: string, lat: number, lon: number): Aircraft {
 describe('isOnNearSide — the exact horizon, not a constant', () => {
   it('accepts the point under the camera and refuses its antipode', () => {
     const cam = new Vector3(0, 0, CAMERA_FAR_LIMIT);
-    expect(isOnNearSide(cam, latLonAltToVec3(0, 0, 38_000))).toBe(true);
-    expect(isOnNearSide(cam, latLonAltToVec3(0, 180, 38_000))).toBe(false);
+    expect(isOnNearSide(cam, latLonAltToVec3(0, 0, 38_000, CAMERA_FAR_LIMIT))).toBe(true);
+    expect(isOnNearSide(cam, latLonAltToVec3(0, 180, 38_000, CAMERA_FAR_LIMIT))).toBe(false);
   });
 
   it('moves with the camera, which a hard-coded 0.05 cannot', () => {
@@ -22,7 +22,7 @@ describe('isOnNearSide — the exact horizon, not a constant', () => {
     // d = 15,0 that threshold is cos = 0,0968 and at d = 1,9 it is 0,764:
     // the 0.05 in raycaster.ts:38, leaderLine.ts:19 and airportMarkers.ts:57
     // is not an approximation of either, it is wrong at both ends.
-    const edge = latLonAltToVec3(0, 80, 38_000);
+    const edge = latLonAltToVec3(0, 80, 38_000, CAMERA_FAR_LIMIT);
     expect(isOnNearSide(new Vector3(0, 0, CAMERA_FAR_LIMIT), edge)).toBe(true);
     expect(isOnNearSide(new Vector3(0, 0, CAMERA_NEAR_LIMIT), edge)).toBe(false);
   });
@@ -31,7 +31,7 @@ describe('isOnNearSide — the exact horizon, not a constant', () => {
     // The same algebra in two languages, which is the only way the picker
     // and the renderer can be made to agree (D25).
     const cam = new Vector3(0, 0, 4);
-    const p = latLonAltToVec3(20, 55, 38_000);
+    const p = latLonAltToVec3(20, 55, 38_000, CAMERA_FAR_LIMIT);
     expect(isOnNearSide(cam, p)).toBe(cam.dot(p) >= GLOBE_RADIUS * GLOBE_RADIUS);
   });
 });

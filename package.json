@@ -14,6 +14,7 @@
     "build:server": "tsc -p tsconfig.server.json",
     "build:all": "npm run build && npm run build:server",
     "build:routes": "tsx scripts/build-route-cache.mjs",
+    "build:static": "tsx scripts/build-static-data.mjs",
     "start": "NODE_ENV=production node dist-server/server/index.js",
     "preview": "vite preview",
     "test": "vitest",

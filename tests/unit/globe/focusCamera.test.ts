@@ -3,7 +3,7 @@ import { Vector3 } from 'three';
 import { attachUserTakeover, createFocusCamera } from '@/globe/focusCamera';
 import type { FocusCamera, FocusFrame } from '@/globe/focusCamera';
 import { TURN_MS } from '@/globe/cameraTurn';
-import { isInView, isOnNearSide, latLonAltToVec3 } from '@/globe/geoHelpers';
+import { CAMERA_FAR_LIMIT, isInView, isOnNearSide, latLonAltToVec3 } from '@/globe/geoHelpers';
 import type { FocusOrigin, FocusSightline } from '@/state/selectionStore';
 
 /**
@@ -27,12 +27,12 @@ function defaultCamera(): Vector3 {
 
 /** Very nearly the antipode of that view: the whole globe away. */
 function farSideFlight(): Vector3 {
-  return latLonAltToVec3(10, 170, 38000);
+  return latLonAltToVec3(10, 170, 38000, CAMERA_FAR_LIMIT);
 }
 
 /** Directly under the camera, and therefore in the middle of the frame. */
 function flightInFrame(): Vector3 {
-  return latLonAltToVec3(7.1935, -14.6102, 38000);
+  return latLonAltToVec3(7.1935, -14.6102, 38000, CAMERA_FAR_LIMIT);
 }
 
 interface Harness {
@@ -204,7 +204,7 @@ describe('the camera travels for the acts that asked it to (D34)', () => {
     const partWay = h.step({ nowMs: 1000 + TURN_MS / 4 });
     expect(partWay).not.toBeNull();
 
-    const clicked = latLonAltToVec3(-30, 40, 38000);
+    const clicked = latLonAltToVec3(-30, 40, 38000, CAMERA_FAR_LIMIT);
     expect(h.step({ ...focusedBy('globe', clicked, 2), nowMs: 1000 + TURN_MS / 3 })).toBeNull();
     const stopped = h.eye();
     expect(h.step({ nowMs: 1000 + TURN_MS })).toBeNull();

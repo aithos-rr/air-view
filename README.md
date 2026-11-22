@@ -79,7 +79,10 @@ becomes camera-driven in v2.
 git clone <repo>
 cd air-view
 npm install
-node scripts/build-static-data.mjs   # one-time: pulls Natural Earth, OpenFlights, OurAirports
+npm run build:static                 # one-time: pulls Natural Earth, OpenFlights, OurAirports
+                                     # (under tsx, because it imports the coastline codec;
+                                     #  npm i --no-save tz-lookup FIRST, or every airport
+                                     #  comes out with timezone UTC)
 cp .env.example .env                 # PORT, optional FRONTEND_ORIGIN
 npm run dev:full                     # vite on :5173 + fastify on :3000
 ```
@@ -123,7 +126,13 @@ src/
               BrandWatermark
 
 server/index.ts   Fastify: /api/states + /health + static dist/
-public/data/      Bundled static data (Natural Earth, OpenFlights airlines, OurAirports + tz)
+public/data/      Bundled static data. ne_50m_admin_0_countries.geojson is the coarse
+                  coastline; coastline-10m.bin is the fine one — Natural Earth 10m as
+                  Int16 deltas in counted runs, 1,91 MB against 12,67 of GeoJSON, loaded
+                  only once the camera comes below 2,6 units. cities.json is 1 251
+                  populated places sorted by SCALERANK, 84 KB, replacing the 3,2 MB of
+                  ne_50m_populated_places.geojson that nothing ever read.
+                  Plus OpenFlights airlines and OurAirports + tz.
 railway.toml      Railway build + deploy config
 docs/superpowers/ Original spec + implementation plan
 ```
