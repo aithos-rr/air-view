@@ -7,6 +7,7 @@ import { routeEnds } from '@/data/airportInfo';
 import type { AirportInfo } from '@/data/airportInfo';
 import type { Aircraft } from '@/types';
 import { arcDegeneracy } from '@/globe/routeArc';
+import type { FocusAct } from '@/globe/focusCamera';
 import type { DrawableArc, GeoPointDeg } from '@/globe/routeArc';
 import type { MarkerSpec } from '@/globe/airportMarkers';
 import { useSearchStore } from './searchStore';
@@ -53,6 +54,23 @@ export function readVisibilityRule(): VisibilityRule {
     showPartial: f.showPartial,
     focusedIcao,
   };
+}
+
+/**
+ * Which act of focusing the render loop is looking at, and how it was made.
+ *
+ * The two fields are read together or not at all: an origin taken one frame
+ * apart from its sequence number would describe a different act — the user
+ * clicks a dot while the camera is still answering the row they picked, and
+ * the camera learns "search" about a click. One read, one answer.
+ *
+ * Here with the other imperative reads rather than inside the camera
+ * itself, for the reason this module exists at all: the rule stays
+ * testable without importing a store, and the store is read in one place.
+ */
+export function readFocusAct(): FocusAct {
+  const s = useSelectionStore.getState();
+  return { focusSeq: s.focusSeq, focusOrigin: s.focusOrigin };
 }
 
 export interface FocusView {

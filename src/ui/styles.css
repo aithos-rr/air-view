@@ -209,11 +209,26 @@ html, body, #root {
   background: rgba(255, 230, 196, 0.10);
 }
 .fleet__box[data-kind="complete"]:checked { background: rgba(255, 230, 196, 0.45); }
+/*
+  The box IS the aircraft: rgb(138, 147, 160) is PARTIAL_COLOR from
+  src/globe/aircraft.ts, as rgb(255, 230, 196) above is COMPLETE_COLOR. The
+  legend needs no words that way, and the palette keeps to three meanings —
+  Action Blue selected, warm white complete, grey partial.
+
+  This box was red. Red means error, and a partial aircraft is not an error:
+  it is one the free sources tell us less about. Measured in production the
+  day it was changed, 96.5% of the fleet was partial, so red painted almost
+  the whole sky as a problem. If a warning colour is ever wanted it belongs
+  on an ACTION — "N hidden by filters" — never on a category of aircraft.
+
+  tests/unit/ui/checkboxPalette.test.ts derives these numbers from the
+  renderer's constants, so the two copies cannot drift apart.
+*/
 .fleet__box[data-kind="partial"] {
-  border-color: rgba(255, 69, 58, 0.80);
-  background: rgba(255, 69, 58, 0.12);
+  border-color: rgba(138, 147, 160, 0.80);
+  background: rgba(138, 147, 160, 0.12);
 }
-.fleet__box[data-kind="partial"]:checked { background: rgba(255, 69, 58, 0.45); }
+.fleet__box[data-kind="partial"]:checked { background: rgba(138, 147, 160, 0.45); }
 .fleet__box:checked::after {
   content: "";
   position: absolute;

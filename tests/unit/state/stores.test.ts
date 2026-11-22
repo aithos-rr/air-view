@@ -231,7 +231,7 @@ describe('aircraftStore', () => {
 describe('selectionStore', () => {
   beforeEach(() => useSelectionStore.setState({ selectedIcao: null, openEnd: null }));
   it('select sets selectedIcao', () => {
-    useSelectionStore.getState().select('a1');
+    useSelectionStore.getState().select('a1', 'globe');
     expect(useSelectionStore.getState().selectedIcao).toBe('a1');
   });
   it('select(null) clears', () => {
@@ -249,7 +249,7 @@ describe('selectionStore', () => {
     // Otherwise the card for LHR stays on screen over the next flight's
     // route, labelled with an airport that has nothing to do with it.
     useSelectionStore.setState({ selectedIcao: 'a1', openEnd: 'origin' });
-    useSelectionStore.getState().select('a2');
+    useSelectionStore.getState().select('a2', 'globe');
     expect(useSelectionStore.getState().openEnd).toBeNull();
   });
   it('shuts the airport card when focus ends', () => {
@@ -264,10 +264,21 @@ describe('selectionStore', () => {
     // aircraft, is a claim nobody measured — and the render loop would
     // only correct it on the next frame, after the panel had already
     // printed it (D15b/D32).
-    useSelectionStore.getState().select('a1');
-    useSelectionStore.getState().setFocusBehindGlobe(true);
-    useSelectionStore.getState().select('a2');
-    expect(useSelectionStore.getState().focusBehindGlobe).toBe(false);
+    useSelectionStore.getState().select('a1', 'globe');
+    useSelectionStore.getState().setFocusSightline('hidden');
+    useSelectionStore.getState().select('a2', 'globe');
+    expect(useSelectionStore.getState().focusSightline).toBe('in-sight');
+  });
+
+  it('forgets a flight that was on its way into view, too', () => {
+    // The same rule for the third state: a rotation towards the previous
+    // flight is cancelled by the new focus (scene.ts), so "turning to
+    // bring it round" over the next one would describe a journey nobody
+    // is making.
+    useSelectionStore.getState().select('a1', 'search');
+    useSelectionStore.getState().setFocusSightline('arriving');
+    useSelectionStore.getState().select('a2', 'search');
+    expect(useSelectionStore.getState().focusSightline).toBe('in-sight');
   });
 });
 

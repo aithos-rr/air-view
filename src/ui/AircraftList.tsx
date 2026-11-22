@@ -24,7 +24,9 @@ export function AircraftList({ onClose }: AircraftListProps) {
   }, [aircraft, filter]);
 
   function handleSelect(icao: string): void {
-    select(icao);
+    // 'list': a row among thousands says nothing about where the flight is,
+    // so this is one of the two doors the camera travels through (D34).
+    select(icao, 'list');
     open('flight');
   }
 

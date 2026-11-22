@@ -108,6 +108,82 @@ export function visibleCapRadiusNm(cameraDistance: number, fovDeg: number): numb
 }
 
 /**
+ * Two directions closer than this are one direction. 1e-6 rad is about 6 m
+ * on the Earth's surface — the same figure arcDegeneracy() calls one point.
+ */
+const ONE_DIRECTION_RAD = 1e-6;
+
+function angleBetweenUnit(a: Vector3, b: Vector3): number {
+  return Math.acos(Math.min(1, Math.max(-1, a.dot(b))));
+}
+
+/**
+ * A unit direction perpendicular to this one, chosen deterministically.
+ *
+ * The world axis LEAST aligned with `a` cannot be parallel to it, so the
+ * cross product is never the zero vector.
+ */
+function perpendicularTo(a: Vector3): Vector3 {
+  const ax = Math.abs(a.x);
+  const ay = Math.abs(a.y);
+  const az = Math.abs(a.z);
+  const axis =
+    ax <= ay && ax <= az
+      ? new Vector3(1, 0, 0)
+      : ay <= az
+        ? new Vector3(0, 1, 0)
+        : new Vector3(0, 0, 1);
+  return axis.cross(a).normalize();
+}
+
+/**
+ * Slerp between two UNIT vectors: the point `t` of the way along the great
+ * circle that joins them.
+ *
+ * This is routeArc's arithmetic, lifted out of geodesicPoints() rather than
+ * written a second time. Two callers now want the same curve for different
+ * reasons — the route drawn between two airports, and the camera travelling
+ * to the flight in focus (D34) — and the one thing this repo has learned
+ * about a rule with two readers is that two copies of it diverge on exactly
+ * the frames that matter (D29).
+ *
+ * The two degenerate pairs are HANDLED here rather than refused, because the
+ * camera has no one to refuse to. Coincident directions return `a`.
+ * Antipodal ones have no unique great circle at all and make sin(omega)
+ * zero: an unguarded slerp writes NaN into a position buffer, which for the
+ * arc is invisible geometry and for the camera is a blank screen with no
+ * error. One is picked, deterministically, through a perpendicular axis.
+ * geodesicPoints still refuses both before it ever gets here — arcDegeneracy
+ * is the rule about whether a ROUTE exists, and that is a different question
+ * from whether a curve can be drawn.
+ *
+ * @param omegaRad the angle between a and b, when the caller already has it.
+ *   geodesicPoints computes it once for 256 samples and must not pay for an
+ *   acos per vertex sixty times a second.
+ * @param out written in place; must not alias `a` or `b`.
+ */
+export function slerpUnit(
+  a: Vector3,
+  b: Vector3,
+  t: number,
+  omegaRad: number = angleBetweenUnit(a, b),
+  out: Vector3 = new Vector3()
+): Vector3 {
+  if (!Number.isFinite(omegaRad) || omegaRad < ONE_DIRECTION_RAD) return out.copy(a);
+  if (omegaRad > Math.PI - ONE_DIRECTION_RAD) {
+    const turned = t * Math.PI;
+    return out
+      .copy(a)
+      .multiplyScalar(Math.cos(turned))
+      .addScaledVector(perpendicularTo(a), Math.sin(turned));
+  }
+  const sinOmega = Math.sin(omegaRad);
+  const f1 = Math.sin((1 - t) * omegaRad) / sinOmega;
+  const f2 = Math.sin(t * omegaRad) / sinOmega;
+  return out.set(a.x * f1 + b.x * f2, a.y * f1 + b.y * f2, a.z * f1 + b.z * f2);
+}
+
+/**
  * Is this point on the side of the globe the camera can see?
  *
  * `dot(C, P) >= R²` is the exact condition for a point P to be on the near
@@ -130,4 +206,61 @@ export function visibleCapRadiusNm(cameraDistance: number, fovDeg: number): numb
  */
 export function isOnNearSide(cameraPos: Vector3, worldPos: Vector3): boolean {
   return cameraPos.dot(worldPos) >= GLOBE_RADIUS * GLOBE_RADIUS;
+}
+
+/**
+ * Is this point inside the piece of globe the lens is actually SHOWING?
+ *
+ * Strictly stronger than isOnNearSide, and the difference is the whole
+ * point of it. The visible SIDE is half a planet; the visible CAP is what
+ * fits in the frame, and at every zoom closer than the mount distance the
+ * second is far smaller than the first. At the near end of the camera's
+ * travel the near side reaches ~38 degrees from the view axis while the
+ * frame reaches 5,4 — so a flight can be on the right side of the globe,
+ * pass isOnNearSide, and still be nowhere on screen.
+ *
+ * The radius it compares against is visibleCapRadiusNm — the same number
+ * viewCentre() sends the server to prioritise tiles by, rather than a
+ * second idea of what "on screen" means. Two readers of one rule is how
+ * this repo's defects have always arrived (D29).
+ *
+ * Two deliberate imprecisions, both of them on the safe side for the one
+ * caller that acts on this (the camera turn of D34), where a false "not in
+ * view" costs a rotation nobody needed and a false "in view" costs the
+ * user the thing they asked to be shown:
+ *
+ *  - the cap is the VERTICAL half-FOV's, so on a landscape viewport the
+ *    sides show a little more than this admits. Under-reaching: it costs
+ *    a rotation that centres a flight already visible near an edge, for a
+ *    user who asked to be taken to that flight by name. On a PORTRAIT
+ *    viewport the vertical is the wide axis instead and the same number
+ *    over-reaches by the aspect ratio, which leaves a narrow version of
+ *    the gap this function closes — a flight just off the left or right
+ *    edge. One cap, the one viewCentre() sends the server, is still worth
+ *    more than two definitions of "on screen" drifting apart (D29); an
+ *    aspect term belongs in visibleCapRadiusNm itself, where both readers
+ *    would get it.
+ *  - the cap is measured on the SURFACE, and an aircraft sits above it, so
+ *    a point at altitude at the very edge of the cap projects a hair
+ *    further out than the surface point below it. Over-reaching, by at
+ *    most the 5% the altitude exaggeration adds to the radius, and only
+ *    within a hair of the edge.
+ *
+ * The isOnNearSide guard is not redundant despite the cap never exceeding
+ * the horizon: visibleCapRadiusNm ROUNDS to whole NM, and half a nautical
+ * mile of rounding is enough to let a point just over the limb through at
+ * the exact horizon. A point you cannot see is not in view, whatever the
+ * arithmetic rounds to.
+ */
+export function isInView(cameraPos: Vector3, worldPos: Vector3, fovDeg: number): boolean {
+  if (!isOnNearSide(cameraPos, worldPos)) return false;
+  const d = cameraPos.length();
+  const r = worldPos.length();
+  // Unreachable through the orbit controls, and NaN if it ever were.
+  if (d === 0 || r === 0) return false;
+  const separationRad = angleBetweenUnit(
+    cameraPos.clone().divideScalar(d),
+    worldPos.clone().divideScalar(r)
+  );
+  return separationRad * NM_PER_RADIAN <= visibleCapRadiusNm(d, fovDeg);
 }

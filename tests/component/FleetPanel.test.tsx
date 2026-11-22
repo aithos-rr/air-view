@@ -560,15 +560,30 @@ describe('FleetPanel — the one aircraft on the globe can be behind it (D32)', 
     useSelectionStore.setState({ selectedIcao: 'f1' });
   }
 
-  it('says so when the only aircraft drawn is on the far side', () => {
+  it('says so, and offers the drag, when nothing is bringing it round', () => {
     // The globe empties with no act of the user at all: it auto-rotates
     // until someone touches the canvas, and focusing a flight from this
     // very panel does not. The cull of D25 then takes the one dot there
     // was, while the row above goes on saying it is shown.
     oneInFocus();
-    useSelectionStore.setState({ focusBehindGlobe: true });
+    useSelectionStore.setState({ focusSightline: 'hidden' });
     render(<FleetPanel />);
     expect(screen.getByText(/behind the globe — drag to bring it round/i)).toBeInTheDocument();
+  });
+
+  it('does not tell the user to drag while the camera is already doing it', () => {
+    // The line used to be recalculated every frame from the live camera,
+    // so for the first frames of the rotation of D34 it printed "drag to
+    // bring it round" WHILE the camera was bringing it round — advice
+    // that is not needed, and that says nothing is happening at the one
+    // moment something is. The state is still owed (the screen really is
+    // empty for those 900 ms, and D15a forbids leaving that unexplained),
+    // the instruction is not.
+    oneInFocus();
+    useSelectionStore.setState({ focusSightline: 'arriving' });
+    render(<FleetPanel />);
+    expect(screen.getByText(/behind the globe — turning to bring it round/i)).toBeInTheDocument();
+    expect(screen.queryByText(/drag to bring it round/i)).not.toBeInTheDocument();
   });
 
   it('says nothing while the flight in focus is in view', () => {
@@ -577,7 +592,7 @@ describe('FleetPanel — the one aircraft on the globe can be behind it (D32)', 
     // followed the focused flight would keep the subject on the near side
     // for ever, and this line would simply never appear (D32).
     oneInFocus();
-    useSelectionStore.setState({ focusBehindGlobe: false });
+    useSelectionStore.setState({ focusSightline: 'in-sight' });
     render(<FleetPanel />);
     expect(screen.queryByText(/behind the globe/i)).not.toBeInTheDocument();
   });
@@ -596,7 +611,7 @@ describe('FleetPanel — the one aircraft on the globe can be behind it (D32)', 
       feedStale: false,
       feedCapped: false,
     });
-    useSelectionStore.setState({ selectedIcao: null, focusBehindGlobe: true });
+    useSelectionStore.setState({ selectedIcao: null, focusSightline: 'hidden' });
     render(<FleetPanel />);
     expect(screen.queryByText(/behind the globe/i)).not.toBeInTheDocument();
   });

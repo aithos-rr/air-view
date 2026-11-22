@@ -1,9 +1,14 @@
 import { describe, it, expect } from 'vitest';
+import { Vector3 } from 'three';
 import {
   latLonToVec3,
   latLonAltToVec3,
   altitudeToOffset,
   visibleCapRadiusNm,
+  isInView,
+  isOnNearSide,
+  CAMERA_FAR_LIMIT,
+  CAMERA_NEAR_LIMIT,
   GLOBE_RADIUS,
 } from '@/globe/geoHelpers';
 
@@ -86,5 +91,68 @@ describe('visibleCapRadiusNm', () => {
     // worth one line of guard anyway.
     expect(Number.isFinite(visibleCapRadiusNm(GLOBE_RADIUS, 38))).toBe(true);
     expect(Number.isFinite(visibleCapRadiusNm(0, 38))).toBe(true);
+  });
+});
+
+describe('isInView — the frame, not the hemisphere', () => {
+  /** three's VERTICAL field of view, as scene.ts mounts the camera. */
+  const FOV = 38;
+  /** Earth radii in NM: a cap half-angle in radians IS an arc length. */
+  const NM_PER_RADIAN = 3440.065;
+  const nmOf = (deg: number): number => ((deg * Math.PI) / 180) * NM_PER_RADIAN;
+
+  it('refuses a point on the visible side that the lens does not reach', () => {
+    // The whole reason this exists. At the near end of the travel the
+    // visible SIDE reaches 37,9 degrees off the view axis and the frame
+    // reaches 5,4: four fifths of what isOnNearSide calls visible is off
+    // screen. Anything deciding whether the user can SEE something has to
+    // ask the second question, not the first.
+    const zoomedIn = new Vector3(0, 0, CAMERA_NEAR_LIMIT);
+    const rightSideWrongPlace = latLonAltToVec3(0, 20, 38000);
+    expect(isOnNearSide(zoomedIn, rightSideWrongPlace)).toBe(true);
+    expect(isInView(zoomedIn, rightSideWrongPlace, FOV)).toBe(false);
+  });
+
+  it('draws its edge at the radius the server is told about', () => {
+    // Not a second idea of what "on screen" means: the boundary IS
+    // visibleCapRadiusNm, the number viewCentre() sends with every
+    // position so the poller prioritises the tiles being looked at.
+    const cam = new Vector3(0, 0, 3.0);
+    const capNm = visibleCapRadiusNm(3.0, FOV); // 1 299 NM — 21,64 degrees
+    expect(nmOf(21.5)).toBeLessThan(capNm);
+    expect(nmOf(21.8)).toBeGreaterThan(capNm);
+    expect(isInView(cam, latLonToVec3(0, 21.5), FOV)).toBe(true);
+    expect(isInView(cam, latLonToVec3(0, 21.8), FOV)).toBe(false);
+  });
+
+  it('widens as the user zooms out, which is what the hemisphere never did', () => {
+    // One point, two zoom levels, two answers. isOnNearSide says the same
+    // thing at both: that is the defect in one line.
+    const tenDegreesOff = latLonAltToVec3(0, 10, 38000);
+    expect(isInView(new Vector3(0, 0, CAMERA_NEAR_LIMIT), tenDegreesOff, FOV)).toBe(false);
+    expect(isInView(new Vector3(0, 0, 3.0), tenDegreesOff, FOV)).toBe(true);
+    expect(isOnNearSide(new Vector3(0, 0, CAMERA_NEAR_LIMIT), tenDegreesOff)).toBe(true);
+    expect(isOnNearSide(new Vector3(0, 0, 3.0), tenDegreesOff)).toBe(true);
+  });
+
+  it('refuses a point just over the limb that the rounding would admit', () => {
+    // visibleCapRadiusNm rounds to whole NM, and at the far end of the
+    // travel the rounded cap reaches 81,3785 degrees while the horizon is
+    // at 81,3731. This point is inside the cap by the arithmetic and
+    // behind the planet in fact, and a point you cannot see is not in
+    // view whatever the arithmetic rounds to.
+    const cam = new Vector3(0, 0, CAMERA_FAR_LIMIT);
+    const justOverTheLimb = latLonToVec3(0, 81.376);
+    expect(nmOf(81.376)).toBeLessThan(visibleCapRadiusNm(CAMERA_FAR_LIMIT, FOV));
+    expect(isOnNearSide(cam, justOverTheLimb)).toBe(false);
+    expect(isInView(cam, justOverTheLimb, FOV)).toBe(false);
+  });
+
+  it('is always true straight ahead, and never true straight behind', () => {
+    for (const d of [CAMERA_NEAR_LIMIT, 3.0, CAMERA_FAR_LIMIT]) {
+      const cam = new Vector3(0, 0, d);
+      expect(isInView(cam, latLonAltToVec3(0, 0, 38000), FOV)).toBe(true);
+      expect(isInView(cam, latLonAltToVec3(0, 180, 38000), FOV)).toBe(false);
+    }
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { readVisibilityRule } from '@/state/sceneView';
+import { readFocusAct, readVisibilityRule } from '@/state/sceneView';
 import { readFocusView, markerSpecs, arcSubject, arcVerdict } from '@/state/sceneView';
 import { geodesicPoints } from '@/globe/routeArc';
 import { routeEnds } from '@/data/airportInfo';
@@ -122,6 +122,39 @@ function route(destinationIata: string) {
     destinationIata, destinationName: 'Somewhere', airlineName: 'British Airways',
   };
 }
+
+describe('readFocusAct — which act of focusing the camera is answering', () => {
+  beforeEach(() => {
+    useSelectionStore.setState({
+      selectedIcao: null,
+      openEnd: null,
+      focusSightline: 'in-sight',
+      focusOrigin: null,
+      focusSeq: 0,
+    });
+  });
+
+  it('reports no act, and no origin, before anything is chosen', () => {
+    expect(readFocusAct()).toEqual({ focusSeq: 0, focusOrigin: null });
+  });
+
+  it('carries the act and the origin out of ONE read', () => {
+    // The camera's whole behaviour hangs on the pair. An origin taken a
+    // frame apart from its sequence number would describe a different act:
+    // the user clicks a dot while the camera is still answering the row
+    // they picked, and the camera learns "search" about a click (D34).
+    useSelectionStore.getState().select('a1', 'search');
+    expect(readFocusAct()).toEqual({ focusSeq: 1, focusOrigin: 'search' });
+    useSelectionStore.getState().select('a2', 'globe');
+    expect(readFocusAct()).toEqual({ focusSeq: 2, focusOrigin: 'globe' });
+  });
+
+  it('forgets the origin when the flight is let go, and counts no act', () => {
+    useSelectionStore.getState().select('a1', 'list');
+    useSelectionStore.getState().select(null);
+    expect(readFocusAct()).toEqual({ focusSeq: 1, focusOrigin: null });
+  });
+});
 
 describe('readFocusView — what we can place, we place', () => {
   beforeEach(() => {

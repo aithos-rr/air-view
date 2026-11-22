@@ -167,7 +167,7 @@ describe('FlightSearch — the five outcomes', () => {
       expect(screen.getByText(/outside ADS-B coverage/i)).toBeInTheDocument()
     );
     act(() => {
-      useSelectionStore.getState().select('a0');
+      useSelectionStore.getState().select('a0', 'globe');
     });
     expect(
       screen.getByText(/route not drawn while another flight is selected/i)

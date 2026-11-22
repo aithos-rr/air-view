@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useAircraftStore } from '@/state/aircraftStore';
 import { useSelectionStore } from '@/state/selectionStore';
+import type { FocusSightline } from '@/state/selectionStore';
 import { useFilterStore, countFleet } from '@/state/filterStore';
 import { describeVisibleFleet } from '@/globe/visibility';
 import type { VisibleFleet } from '@/globe/visibility';
@@ -65,7 +66,7 @@ export function FleetPanel() {
   // `selectedIcao` are already subscriptions, so everything that can change
   // this answer has already re-rendered the component.
   const selectedIcao = useSelectionStore((s) => s.selectedIcao);
-  const focusBehindGlobe = useSelectionStore((s) => s.focusBehindGlobe);
+  const focusSightline = useSelectionStore((s) => s.focusSightline);
   const rule = readVisibilityRule();
 
   const feedStampMs = useAircraftStore((s) => s.feedStampMs);
@@ -180,7 +181,7 @@ export function FleetPanel() {
           the key a user presses to close things, which means the
           explanation would disappear at exactly the moment they were trying
           to find out why the sky is empty. */}
-      <ShortfallNotes view={view} bothOff={bothOff} behindGlobe={focusBehindGlobe} />
+      <ShortfallNotes view={view} bothOff={bothOff} sightline={focusSightline} />
       <MotionNotes view={view} feedStale={feedStale} />
 
       {open && (
@@ -234,11 +235,11 @@ export function FleetPanel() {
 function ShortfallNotes({
   view,
   bothOff,
-  behindGlobe,
+  sightline,
 }: {
   view: VisibleFleet;
   bothOff: boolean;
-  behindGlobe: boolean;
+  sightline: FocusSightline;
 }) {
   const h = view.hidden;
   // Gated on what is DRAWN, never on the switches. With both switches off
@@ -298,12 +299,21 @@ function ShortfallNotes({
           Measured in the render loop, which is the only thing here that
           has a camera, and gated on view.shown so it can never appear
           about a sky the viewer can still see something in.
-          If the camera ever follows the focused flight, this line simply
-          stops appearing — which is why it is written this way and not as
-          a decision about the camera (D32). */}
-      {behindGlobe && view.shown === 1 && (
+          D32 wrote this as a measurement and not as a decision about the
+          camera, and said that if the camera ever followed the focused
+          flight the line would simply stop appearing. D34's camera
+          follows, and it was nearly that simple — except during the
+          900 ms of the rotation, when the flight IS still behind the
+          globe and the screen IS still empty. Falling silent there would
+          hand back D15a's forbidden sentence: "1 of 5 900 aircraft" over
+          nothing, with no account of why. So the state has three values
+          and not two, and the second half of the line follows it: an
+          account in both cases, an instruction only when there is nobody
+          else doing the work (sightlineOf, globe/cameraTurn.ts). */}
+      {sightline !== 'in-sight' && view.shown === 1 && (
         <p className="fleet__note">
-          The flight in focus is behind the globe — drag to bring it round
+          The flight in focus is behind the globe —{' '}
+          {sightline === 'arriving' ? 'turning to bring it round' : 'drag to bring it round'}
         </p>
       )}
       {/* Records the feed carries without a position. The adapters write

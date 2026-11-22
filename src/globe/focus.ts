@@ -6,6 +6,17 @@
 export const FOCUS_FADE_MS = 300;
 
 /**
+ * The curve this application eases with: no velocity jump at either end.
+ *
+ * Exported because the camera turn of D34 eases on the same shape, and a
+ * second spelling of it would be two ideas of what "gentle" means in one
+ * interface. Expects t already clamped to 0..1.
+ */
+export function smoothstep(t: number): number {
+  return t * t * (3 - 2 * t);
+}
+
+/**
  * How far through the transition we are, 0 at the start and 1 at the end.
  *
  * Clamped at both ends on purpose. rAF timestamps are monotonic by
@@ -18,8 +29,7 @@ export function fadeAmount(elapsedMs: number, reducedMotion: boolean): number {
   if (reducedMotion) return 1;
   if (elapsedMs <= 0) return 0;
   if (elapsedMs >= FOCUS_FADE_MS) return 1;
-  const t = elapsedMs / FOCUS_FADE_MS;
-  return t * t * (3 - 2 * t); // smoothstep: no velocity jump at either end
+  return smoothstep(elapsedMs / FOCUS_FADE_MS);
 }
 
 export interface FocusFade {

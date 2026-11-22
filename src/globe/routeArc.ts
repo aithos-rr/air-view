@@ -9,7 +9,7 @@ import {
   Sphere,
   Vector3,
 } from 'three';
-import { GLOBE_RADIUS, latLonToVec3 } from './geoHelpers';
+import { GLOBE_RADIUS, latLonToVec3, slerpUnit } from './geoHelpers';
 
 export interface GeoPointDeg {
   lat: number;
@@ -102,23 +102,21 @@ export function geodesicPoints(a: GeoPointDeg, b: GeoPointDeg): Vector3[] | null
 
   const va = latLonToVec3(a.lat, a.lon, 1).normalize();
   const vb = latLonToVec3(b.lat, b.lon, 1).normalize();
-  const sinOmega = Math.sin(omega);
   const samples = arcSampleCount(omega);
   const apex = ARC_APEX_MIN + ARC_APEX_RANGE * (omega / Math.PI);
 
+  // One scratch direction for the whole arc: slerpUnit writes in place, and
+  // the sample itself is the allocation this loop cannot avoid.
+  const dir = new Vector3();
   const out: Vector3[] = [];
   for (let i = 0; i < samples; i++) {
     const t = i / (samples - 1);
-    const f1 = Math.sin((1 - t) * omega) / sinOmega;
-    const f2 = Math.sin(t * omega) / sinOmega;
+    // `omega` is passed in because this loop runs every frame while a flight
+    // is in focus: letting slerpUnit recompute it would be an acos per
+    // vertex, 256 of them, sixty times a second, for a number already here.
+    slerpUnit(va, vb, t, omega, dir);
     const radius = GLOBE_RADIUS + ARC_BASE_OFFSET + apex * Math.sin(Math.PI * t);
-    out.push(
-      new Vector3(
-        (va.x * f1 + vb.x * f2) * radius,
-        (va.y * f1 + vb.y * f2) * radius,
-        (va.z * f1 + vb.z * f2) * radius
-      )
-    );
+    out.push(new Vector3(dir.x * radius, dir.y * radius, dir.z * radius));
   }
   return out;
 }

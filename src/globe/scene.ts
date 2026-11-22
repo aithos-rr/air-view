@@ -7,6 +7,7 @@ import { createAircraftLayer } from './aircraft';
 import type { FrameState } from './aircraft';
 import { createTrailsLayer } from './trails';
 import { createFocusFade } from './focus';
+import { attachUserTakeover, createFocusCamera } from './focusCamera';
 import { createRouteArcLayer } from './routeArc';
 import { createAirportMarkers } from './airportMarkers';
 import { LeaderLine } from './leaderLine';
@@ -15,7 +16,6 @@ import { advanceFor, positionAt } from './deadReckoning';
 import {
   CAMERA_FAR_LIMIT,
   CAMERA_NEAR_LIMIT,
-  isOnNearSide,
   latLonAltToVec3,
   vec3ToLatLon,
   visibleCapRadiusNm,
@@ -24,7 +24,7 @@ import { useAircraftStore } from '@/state/aircraftStore';
 import { useSelectionStore } from '@/state/selectionStore';
 import { usePanelStore } from '@/state/panelStore';
 import { useA11yStore } from '@/state/a11yStore';
-import { readVisibilityRule, readFocusView, markerSpecs } from '@/state/sceneView';
+import { readVisibilityRule, readFocusAct, readFocusView, markerSpecs } from '@/state/sceneView';
 
 export interface ViewCentre {
   lat: number;
@@ -73,8 +73,26 @@ export function mountScene(
       userInteracted = true;
     }
   };
-  canvas.addEventListener('pointerdown', stopRotate);
-  canvas.addEventListener('wheel', stopRotate, { passive: true });
+
+  /**
+   * The camera's journey to a flight the user asked to be taken to, and
+   * every decision around it: when to begin one, when to abandon it, and
+   * what the panel may say about the flight meanwhile (D34).
+   *
+   * All of that used to be written out inside animate() and inside a
+   * listener on this canvas — which is to say inside the one part of this
+   * application no unit test can reach. Six planted mutants proved what
+   * that cost: each inverted a choice the user had just made and left all
+   * 612 tests green. The loop now CALLS the decision instead of making it.
+   */
+  const focusCamera = createFocusCamera({
+    stopAutoRotate: stopRotate,
+    publishSightline: (v) => useSelectionStore.getState().setFocusSightline(v),
+    // A flight already in focus when this scene mounts is not a new act of
+    // focusing, and nobody has just asked for this view to move.
+    focusSeqAtMount: useSelectionStore.getState().focusSeq,
+  });
+  const releaseToUser = attachUserTakeover(canvas, focusCamera);
 
   // Layers
   const atmosphere = createAtmosphere();
@@ -141,7 +159,11 @@ export function mountScene(
       sameSpot ? useSelectionStore.getState().selectedIcao : null
     );
     if (icao) {
-      useSelectionStore.getState().select(icao);
+      // 'globe': they pointed at this aircraft with the cursor, so the
+      // camera does not move. Taking away the view they chose in order to
+      // show them what they were already looking at is the one thing D34
+      // forbids.
+      useSelectionStore.getState().select(icao, 'globe');
       usePanelStore.getState().open('flight');
     } else {
       useSelectionStore.getState().select(null);
@@ -164,6 +186,16 @@ export function mountScene(
     __AIR_VIEW_PROFILE?: boolean;
     /** See AircraftLayer.probeHead — one reader, tests/e2e/density-motion.spec.ts. */
     __airViewProbe?: () => number[];
+    /**
+     * Where the camera is: the point it sits over, and how far out it is.
+     *
+     * One reader, tests/e2e/camera-on-focus.spec.ts. Whether the camera
+     * travelled is not observable from the DOM — the D/A markers follow the
+     * airports and not the flight, and the "behind the globe" note is only
+     * ever about the far side — so the browser needs the camera itself to
+     * tell the two halves of D34 apart.
+     */
+    __airViewCamera?: () => { lat: number; lon: number; distance: number };
   }
   const profileWindow = window as ProfileWindow;
   // Behind the profiler's own switch, so a page that has turned the
@@ -172,6 +204,10 @@ export function mountScene(
   // would buy nothing.
   if (profileWindow.__AIR_VIEW_PROFILE !== false) {
     profileWindow.__airViewProbe = () => aircraftLayer.probeHead();
+    profileWindow.__airViewCamera = () => ({
+      ...vec3ToLatLon(camera.position),
+      distance: camera.position.length(),
+    });
   }
   let frames = 0;
   let lastFpsLog = performance.now();
@@ -184,10 +220,6 @@ export function mountScene(
   // one object per frame here would be sixty allocations a second for
   // nothing.
   const leaderScratch = { x: 0, y: 0, z: 0 };
-
-  // The last answer published, so the store is written once per crossing
-  // instead of sixty times a second.
-  let behindGlobe = false;
 
   // Render loop
   let rafId = 0;
@@ -219,36 +251,54 @@ export function mountScene(
 
     const rule = readVisibilityRule();
 
-    if (rule.focusedIcao !== null) {
-      // Entering focus stops the globe turning by itself, exactly as a drag
-      // or a wheel does. Focus arrives from the panel, the list or the
-      // search — none of which touches the canvas, so stopRotate() was
-      // never called — and a globe that goes on turning carries the ONE
-      // aircraft it is drawing round behind the planet while the viewer
-      // reads the card. No act of theirs, an empty globe (D32).
-      //
-      // This is NOT the camera following the flight: the camera does not
-      // move. Whether it should is an open product decision; see D32 for
-      // the single line that would change if the answer were yes.
-      stopRotate();
-    }
-
-    // One dot product, for ONE aircraft, with the same expression the
-    // vertex shader culls by — so the words and the picture cannot
-    // disagree about where that aircraft is (D25/D32).
     const subject = rule.focusedIcao === null ? null : aircraftMap.get(rule.focusedIcao);
-    const nowBehind =
-      subject != null &&
-      subject.latitude !== null &&
-      subject.longitude !== null &&
-      !isOnNearSide(
-        camera.position,
-        latLonAltToVec3(subject.latitude, subject.longitude, subject.baroAltitudeFt ?? 38000)
-      );
-    if (nowBehind !== behindGlobe) {
-      behindGlobe = nowBehind;
-      useSelectionStore.getState().setFocusBehindGlobe(nowBehind);
+    // Where that one aircraft is, computed once and read by both the turn
+    // and the declaration below it. rule.focusedIcao is granted only to an
+    // aircraft isFocusable() can place, so this is null exactly when there
+    // is no subject to speak about.
+    const subjectWorld =
+      subject != null && subject.latitude !== null && subject.longitude !== null
+        ? latLonAltToVec3(subject.latitude, subject.longitude, subject.baroAltitudeFt ?? 38000)
+        : null;
+
+    // --- The camera brings the flight into view (D34) ------------------------
+    // Before anything in this frame reads the camera, so the dots, the
+    // leader line, the markers and the sentence about the far side all
+    // describe the SAME camera. `time` is the rAF timestamp: monotonic, the
+    // clock focus.ts and the dead reckoning already measure on.
+    //
+    // Every decision is focusCamera's — whether to begin a journey, whether
+    // to abandon one, what the panel may say while it runs. What is left
+    // here is the one thing a unit test could never do anyway: putting the
+    // camera where the answer says.
+    const here = focusCamera.step({
+      // The camera itself, position AND lens: what counts as "already on
+      // screen" is the cap the lens frames, not the hemisphere (D34).
+      // camera.fov is fixed at 38 here, but reading it from the camera is
+      // what keeps this and viewCentre() agreeing.
+      camera,
+      subjectWorld,
+      // The idle spin stops for a flight in focus even when that flight
+      // cannot be placed, which is why this is not `subjectWorld !== null`.
+      inFocus: rule.focusedIcao !== null,
+      ...readFocusAct(),
+      nowMs: time,
+      reducedMotion: useA11yStore.getState().prefersReducedMotion,
+    });
+    if (here !== null) {
+      camera.position.copy(here);
+      // The orbit target, which enablePan keeps at the origin. Everything
+      // else in this file — viewCentre(), the leader line, the markers —
+      // assumes the camera looks at the centre of the globe.
+      camera.lookAt(controls.target);
+      // The projections further down happen BEFORE renderer.render()
+      // refreshes this for us, and a frame that draws from a stale
+      // matrix is the dot you can see and cannot click (D29).
+      camera.updateMatrixWorld();
     }
+    // frame.cameraDistance above is still right: a turn rotates and never
+    // changes how far out the camera sits, which is what makes the zoom
+    // the user's alone (D34).
     // `time` is the rAF timestamp: monotonic by specification. Date.now()
     // moves by ~528 ms every ~32 s on this machine, which would end a 300 ms
     // fade before it began.
@@ -335,8 +385,7 @@ export function mountScene(
       cancelAnimationFrame(rafId);
       window.removeEventListener('resize', onResize);
       canvas.removeEventListener('click', onClick);
-      canvas.removeEventListener('pointerdown', stopRotate);
-      canvas.removeEventListener('wheel', stopRotate);
+      releaseToUser();
       markers.dispose();
       renderer.dispose();
     },

@@ -80,7 +80,9 @@ export const useSearchStore = create<SearchState>((set) => ({
     for (const callsign of candidates) {
       for (const ac of fleet.values()) {
         if (ac.callsign === callsign) {
-          useSelectionStore.getState().select(ac.icao24);
+          // 'search': the user typed a flight number and has no idea where
+          // on the globe it is, so the camera brings it round (D34).
+          useSelectionStore.getState().select(ac.icao24, 'search');
           // select() ALONE empties the sky around an aircraft and then
           // names nothing: no flight card, no callsign, no route. Every
           // other way of choosing an aircraft in this codebase pairs the
